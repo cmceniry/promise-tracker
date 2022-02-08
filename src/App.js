@@ -1,23 +1,29 @@
-import logo from './logo.svg';
+import { useState } from 'react';
 import './App.css';
+import Mermaid from './components/Mermaid';
+import { Container, Form } from 'react-bootstrap';
 
 function App() {
+  const [mms, setMMS] = useState('sequenceDiagram\nA->> B: Query');
+
+  const handleChange = (e) => {
+    e.preventDefault();
+    setMMS(e.target.value)
+  }
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
+    <div className="App"> 
+      <Container>
+        <Form>
+          <Form.Control
+            as="textarea"
+            rows="10"
+            value={mms}
+            onChange={handleChange}
+          />
+        </Form>
+      </Container>
+      <Mermaid chart={mms} />
     </div>
   );
 }
