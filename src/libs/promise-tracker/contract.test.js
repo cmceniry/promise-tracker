@@ -1,4 +1,5 @@
-import {Behavior, Component}  from './contract';
+import YAMLException from 'js-yaml/lib/exception';
+import {Behavior, Component, from_yaml}  from './contract';
 
 describe('names', () => {
     it('Behavior returns main and condition names', () => {
@@ -35,4 +36,41 @@ describe('object utilities', () => {
         expect(d1a.isEqual(d1b)).toEqual(true);
     });
 
+});
+
+describe('component parsing', () => {
+    it('basic parse', () => {
+        const input = `
+name: a
+wants:
+  - name: b
+provides:
+  - name: d
+    conditions:
+      - c
+`;
+        const c = from_yaml(input);
+        expect(c.name).toEqual("a");
+        expect(c.wants[0].name).toEqual("b");
+        expect(c.provides[0].name).toEqual("d");
+        expect(c.provides[0].conditions[0]).toEqual("c");
+    });
+
+    it('handles invalid yaml', () => {
+        // expect(from_yaml(`name: foo\n  bar: baz`)).toEqual("foo");
+        expect(() => {from_yaml(`name: foo\n  bar: baz`)}).toThrow(YAMLException);
+    });
+
+    it('handles invalid schema', () => {
+        const input = `
+name: foo
+foo: blah
+`;
+        expect(() => {from_yaml(input)}).toThrow(/^Syntax Error$/);
+    });
+
+    it('handles invalid name', () => {
+        const input = `name: "#^)()"`;
+        expect(() => {from_yaml(input)}).toThrow(/^Syntax Error$/);
+    });
 });
