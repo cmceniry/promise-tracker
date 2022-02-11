@@ -1,3 +1,5 @@
+import _ from 'lodash';
+
 export class Behavior {
     constructor(name, conditions) {
         this.name = name;
@@ -34,4 +36,9 @@ export class Component {
         const ps = this.provides.flatMap((p) => p.getBehaviorNames());
         return [...new Set([...ws, ...ps])].sort();
     }
+
+    isEqual(other) {
+        return _.isEqual(this, other);
+    }
+
 }
