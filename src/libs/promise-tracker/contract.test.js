@@ -32,7 +32,7 @@ describe('object utilities', () => {
         expect(c1.isEqual(c2)).toEqual(false);
     });
     it('isEqual - provides', () => {
-        expect (d1a.isEqual(d1b)).toEqual(true);
+        expect(d1a.isEqual(d1b)).toEqual(true);
     });
 
 });
