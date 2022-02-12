@@ -94,7 +94,7 @@ export function from_yaml(rawdata) {
     const validate = ajv.getSchema("/promise-tracker/component.json");
     const valid = validate(d)
     if (!valid) {
-        throw new Error('Syntax Error', {cause: valid});
+        throw new Error('Schema Syntax Error', {cause: valid});
     }
 
     const w = d["wants"]?.map((b) => new Behavior(b.name));

@@ -1,30 +1,21 @@
 import { useState } from 'react';
 import './App.css';
 import Mermaid from './components/Mermaid';
-import { Container, Form } from 'react-bootstrap';
+import ContractInput from './components/ContractInput';
+import 'bootstrap/dist/css/bootstrap.min.css';
 
 function App() {
-  const [mms, setMMS] = useState('sequenceDiagram\nA->> B: Query');
 
-  const handleChange = (e) => {
+  const [contractText, setContractText] = useState("");
+  const updateContract = (e) => {
     e.preventDefault();
-    setMMS(e.target.value)
-  }
+    setContractText(e.target.value);
+  };
 
   return (
     <div className="App"> 
-      <h1 className="header">Promise Viewer</h1>
-      <Container>
-        <Form>
-          <Form.Control
-            as="textarea"
-            rows="10"
-            value={mms}
-            onChange={handleChange}
-          />
-        </Form>
-      </Container>
-      <Mermaid chart={mms} />
+      <h1 className="header">Contract</h1>
+      <ContractInput contractText={contractText} updateContract={updateContract}/>
     </div>
   );
 }

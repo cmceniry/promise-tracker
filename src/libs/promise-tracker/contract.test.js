@@ -66,11 +66,11 @@ provides:
 name: foo
 foo: blah
 `;
-        expect(() => {from_yaml(input)}).toThrow(/^Syntax Error$/);
+        expect(() => {from_yaml(input)}).toThrow(/^Schema Syntax Error$/);
     });
 
     it('handles invalid name', () => {
         const input = `name: "#^)()"`;
-        expect(() => {from_yaml(input)}).toThrow(/^Syntax Error$/);
+        expect(() => {from_yaml(input)}).toThrow(/^Schema Syntax Error$/);
     });
 });
