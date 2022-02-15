@@ -4,6 +4,7 @@ import Mermaid from './components/Mermaid';
 import ContractCard from './components/ContractCard';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { from_yaml } from './libs/promise-tracker/contract';
+import { Container, Row, Col } from 'react-bootstrap';
 import { Card, Button } from 'react-bootstrap';
 
 function App() {
@@ -50,12 +51,21 @@ function App() {
   return (
     <div className="App"> 
       <h1 className="header">Contract</h1>
-      <>
-      {contracts.map((c) =>
-        <ContractCard key={c.id} contractId={c.id} contractText={c.text} contractError={c.err} updateContract={contractUpdater} deleteContract={deleteContract}/>
-      )}
-      </>
-      <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
+      <Container fluid>
+        <Row>
+          <Col md={4}>
+            <>
+              {contracts.map((c) =>
+                <ContractCard key={c.id} contractId={c.id} contractText={c.text} contractError={c.err} updateContract={contractUpdater} deleteContract={deleteContract}/>
+              )}
+            </>
+            <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
+          </Col>
+          <Col md={8}>
+            <Mermaid chart='sequenceDiagram\n    Alice->>John: Hello John, how are you?'></Mermaid>
+          </Col>
+        </Row>
+      </Container>
     </div>
   );
 }
