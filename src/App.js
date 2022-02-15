@@ -4,20 +4,10 @@ import Mermaid from './components/Mermaid';
 import ContractCard from './components/ContractCard';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { from_yaml } from './libs/promise-tracker/contract';
+import { Card, Button } from 'react-bootstrap';
 
 function App() {
-  const [contracts, setContracts] = useState([
-    {
-      text: "",
-      err: null,
-      id: "con-0",
-    },
-    {
-      text: "",
-      err: null,
-      id: "con-1",
-    },
-  ]);
+  const [contracts, setContracts] = useState([]);
 
   const contractUpdater = (e) => {
     e.preventDefault();
@@ -37,14 +27,35 @@ function App() {
     }))
   };
 
+  const addBlankContract = (e) => {
+    e.preventDefault();
+    setContracts([...contracts, {
+      text: "",
+      err: "",
+      id: (() => {
+        let r = "";
+        for (var i = 0; i < 16; i++) {
+          r += "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".charAt(Math.floor(Math.random()*62));
+        }
+        return r;
+      })(),
+    }])
+  }
+
+  const deleteContract = (e) => {
+    e.preventDefault();
+    setContracts(c => c.filter((contract) => contract.id !== e.target.id));
+  }
+
   return (
     <div className="App"> 
       <h1 className="header">Contract</h1>
       <>
       {contracts.map((c) =>
-        <ContractCard key={c.id} contractId={c.id} contractText={c.text} contractError={c.err} updateContract={contractUpdater}/>
+        <ContractCard key={c.id} contractId={c.id} contractText={c.text} contractError={c.err} updateContract={contractUpdater} deleteContract={deleteContract}/>
       )}
       </>
+      <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
     </div>
   );
 }

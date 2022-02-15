@@ -1,6 +1,6 @@
-import { Alert, Card, Container, Form } from 'react-bootstrap';
+import { Alert, Button, Card, Container, Form } from 'react-bootstrap';
 
-export default function ContractCard({contractId, contractText, contractError, updateContract}) {
+export default function ContractCard({contractId, contractText, contractError, updateContract, deleteContract}) {
   return <Card body><Container>
     <Form>
       <Form.Control
@@ -12,6 +12,7 @@ export default function ContractCard({contractId, contractText, contractError, u
       />
     </Form>
     {contractError && <Alert variant="danger">{contractError}</Alert>}
+    <Button id={contractId} onClick={deleteContract}>Delete</Button>
   </Container>
   </Card>
 }
