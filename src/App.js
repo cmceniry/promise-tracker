@@ -9,6 +9,7 @@ import { Card, Button } from 'react-bootstrap';
 
 function App() {
   const [contracts, setContracts] = useState([]);
+  const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
 
   const contractUpdater = (e) => {
     e.preventDefault();
@@ -62,7 +63,7 @@ function App() {
             <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
           </Col>
           <Col md={8}>
-            <Mermaid chart='sequenceDiagram\n    Alice->>John: Hello John, how are you?'></Mermaid>
+            <Mermaid chart={diagram}></Mermaid>
           </Col>
         </Row>
       </Container>
