@@ -63,6 +63,12 @@ export class Behavior {
     }
 }
 
+export function compareBehavior(E1, E2) {
+    if (E1.name < E2.name) return -1;
+    if (E1.name > E2.name) return 1;
+    return 0;
+}
+
 export class Component {
     constructor(name, wants, provides) {
         this.name = name;
@@ -84,6 +90,20 @@ export class Component {
 
     isEqual(other) {
         return _.isEqual(this, other);
+    }
+
+    getProvides(behaviorName) {
+        if (!behaviorName) {
+            return [...this.provides].sort(compareBehavior);
+        }
+        return (this.provides.filter((p) => p.name === behaviorName)).sort(compareBehavior);
+    }
+
+    getWants(behaviorName) {
+        if (!behaviorName) {
+            return [...this.wants].sort(compareBehavior);
+        }
+        return (this.wants.filter((w) => w.name === behaviorName)).sort(compareBehavior);
     }
 
 }

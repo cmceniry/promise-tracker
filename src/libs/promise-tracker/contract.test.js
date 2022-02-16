@@ -1,5 +1,5 @@
 import YAMLException from 'js-yaml/lib/exception';
-import {Behavior, Component, from_yaml}  from './contract';
+import {Behavior, Component, compareBehavior, from_yaml}  from './contract';
 
 describe('names', () => {
     it('Behavior returns main and condition names', () => {
@@ -16,6 +16,13 @@ describe('names', () => {
         expect(c.getBehaviorNames()).toEqual(["ca", "pa", "wa"]);
     })
 })
+
+describe('behavior utilities', () => {
+    it('compareBehavior sorts correctly', () => {
+        expect([new Behavior("bb"), new Behavior("aa"), new Behavior("ab")].sort(compareBehavior).map((b) => b.name))
+            .toEqual(["aa", "ab", "bb"]);
+    });
+});
 
 describe('object utilities', () => {
     const a = new Component("a", [], []);
@@ -34,6 +41,45 @@ describe('object utilities', () => {
     });
     it('isEqual - provides', () => {
         expect(d1a.isEqual(d1b)).toEqual(true);
+    });
+
+});
+
+describe('object gets', () => {
+    const a = new Component("a", [new Behavior("aw1")], [new Behavior("ap1")]);
+    const b = new Component("b", [new Behavior("bw2"), new Behavior("bw1")], [new Behavior("bp2"), new Behavior("bp1")]);
+    const c = new Component("c", [], [new Behavior("cp1", ["cpc1"])]);
+    const d = new Component("d", [], [new Behavior("dp1", ["dp1c1"]), new Behavior("dp1", ["dp1c2"])]);
+
+    it('getProvides 1-no-cond', () => {
+        expect(a.getProvides()).toEqual([new Behavior("ap1")]);
+        expect(a.getProvides("ap1")).toEqual([new Behavior("ap1")]);
+    });
+    it('getProvides 2-no-cond', () => {
+        expect(b.getProvides()).toEqual([new Behavior("bp1"), new Behavior("bp2")]);
+        expect(b.getProvides("bp2")).toEqual([new Behavior("bp2")]);
+        expect(b.getProvides("bp1")).toEqual([new Behavior("bp1")]);
+    });
+    it('getProvides 1-cond', () => {
+        expect(c.getProvides()).toEqual([new Behavior("cp1", ["cpc1"])]);
+        expect(c.getProvides("cp1")).toEqual([new Behavior("cp1", ["cpc1"])]);
+    });
+    it('getProvides dup-with-cond', () => {
+        expect(d.getProvides()).toEqual([new Behavior("dp1", ["dp1c1"]), new Behavior("dp1", ["dp1c2"])]);
+        expect(d.getProvides("dp1")).toEqual([new Behavior("dp1", ["dp1c1"]), new Behavior("dp1", ["dp1c2"])]);
+    });
+
+    it('getWants 1', () => {
+        expect(a.getWants().map((w) => w.name)).toEqual(["aw1"])
+        expect(a.getWants("aw1").map((w) => w.name)).toEqual(["aw1"])
+    });
+    it('getWants 2', () => {
+        expect(b.getWants().map((w) => w.name)).toEqual(["bw1", "bw2"])
+        expect(b.getWants("bw1").map((w) => w.name)).toEqual(["bw1"])
+    });
+    it('getWants empty', () => {
+        expect(a.getWants("foo")).toEqual([]);
+        expect(b.getWants("foo")).toEqual([]);
     });
 
 });
