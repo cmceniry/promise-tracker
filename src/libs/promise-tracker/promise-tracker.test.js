@@ -36,3 +36,41 @@ describe('Adding Components to Promise Tracker', () => {
     });
 
 });
+
+describe('resolving', () => {
+
+    it('getBehaviorProviders', () => {
+        const pt = new PromiseTracker();
+        const c1 = new Component("c1", [new Behavior("b2")], []);
+        pt.addComponent(c1);
+        const c2 = new Component("c2", [], [new Behavior("b2")]);
+        pt.addComponent(c2);
+        const c3 = new Component("c3", [], [new Behavior("b3a"), new Behavior("b3b")]);
+        pt.addComponent(c3);
+        const c4 = new Component("c4", [], [new Behavior("b4", ["cond1"])]);
+        pt.addComponent(c4);
+        const c6 = new Component("c6", [], [new Behavior("b56")]);
+        const c5 = new Component("c5", [], [new Behavior("b56")]);
+        pt.addComponent(c6);
+        pt.addComponent(c5);
+        const c7 = new Component("c7", [], [
+            new Behavior("b7", ["cond7a"]),
+            new Behavior("b7", ["cond7b"]),
+        ]);
+        pt.addComponent(c7);
+        expect(pt.getBehaviorProviders("b1")).toEqual([]);
+        expect(pt.getBehaviorProviders("b2")).toEqual([{componentName: "c2", behavior: c2.provides[0]}]);
+        expect(pt.getBehaviorProviders("b3a")).toEqual([{componentName: "c3", behavior: c3.provides[0]}]);
+        expect(pt.getBehaviorProviders("b3b")).toEqual([{componentName: "c3", behavior: c3.provides[1]}]);
+        expect(pt.getBehaviorProviders("b4")).toEqual([{componentName: "c4", behavior: c4.provides[0]}]);
+        expect(pt.getBehaviorProviders("b56")).toEqual([
+            {componentName: "c5", behavior: c5.provides[0]},
+            {componentName: "c6", behavior: c6.provides[0]},
+        ]);
+        expect(pt.getBehaviorProviders("b7")).toEqual([
+            {componentName: "c7", behavior: c7.provides[0]},
+            {componentName: "c7", behavior: c7.provides[1]},
+        ]);
+    });
+
+});

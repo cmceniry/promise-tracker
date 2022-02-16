@@ -1,3 +1,5 @@
+import { compareBehavior } from "./contract";
+
 export default class PromiseTracker {
     constructor() {
         this.Components = new Map();
@@ -31,5 +33,19 @@ export default class PromiseTracker {
             )
         ).sort();
     }
+
+    getBehaviorProviders(behaviorName) {
+        let r = [];
+        this.Components.forEach((v,k) => {
+            const b = v
+                .flatMap((c) => c.getProvides(behaviorName))
+                .map((i) => ({componentName: k, behavior: i}));
+            r = [...r, ...b];
+        });
+        return r.sort((e1,e2) => e1.componentName > e2.componentName ? 1 :
+            e1.componentName < e2.componentName ? -1 : compareBehavior(e1.behavior, e2.behavior)
+        )
+    }
+
     
 }
