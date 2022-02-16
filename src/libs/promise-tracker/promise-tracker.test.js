@@ -73,4 +73,130 @@ describe('resolving', () => {
         ]);
     });
 
+    it('does a simple resolve', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [new Behavior("b2")], []));
+        pt.addComponent(new Component("c2", [], [new Behavior("b2")]));
+        expect(pt.resolve("b2")).toEqual({behavior: "b2", satisfied: [{component: "c2"}]});
+    });
+
+    it('does a simple unresolve', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [new Behavior("b1")], []));
+        pt.addComponent(new Component("c2", [new Behavior("b2")], [new Behavior("b1")]));
+        expect(pt.resolve("b2")).toEqual({behavior: "b2", unsatisfied: []});
+    });
+
+    it('does a recursive satisfied', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [new Behavior("b1")], []));
+        pt.addComponent(new Component("c2", [], [new Behavior("b1", ["b2"])]));
+        pt.addComponent(new Component("c3", [], [new Behavior("b2")]));
+        expect(pt.resolve("b1")).toEqual({
+            behavior: "b1",
+            satisfied: [
+                {
+                    component: "c2",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            satisfied: [
+                                {
+                                    component: "c3",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+    });
+
+    it('fails a recursive unsatisfied', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [new Behavior("b1")], []));
+        pt.addComponent(new Component("c2", [], [new Behavior("b1", ["b2"])]));
+        pt.addComponent(new Component("c3", [], [new Behavior("b2", ["b3"])]));
+        expect(pt.resolve("b1")).toEqual({
+            behavior: "b1",
+            unsatisfied: [
+                {
+                    component: "c2",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            unsatisfied: [
+                                {
+                                    component: "c3",
+                                    conditions: [
+                                        {
+                                            behavior: "b3",
+                                            unsatisfied: [],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+    });
+
+    it('fails a double conditional (AND) unsatisfied', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [], [
+            new Behavior("b1", ["b2", "b3"]),
+        ]));
+        expect(pt.resolve("b1")).toEqual({
+            behavior: "b1",
+            unsatisfied: [
+                {
+                    component: "c1",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            unsatisfied: [],
+                        },
+                        {
+                            behavior: "b3",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+            ],
+        });
+    });
+
+    it('fails a double provides (OR) unsatisfied', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [], [
+            new Behavior("b1", ["b2"]),
+            new Behavior("b1", ["b3"]),
+        ]));
+        expect(pt.resolve("b1")).toEqual({
+            behavior: "b1",
+            unsatisfied: [
+                {
+                    component: "c1",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+                {
+                    component: "c1",
+                    conditions: [
+                        {
+                            behavior: "b3",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+            ],
+        });
+    });
+
 });
