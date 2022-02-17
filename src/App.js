@@ -1,15 +1,47 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './App.css';
 import Mermaid from './components/Mermaid';
 import ContractCard from './components/ContractCard';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { from_yaml } from './libs/promise-tracker/contract';
 import { Container, Row, Col } from 'react-bootstrap';
-import { Card, Button } from 'react-bootstrap';
+import { Card, Button, Form } from 'react-bootstrap';
+import PromiseTracker from './libs/promise-tracker/promise-tracker';
+import ptdiagram from './libs/promise-tracker/diagram';
 
 function App() {
   const [contracts, setContracts] = useState([]);
   const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
+  const [dComponent, setDComponent] = useState("");
+  const [dBehavior, setDBehavior] = useState("");
+
+  useEffect(() => {
+    try {
+      if (contracts.length === 0) {
+        return;
+      }
+      if (contracts.filter((c) => c.err).length > 0) {
+        return;
+      }
+      const pt = new PromiseTracker();
+      contracts.forEach((c) => {
+        if (c.text) {
+          pt.addComponent(from_yaml(c.text));
+        }
+      });
+      setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
+    } catch {};
+  }, [contracts, dComponent, dBehavior]);
+
+  const updateDComponent = (e) => {
+    e.preventDefault();
+    setDComponent(e.target.value);
+  };
+
+  const updateDBehavior = (e) => {
+    e.preventDefault();
+    setDBehavior(e.target.value);
+  };
 
   const contractUpdater = (e) => {
     e.preventDefault();
@@ -63,6 +95,12 @@ function App() {
             <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
           </Col>
           <Col md={8}>
+            <Form>
+              <Form.Control type="text" placeholder="Component" value={dComponent} onChange={updateDComponent} />
+            {/* </Form>
+            <Form> */}
+              <Form.Control type="text" placeholder="Behavior" value={dBehavior} onChange={updateDBehavior} />
+            </Form>
             <Mermaid chart={diagram}></Mermaid>
           </Col>
         </Row>
