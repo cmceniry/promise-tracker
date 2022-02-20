@@ -3,7 +3,7 @@ import './App.css';
 import Mermaid from './components/Mermaid';
 import ContractCard from './components/ContractCard';
 import 'bootstrap/dist/css/bootstrap.min.css';
-import { from_yaml } from './libs/promise-tracker/contract';
+import { allFromYAML } from './libs/promise-tracker/contract';
 import { Container, Row, Col } from 'react-bootstrap';
 import { Card, Button, Form } from 'react-bootstrap';
 import PromiseTracker from './libs/promise-tracker/promise-tracker';
@@ -26,7 +26,7 @@ function App() {
       const pt = new PromiseTracker();
       contracts.forEach((c) => {
         if (c.text) {
-          pt.addComponent(from_yaml(c.text));
+          allFromYAML(c.text).forEach((comp) => pt.addComponent(comp));
         }
       });
       setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
@@ -52,7 +52,7 @@ function App() {
       let err = null;
       try {
         if (e.target.value) {
-          from_yaml(e.target.value);
+          allFromYAML(e.target.value);
         };
       } catch (e) {
         err = e.toString();

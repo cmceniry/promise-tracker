@@ -1,5 +1,5 @@
 import YAMLException from 'js-yaml/lib/exception';
-import {Behavior, Component, compareBehavior, from_yaml}  from './contract';
+import {Behavior, Component, compareBehavior, from_yaml, allFromYAML}  from './contract';
 
 describe('names', () => {
     it('Behavior returns main and condition names', () => {
@@ -118,5 +118,18 @@ foo: blah
     it('handles invalid name', () => {
         const input = `name: "#^)()"`;
         expect(() => {from_yaml(input)}).toThrow(/^Schema Syntax Error$/);
+    });
+
+    it('handles multiple yaml', () => {
+        const input = `name: foo
+---
+name: bar
+---
+name: baz`
+        expect(allFromYAML(input)).toEqual([
+            new Component("foo"),
+            new Component("bar"),
+            new Component("baz"),
+        ]);
     });
 });

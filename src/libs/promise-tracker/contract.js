@@ -121,3 +121,25 @@ export function from_yaml(rawdata) {
     const p = d["provides"]?.map((b) => new Behavior(b.name, b.conditions));
     return new Component(d.name, w, p)
 }
+
+export function allFromYAML(rawdata) {
+    const allDocs = yaml.loadAll(rawdata);
+    const validate = ajv.getSchema("/promise-tracker/component.json");
+    const c = [];
+    let error = null;
+    allDocs.every((d, idx) => {
+        const valid = validate(d);
+        if (!valid) {
+            error = new Error(`Schema Syntax Error`, {cause: valid, id: idx});
+            return false;
+        }
+        const w = d["wants"]?.map((b) => new Behavior(b.name));
+        const p = d["provides"]?.map((b) => new Behavior(b.name, b.conditions));
+        c.push(new Component(d.name, w, p));
+        return true;
+    });
+    if (error) {
+        throw error;
+    }
+    return c;
+}
