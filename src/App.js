@@ -3,7 +3,7 @@ import './App.css';
 import Mermaid from './components/Mermaid';
 import ContractCard from './components/ContractCard';
 import 'bootstrap/dist/css/bootstrap.min.css';
-import { allFromYAML } from './libs/promise-tracker/contract';
+import { allFromYAML, SchemaSyntaxError } from './libs/promise-tracker/contract';
 import { Container, Row, Col } from 'react-bootstrap';
 import { Card, Button, Form } from 'react-bootstrap';
 import PromiseTracker from './libs/promise-tracker/promise-tracker';
@@ -55,7 +55,15 @@ function App() {
           allFromYAML(e.target.value);
         };
       } catch (e) {
-        err = e.toString();
+        if (e instanceof SchemaSyntaxError) {
+          if (e.errors[0].message.match(/^must be/)) {
+            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
+          } else {
+            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].message}`;
+          };
+        } else {
+          err = e.toString();
+        }
       };
       return {id: contract.id, text: e.target.value, err: err};
     }))

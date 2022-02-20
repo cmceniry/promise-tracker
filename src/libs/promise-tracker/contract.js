@@ -108,6 +108,16 @@ export class Component {
 
 }
 
+export class SchemaSyntaxError extends Error {
+    constructor(message, {cause, errors, idx}) {
+        super(message);
+        this.name = "SchemaSyntaxError";
+        this.cause = cause;
+        this.idx = idx;
+        this.errors = errors;
+    }
+}
+
 export function from_yaml(rawdata) {
     const d = yaml.load(rawdata);
 
@@ -130,7 +140,8 @@ export function allFromYAML(rawdata) {
     allDocs.every((d, idx) => {
         const valid = validate(d);
         if (!valid) {
-            error = new Error(`Schema Syntax Error`, {cause: valid, id: idx});
+            error = new SchemaSyntaxError('Schema Syntax Error', {cause: valid, idx: idx, errors: validate.errors});
+            // error = new Error(`Schema Syntax Error`, {cause: valid, id: idx});
             return false;
         }
         const w = d["wants"]?.map((b) => new Behavior(b.name));
