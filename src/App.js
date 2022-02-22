@@ -18,9 +18,18 @@ function App() {
   useEffect(() => {
     try {
       if (contracts.length === 0) {
+        setDiagram("sequenceDiagram\nyou->>contract: enter something");
         return;
       }
       if (contracts.filter((c) => c.err).length > 0) {
+        return;
+      }
+      if (dComponent === null || dComponent === "") {
+        setDiagram("sequenceDiagram\nyou->>component: enter something");
+        return;
+      }
+      if (dBehavior === null || dBehavior === "") {
+        setDiagram("sequenceDiagram\nyou->>behavior: enter something");
         return;
       }
       const pt = new PromiseTracker();
@@ -29,6 +38,10 @@ function App() {
           allFromYAML(c.text).forEach((comp) => pt.addComponent(comp));
         }
       });
+      if (!pt.getBehaviorNames().includes(dBehavior)) {
+        setDiagram("sequenceDiagram\nyou->>behavior: enter a valid behacvior");
+        return;
+      }
       setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
     } catch {};
   }, [contracts, dComponent, dBehavior]);
