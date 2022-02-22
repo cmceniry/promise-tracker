@@ -14,6 +14,7 @@ function App() {
   const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
   const [dComponent, setDComponent] = useState("");
   const [dBehavior, setDBehavior] = useState("");
+  const [selectedFile, setSelectedFile] = useState();
 
   useEffect(() => {
     try {
@@ -97,6 +98,44 @@ function App() {
     }])
   }
 
+  const changeFile = (e) => {
+    e.preventDefault();
+    setSelectedFile(e.target.files[0]);
+  }
+  const uploadContract = (e) => {
+    e.preventDefault();
+    const f = new FileReader();
+    f.readAsText(selectedFile);
+    f.onload = () => {
+      const cText = f.result;
+      let err = "";
+      try {
+        allFromYAML(cText);
+      } catch (e) {
+        if (e instanceof SchemaSyntaxError) {
+          if (e.errors[0].message.match(/^must be/)) {
+            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
+          } else {
+            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].message}`;
+          };
+        } else {
+          err = e.toString();
+        };
+      };
+      setContracts([...contracts, {
+        text: cText,
+        err: err,
+        id: (() => {
+          let r = "";
+          for (var i = 0; i < 16; i++) {
+            r += "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".charAt(Math.floor(Math.random()*62));
+          }
+          return r;
+        })(),
+      }]);
+    };
+  }
+
   const deleteContract = (e) => {
     e.preventDefault();
     setContracts(c => c.filter((contract) => contract.id !== e.target.id));
@@ -114,6 +153,10 @@ function App() {
               )}
             </>
             <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
+            <Card>
+              <input type="file" onChange={changeFile} />
+              <Button onClick={uploadContract}>Upload</Button>
+            </Card>
           </Col>
           <Col md={8}>
             <Form>
