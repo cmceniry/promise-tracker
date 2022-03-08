@@ -17,6 +17,20 @@ function App() {
   const [selectedFile, setSelectedFile] = useState();
 
   useEffect(() => {
+    const c = localStorage.getItem('contracts');
+    if (c) {
+      try {
+        console.log(c);
+        setContracts(JSON.parse(c));
+      } finally {}
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('contracts', JSON.stringify(contracts));
+  }, [contracts]);
+
+  useEffect(() => {
     try {
       if (contracts.length === 0) {
         setDiagram("sequenceDiagram\nyou->>contract: enter something");
