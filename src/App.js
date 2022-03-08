@@ -57,6 +57,16 @@ function App() {
     setDBehavior(e.target.value);
   };
 
+  const updateFilename = (e) => {
+    e.preventDefault();
+    setContracts(c => c.map((contract) => {
+      if (e.target.id !== contract.id) {
+        return contract;
+      }
+      return {...contract, filename: e.target.value};
+    }));
+  };
+
   const contractUpdater = (e) => {
     e.preventDefault();
     setContracts(c => c.map((contract) => {
@@ -86,6 +96,7 @@ function App() {
   const addBlankContract = (e) => {
     e.preventDefault();
     setContracts([...contracts, {
+      filename: "",
       text: "",
       err: "",
       id: (() => {
@@ -123,6 +134,7 @@ function App() {
         };
       };
       setContracts([...contracts, {
+        filename: selectedFile.name,
         text: cText,
         err: err,
         id: (() => {
@@ -133,6 +145,7 @@ function App() {
           return r;
         })(),
       }]);
+      // setSelectedFile('');
     };
   }
 
@@ -149,7 +162,16 @@ function App() {
           <Col md={4}>
             <>
               {contracts.map((c) =>
-                <ContractCard key={c.id} contractId={c.id} contractText={c.text} contractError={c.err} updateContract={contractUpdater} deleteContract={deleteContract}/>
+                <ContractCard
+                  key={c.id}
+                  contractId={c.id}
+                  contractFilename={c.filename}
+                  contractText={c.text}
+                  contractError={c.err}
+                  updateFilename={updateFilename}
+                  updateContract={contractUpdater}
+                  deleteContract={deleteContract}
+                />
               )}
             </>
             <Card><Button onClick={addBlankContract}>Add Another Contract</Button></Card>
