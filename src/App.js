@@ -20,7 +20,6 @@ function App() {
     const c = localStorage.getItem('contracts');
     if (c) {
       try {
-        console.log(c);
         setContracts(JSON.parse(c));
       } finally {}
     }
