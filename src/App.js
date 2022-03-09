@@ -172,7 +172,7 @@ function App() {
       <h1 className="header">Contract</h1>
       <Container fluid>
         <Row>
-          <Col md={4}>
+          <Col md={3}>
             <>
               {contracts.map((c) =>
                 <ContractCard
@@ -193,7 +193,7 @@ function App() {
               <Button onClick={uploadContract}>Upload</Button>
             </Card>
           </Col>
-          <Col md={8}>
+          <Col md={9}>
             <Form>
               <Form.Control type="text" placeholder="Component" value={dComponent} onChange={updateDComponent} />
             {/* </Form>
