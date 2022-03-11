@@ -10,6 +10,7 @@ function d({component, behavior, satisfied, unsatisfied}) {
             behavior: c.behavior,
             component: e.component,
             satisfied: c.satisfied,
+            unsatisfied: c.unsatisfied,
           });
           ret = [...ret, ...(child.map((l) => "    " + l))];  
         });
@@ -27,6 +28,7 @@ function d({component, behavior, satisfied, unsatisfied}) {
             const child = d({
               behavior: c.behavior,
               component: e.component,
+              satisfied: c.satisfied,
               unsatisfied: c.unsatisfied,
             });
             ret = [...ret, ...(child.map((l) => "    " + l))];
