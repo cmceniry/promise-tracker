@@ -47,57 +47,68 @@ export default class PromiseTracker {
         )
     }
 
-    resolve(behaviorName) {
-        const possiblePaths = this.getBehaviorProviders(behaviorName);
-        if (possiblePaths.length === 0) {
-            return {
-                behavior: behaviorName,
-                unsatisfied: [],
-            };
-        }
-        let satisfiedPaths = [];
-        let unsatisfiedPaths = [];
-        let conditionalPaths = [];
-        possiblePaths.forEach((v) => {
+    fullResolve(behaviorName) {
+        const ret = {
+            behavior: behaviorName,
+            satisfied: [],
+            unsatisfied: [],
+        };
+        this.getBehaviorProviders(behaviorName).forEach((v) => {
             if (v.behavior.conditions && v.behavior.conditions.length === 0) {
-                satisfiedPaths.push({component: v.componentName});
-            } else {
-                conditionalPaths.push(v)
-            }
-        });
-        if (satisfiedPaths.length > 0) {
-            return {
-                behavior: behaviorName,
-                satisfied: satisfiedPaths,
+                ret.satisfied.push({component: v.componentName});
+                return;
             };
-        }
-        conditionalPaths.forEach((cp) => {
             const child = {
-                component: cp.componentName,
+                component: v.componentName,
                 conditions: [],
             }
-            cp.behavior.conditions.forEach((cd) => {
+            v.behavior.conditions.forEach((cd) => {
                 const r = this.resolve(cd);
                 child.conditions.push(r);
             });
             // Must be ANDed here - if any unsatisfied, then unsatisfied
             if (child.conditions.filter((r) => r.unsatisfied).length > 0) {
-                unsatisfiedPaths.push(child);
+                ret.unsatisfied.push(child);
             } else {
-                satisfiedPaths.push(child);
+                ret.satisfied.push(child);
             }
         });
-        // ORed here - if even one satisfied, then satisfied
-        if (satisfiedPaths.length > 0) {
-            return {
-                behavior: behaviorName,
-                satisfied: satisfiedPaths,
-            }
+        return ret;
+    }
+
+    pruneResolve(f) {
+        const ret = {behavior: f.behavior};
+        if (f.satisfied && f.satisfied.length > 0) {
+            ret.satisfied = [];
+            f.satisfied.forEach((se) => {
+                if (se.conditions) {
+                    ret.satisfied.push({
+                        component: se.component,
+                        conditions: se.conditions.map((c) => this.pruneResolve(c)),
+                    });
+                } else {
+                    ret.satisfied.push({
+                        component: se.component,
+                    });
+                };
+            });
+            return ret;
         }
-        return {
-            behavior: behaviorName,
-            unsatisfied: unsatisfiedPaths,
+        ret.unsatisfied = []
+        if (!f.unsatisfied || f.unsatisfied.length === 0) {
+            return ret;
         }
+        f.unsatisfied.forEach((ue) => {
+            ret.unsatisfied.push({
+                component: ue.component,
+                conditions: ue.conditions.map((c) => this.pruneResolve(c)),
+            });
+        });
+        return ret;
+    }
+
+    resolve(behaviorName) {
+        return this.pruneResolve(this.fullResolve(behaviorName));
     }
     
 }

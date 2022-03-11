@@ -37,7 +37,62 @@ describe('Adding Components to Promise Tracker', () => {
 
 });
 
-describe('resolving', () => {
+describe('full resolving', () => {
+
+    it('passed OR with unsatisifed parts', () => {
+        const pt = new PromiseTracker();
+        pt.addComponent(new Component("c1", [], [
+            new Behavior("b1", ["b2"]),
+            new Behavior("b1", ["b3", "b4"]),
+        ]));
+        pt.addComponent(new Component("c2", [], [
+            new Behavior("b2"),
+        ]));
+        pt.addComponent(new Component("c3", [], [
+            new Behavior("b3"),
+        ]));
+        expect(pt.fullResolve("b1")).toEqual({
+            behavior: "b1",
+            satisfied: [
+                {
+                    component: "c1",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            satisfied: [
+                                {
+                                    component: "c2",
+                                }
+                            ],
+                        },
+                    ],
+                },
+            ],
+            unsatisfied: [
+                {
+                    component: "c1",
+                    conditions: [
+                        {
+                            behavior: "b3",
+                            satisfied: [
+                                {
+                                    component: "c3",
+                                },
+                            ],
+                        },
+                        {
+                            behavior: "b4",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+            ],
+        });
+    });
+
+});
+
+describe('pruned resolving', () => {
 
     it('getBehaviorProviders', () => {
         const pt = new PromiseTracker();
@@ -283,6 +338,108 @@ describe('resolving', () => {
                 },
             ],
         });
+    });
+
+});
+
+describe('prune resolves', () => {
+
+    it('1 level - satisfied', () => {
+        const pt = new PromiseTracker();
+        expect(pt.pruneResolve({
+            behavior: "b1",
+            satisfied: [
+                {
+                    component: "c1",
+                },
+                {
+                    component: "c2",
+                },
+            ],
+        })).toEqual({
+            behavior: "b1",
+            satisfied: [
+                {
+                    component: "c1",
+                },
+                {
+                    component: "c2",
+                },
+            ],
+        })
+    });
+
+    it('1 level - satisfied and unsatisfied', () => {
+        const pt = new PromiseTracker();
+        expect(pt.pruneResolve({
+            behavior: "b1",
+            satisfied: [
+                {
+                    component: "c1",
+                },
+            ],
+            unsatisfied: [
+                {
+                    component: "c2",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+            ],
+        })).toEqual({
+            behavior: "b1",
+            satisfied: [
+                {
+                    component: "c1",
+                },
+            ],
+        });
+    });
+
+    it('1 level - empty unsatisfied', () => {
+        const pt = new PromiseTracker();
+        expect(pt.pruneResolve({
+            behavior: "b1",
+            unsatisfied: [],
+        })).toEqual({
+            behavior: "b1",
+            unsatisfied: [],
+        });
+    });
+
+    it('2 level - unsatisfied', () => {
+        const pt = new PromiseTracker();
+        expect(pt.pruneResolve({
+            behavior: "b1",
+            unsatisfied: [
+                {
+                    component: "c2",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+            ],
+        })).toEqual({
+            behavior: "b1",
+            unsatisfied: [
+                {
+                    component: "c2",
+                    conditions: [
+                        {
+                            behavior: "b2",
+                            unsatisfied: [],
+                        },
+                    ],
+                },
+            ],
+        });
+
     });
 
 });
