@@ -46,7 +46,7 @@ export default function ContractGrapher({contracts}) {
                 return;
             }
             if (!pt.getBehaviorNames().includes(dBehavior)) {
-                setDiagram("sequenceDiagram\nyou->>behavior: enter a valid behacvior");
+                setDiagram("sequenceDiagram\nyou->>behavior: enter a valid behavior");
                 return;
             }
             setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
@@ -61,7 +61,7 @@ export default function ContractGrapher({contracts}) {
     const updateDBehavior = (e) => {
         e.preventDefault();
         setDBehavior(e.target.value);
-    };    
+    };
 
     return <>
             <Form>
