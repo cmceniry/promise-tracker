@@ -10,6 +10,7 @@ export default function ContractGrapher({contracts}) {
     const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
     const [dComponent, setDComponent] = useState("");
     const [dBehavior, setDBehavior] = useState("");
+    const [pt, setPt] = useState(new PromiseTracker());
 
     useEffect(() => {
         try {
@@ -20,6 +21,22 @@ export default function ContractGrapher({contracts}) {
             if (contracts.filter((c) => c.err).length > 0) {
                 return;
             }
+            const npt = new PromiseTracker();
+            contracts.forEach((c) => {
+                if (c.text) {
+                    allFromYAML(c.text).forEach((comp) => npt.addComponent(comp));
+                }
+            });
+            setPt(npt);
+        } catch {};
+    }, [contracts]);
+
+    useEffect(() => {
+        try {
+            if (!pt) {
+                setDiagram("sequenceDiagram\nyou->>contract: enter something");
+                return;
+            }
             if (dComponent === null || dComponent === "") {
                 setDiagram("sequenceDiagram\nyou->>component: enter something");
                 return;
@@ -28,19 +45,13 @@ export default function ContractGrapher({contracts}) {
                 setDiagram("sequenceDiagram\nyou->>behavior: enter something");
                 return;
             }
-            const pt = new PromiseTracker();
-            contracts.forEach((c) => {
-                if (c.text) {
-                    allFromYAML(c.text).forEach((comp) => pt.addComponent(comp));
-                }
-            });
             if (!pt.getBehaviorNames().includes(dBehavior)) {
                 setDiagram("sequenceDiagram\nyou->>behavior: enter a valid behacvior");
                 return;
             }
             setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
             } catch {console.log("stuff")};
-        }, [contracts, dComponent, dBehavior]);
+        }, [pt, dComponent, dBehavior]);
     
     const updateDComponent = (e) => {
         e.preventDefault();
@@ -55,8 +66,6 @@ export default function ContractGrapher({contracts}) {
     return <>
             <Form>
               <Form.Control type="text" placeholder="Component" value={dComponent} onChange={updateDComponent} />
-            {/* </Form>
-            <Form> */}
               <Form.Control type="text" placeholder="Behavior" value={dBehavior} onChange={updateDBehavior} />
             </Form>
             <Mermaid chart={diagram}></Mermaid>
