@@ -1,19 +1,14 @@
 import { useState, useEffect } from 'react';
 import './App.css';
-import Mermaid from './components/Mermaid';
 import ContractCard from './components/ContractCard';
+import ContractGrapher from './components/ContractGrapher';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { allFromYAML, SchemaSyntaxError } from './libs/promise-tracker/contract';
 import { Container, Row, Col } from 'react-bootstrap';
-import { Card, Button, Form } from 'react-bootstrap';
-import PromiseTracker from './libs/promise-tracker/promise-tracker';
-import ptdiagram from './libs/promise-tracker/diagram';
+import { Card, Button } from 'react-bootstrap';
 
 function App() {
   const [contracts, setContracts] = useState([]);
-  const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
-  const [dComponent, setDComponent] = useState("");
-  const [dBehavior, setDBehavior] = useState("");
   const [selectedFile, setSelectedFile] = useState();
 
   useEffect(() => {
@@ -28,47 +23,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem('contracts', JSON.stringify(contracts));
   }, [contracts]);
-
-  useEffect(() => {
-    try {
-      if (contracts.length === 0) {
-        setDiagram("sequenceDiagram\nyou->>contract: enter something");
-        return;
-      }
-      if (contracts.filter((c) => c.err).length > 0) {
-        return;
-      }
-      if (dComponent === null || dComponent === "") {
-        setDiagram("sequenceDiagram\nyou->>component: enter something");
-        return;
-      }
-      if (dBehavior === null || dBehavior === "") {
-        setDiagram("sequenceDiagram\nyou->>behavior: enter something");
-        return;
-      }
-      const pt = new PromiseTracker();
-      contracts.forEach((c) => {
-        if (c.text) {
-          allFromYAML(c.text).forEach((comp) => pt.addComponent(comp));
-        }
-      });
-      if (!pt.getBehaviorNames().includes(dBehavior)) {
-        setDiagram("sequenceDiagram\nyou->>behavior: enter a valid behacvior");
-        return;
-      }
-      setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
-    } catch {};
-  }, [contracts, dComponent, dBehavior]);
-
-  const updateDComponent = (e) => {
-    e.preventDefault();
-    setDComponent(e.target.value);
-  };
-
-  const updateDBehavior = (e) => {
-    e.preventDefault();
-    setDBehavior(e.target.value);
-  };
 
   const updateFilename = (e) => {
     e.preventDefault();
@@ -194,13 +148,7 @@ function App() {
             </Card>
           </Col>
           <Col md={9}>
-            <Form>
-              <Form.Control type="text" placeholder="Component" value={dComponent} onChange={updateDComponent} />
-            {/* </Form>
-            <Form> */}
-              <Form.Control type="text" placeholder="Behavior" value={dBehavior} onChange={updateDBehavior} />
-            </Form>
-            <Mermaid chart={diagram}></Mermaid>
+            <ContractGrapher contracts={contracts} />
           </Col>
         </Row>
       </Container>
