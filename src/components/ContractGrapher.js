@@ -8,8 +8,8 @@ import ptdiagram from '../libs/promise-tracker/diagram';
 
 export default function ContractGrapher({contracts}) {
     const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
-    const [dComponent, setDComponent] = useState("");
-    const [dBehavior, setDBehavior] = useState("");
+    const [dComponent, setDComponent] = useState("---");
+    const [dBehavior, setDBehavior] = useState("---");
     const [pt, setPt] = useState(new PromiseTracker());
 
     useEffect(() => {
@@ -37,12 +37,12 @@ export default function ContractGrapher({contracts}) {
                 setDiagram("sequenceDiagram\nyou->>contract: enter something");
                 return;
             }
-            if (dComponent === null || dComponent === "") {
-                setDiagram("sequenceDiagram\nyou->>component: enter something");
+            if (dComponent === null || dComponent === "---") {
+                setDiagram("sequenceDiagram\nyou->>component: select component");
                 return;
             }
-            if (dBehavior === null || dBehavior === "") {
-                setDiagram("sequenceDiagram\nyou->>behavior: enter something");
+            if (dBehavior === null || dBehavior === "---") {
+                setDiagram("sequenceDiagram\nyou->>behavior: select behavior");
                 return;
             }
             if (!pt.getBehaviorNames().includes(dBehavior)) {
@@ -50,12 +50,13 @@ export default function ContractGrapher({contracts}) {
                 return;
             }
             setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
-            } catch {console.log("stuff")};
+            } catch {console.log("rendering failed")};
         }, [pt, dComponent, dBehavior]);
     
     const updateDComponent = (e) => {
         e.preventDefault();
         setDComponent(e.target.value);
+        setDBehavior("---");
     };
     
     const updateDBehavior = (e) => {
@@ -63,11 +64,37 @@ export default function ContractGrapher({contracts}) {
         setDBehavior(e.target.value);
     };
 
+    let wants = [];
+    let wantsValid = false;
+    if (pt && dComponent !== "---") {
+        const behaviorOptions = pt.Components.get(dComponent).map((c) => c.getWants().map((b) => b.name)).flat();
+        if (behaviorOptions.length === 0) {
+            wants =  [{value: "---", display: "This component has no wants entries"}];
+        } else {
+            wants = [
+                {value: "---", display: "Select a behavior"},
+                ...behaviorOptions.map((b) => {return {value: b, display: b}})
+            ];
+            wantsValid = true;
+        };
+    } else {
+        wants = [{value: "---", display: "Select Component First"}];
+    };
+
     return <>
-            <Form>
-              <Form.Control type="text" placeholder="Component" value={dComponent} onChange={updateDComponent} />
-              <Form.Control type="text" placeholder="Behavior" value={dBehavior} onChange={updateDBehavior} />
-            </Form>
-            <Mermaid chart={diagram}></Mermaid>
-        </>
+        <Form>
+            <Form.Select onChange={updateDComponent}>
+                <option value="---" >Select a Component</option>
+                {pt.getComponentNames().map((cName, i) =>
+                    <option key={i} value={cName}>{cName}</option>
+                )}
+            </Form.Select>
+            <Form.Select onChange={updateDBehavior} disabled={!wantsValid}>
+                {wants.map((w,i) =>
+                    <option key={i} value={w.value}>{w.display}</option>
+                )}
+            </Form.Select>
+        </Form>
+        <Mermaid chart={diagram}></Mermaid>
+    </>
 }
