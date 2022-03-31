@@ -13,22 +13,27 @@ export default function ContractGrapher({contracts}) {
     const [pt, setPt] = useState(new PromiseTracker());
 
     useEffect(() => {
-        try {
-            if (contracts.length === 0) {
-                setDiagram("sequenceDiagram\nyou->>contract: enter something");
-                return;
-            }
-            if (contracts.filter((c) => c.err).length > 0) {
-                return;
-            }
-            const npt = new PromiseTracker();
-            contracts.forEach((c) => {
-                if (c.text) {
-                    allFromYAML(c.text).forEach((comp) => npt.addComponent(comp));
+        const toHandler = setTimeout(() => {
+            try {
+                if (contracts.length === 0) {
+                    setDiagram("sequenceDiagram\nyou->>contract: enter something");
+                    return;
                 }
-            });
-            setPt(npt);
-        } catch {};
+                if (contracts.filter((c) => c.err).length > 0) {
+                    return;
+                }
+                const npt = new PromiseTracker();
+                contracts.forEach((c) => {
+                    if (c.text) {
+                        allFromYAML(c.text).forEach((comp) => npt.addComponent(comp));
+                    }
+                });
+                setPt(npt);
+            } catch {};
+        }, 500);
+        return () => {
+            clearTimeout(toHandler);
+        };
     }, [contracts]);
 
     useEffect(() => {
