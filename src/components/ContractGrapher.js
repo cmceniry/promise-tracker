@@ -47,7 +47,11 @@ export default function ContractGrapher({contracts}) {
                 return;
             }
             if (dBehavior === null || dBehavior === "---") {
-                setDiagram("sequenceDiagram\nyou->>behavior: select behavior");
+                const fullDiagram = pt.Components.get(dComponent).map((c) => c.getWants().map((b) => b.name)).flat().map((b) => {
+                    return ptdiagram({...pt.resolve(b), component: dComponent});
+                }).join("\n").replaceAll(/\nsequenceDiagram/g, "\n");
+                console.log(fullDiagram);
+                setDiagram(fullDiagram);
                 return;
             }
             if (!pt.getBehaviorNames().includes(dBehavior)) {
