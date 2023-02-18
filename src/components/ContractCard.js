@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Form } from 'react-bootstrap';
 
 export default function ContractCard({contractId, contractFilename, contractText, contractError, updateFilename, updateContract, deleteContract}) {
+  const downloadRef = useRef("");
   const [downloadLink, setDownloadLink] = useState("");
-  const buildContractDownload = () => {
+  useEffect(() => {
     const d = new Blob([contractText], { type: 'text/json' });
-    if (downloadLink !== "") window.URL.revokeObjectURL(downloadLink);
-    setDownloadLink(window.URL.createObjectURL(d));
-  }
-  useEffect(() => {buildContractDownload()}, [contractText]);
+    if (downloadRef.current !== "") window.URL.revokeObjectURL(downloadRef.current);
+    downloadRef.current = window.URL.createObjectURL(d);
+    setDownloadLink(downloadRef.current);
+  }, [contractText]);
 
   return <Card body>
     <Form>
