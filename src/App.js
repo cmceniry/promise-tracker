@@ -56,7 +56,7 @@ function App() {
           err = e.toString();
         }
       };
-      return {id: contract.id, text: e.target.value, err: err};
+      return {...contract, text: e.target.value, err: err};
     }))
   };
 
