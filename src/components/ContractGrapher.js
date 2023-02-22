@@ -1,67 +1,50 @@
 import React from "react";
 import { useState, useEffect } from 'react';
-import Mermaid from './Mermaid';
+import ContractGraph from './ContractGraph';
 import { Form } from 'react-bootstrap';
 import { allFromYAML } from '../libs/promise-tracker/contract';
 import PromiseTracker from '../libs/promise-tracker/promise-tracker';
-import ptdiagram from '../libs/promise-tracker/diagram';
 
-export default function ContractGrapher({contracts}) {
-    const [diagram, setDiagram] = useState("sequenceDiagram\nyou->>contract: enter something");
+export default function ContractGrapher({contracts, simulations}) {
     const [dComponent, setDComponent] = useState("---");
     const [dBehavior, setDBehavior] = useState("---");
     const [pt, setPt] = useState(new PromiseTracker());
+    const [sims, setSims] = useState({});
 
     useEffect(() => {
         const toHandler = setTimeout(() => {
             try {
                 if (contracts.length === 0) {
-                    setDiagram("sequenceDiagram\nyou->>contract: enter something");
                     return;
                 }
                 if (contracts.filter((c) => c.err).length > 0) {
                     return;
                 }
                 const npt = new PromiseTracker();
+                const nsims = {};
+                simulations.forEach((s) => {
+                    nsims[s] = new PromiseTracker();
+                });
                 contracts.forEach((c) => {
                     if (c.text) {
-                        allFromYAML(c.text).forEach((comp) => npt.addComponent(comp));
-                    }
+                        const allComponents = allFromYAML(c.text);
+                        allComponents.forEach((comp) => {
+                            npt.addComponent(comp);
+                            [...c.sims].filter((s) => simulations.includes(s)).forEach((s) => nsims[s].addComponent(comp));
+                        });
+                    };
                 });
                 setPt(npt);
-            } catch {};
+                setSims(nsims);
+            } catch (e) {
+                console.log(e);
+            };
         }, 500);
         return () => {
             clearTimeout(toHandler);
         };
-    }, [contracts]);
+    }, [contracts, simulations]);
 
-    useEffect(() => {
-        try {
-            if (!pt) {
-                setDiagram("sequenceDiagram\nyou->>contract: enter something");
-                return;
-            }
-            if (dComponent === null || dComponent === "---") {
-                setDiagram("sequenceDiagram\nyou->>component: select component");
-                return;
-            }
-            if (dBehavior === null || dBehavior === "---") {
-                const fullDiagram = pt.Components.get(dComponent).map((c) => c.getWants().map((b) => b.name)).flat().map((b) => {
-                    return ptdiagram({...pt.resolve(b), component: dComponent});
-                }).join("\n").replaceAll(/\nsequenceDiagram/g, "\n");
-                console.log(fullDiagram);
-                setDiagram(fullDiagram);
-                return;
-            }
-            if (!pt.getBehaviorNames().includes(dBehavior)) {
-                setDiagram("sequenceDiagram\nyou->>behavior: enter a valid behavior");
-                return;
-            }
-            setDiagram(ptdiagram({...pt.resolve(dBehavior), component: dComponent}));
-            } catch {console.log("rendering failed")};
-        }, [pt, dComponent, dBehavior]);
-    
     const updateDComponent = (e) => {
         e.preventDefault();
         setDComponent(e.target.value);
@@ -75,7 +58,7 @@ export default function ContractGrapher({contracts}) {
 
     let wants = [];
     let wantsValid = false;
-    if (pt && dComponent !== "---") {
+    if (pt && dComponent !== "---" && pt.Components.get(dComponent)) {
         const behaviorOptions = pt.Components.get(dComponent).map((c) => c.getWants().map((b) => b.name)).flat();
         if (behaviorOptions.length === 0) {
             wants =  [{value: "---", display: "This component has no wants entries"}];
@@ -104,6 +87,8 @@ export default function ContractGrapher({contracts}) {
                 )}
             </Form.Select>
         </Form>
-        <Mermaid chart={diagram}></Mermaid>
+        {simulations.map((s, i) => {
+            return <ContractGraph key={i} simId={s} pt={sims[s]} selectedComponent={dComponent} selectedBehavior={dBehavior}/>
+        })}
     </>
 }

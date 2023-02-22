@@ -10,18 +10,32 @@ import { Card, Button } from 'react-bootstrap';
 function App() {
   const [contracts, setContracts] = useState([]);
   const [selectedFile, setSelectedFile] = useState();
+  const simulations = ["A", "B", "C"];
 
   useEffect(() => {
     const c = localStorage.getItem('contracts');
     if (c) {
       try {
-        setContracts(JSON.parse(c));
+        setContracts(JSON.parse(c).map((contract) => {
+          return {
+            ...contract,
+            sims: new Set(contract.sims)
+          };
+        }));
       } finally {}
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('contracts', JSON.stringify(contracts));
+    if (contracts === null || contracts.length === 0) {
+      return
+    }
+    localStorage.setItem('contracts', JSON.stringify(contracts.map((contract) => {
+      return {
+        ...contract,
+        sims: Array.from(contract.sims)
+      };
+    })));
   }, [contracts]);
 
   const updateFilename = (e) => {
@@ -66,6 +80,7 @@ function App() {
       filename: "",
       text: "",
       err: "",
+      sims: new Set(simulations),
       id: (() => {
         let r = "";
         for (var i = 0; i < 16; i++) {
@@ -104,6 +119,7 @@ function App() {
         filename: selectedFile.name,
         text: cText,
         err: err,
+        sims: new Set(simulations),
         id: (() => {
           let r = "";
           for (var i = 0; i < 16; i++) {
@@ -121,6 +137,26 @@ function App() {
     setContracts(c => c.filter((contract) => contract.id !== e.target.id));
   }
 
+  const updateContractSim = (e) => {
+    e.preventDefault();
+    const eId = e.target.id.split(":")
+    if (eId.length !== 2) {
+      return;
+    }
+    setContracts(c => c.map((contract) => {
+      if (eId[0] !== contract.id) {
+        return contract;
+      };
+      const s = new Set(contract.sims);
+      if (s.has(eId[1])) {
+        s.delete(eId[1]);
+      } else {
+        s.add(eId[1]);
+      };
+      return {...contract, sims: s};
+    }));
+  }
+
   return (
     <div className="App"> 
       <h1 className="header">Contract</h1>
@@ -135,9 +171,12 @@ function App() {
                   contractFilename={c.filename}
                   contractText={c.text}
                   contractError={c.err}
+                  contractSims={c.sims}
                   updateFilename={updateFilename}
                   updateContract={contractUpdater}
                   deleteContract={deleteContract}
+                  updateContractSim={updateContractSim}
+                  simulations={simulations}
                 />
               )}
             </>
@@ -148,7 +187,7 @@ function App() {
             </Card>
           </Col>
           <Col md={9}>
-            <ContractGrapher contracts={contracts} />
+            <ContractGrapher contracts={contracts} simulations={simulations}/>
           </Col>
         </Row>
       </Container>
