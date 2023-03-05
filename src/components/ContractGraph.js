@@ -34,7 +34,6 @@ function diagram({pt, selectedComponent, selectedBehavior}) {
 
 export default function ContractGraph({simId, pt, selectedComponent, selectedBehavior}) {
   return <Card body>
-    <h1>Simulation: {simId}</h1>
     <Mermaid id={simId} chart={diagram({pt,selectedComponent,selectedBehavior})}></Mermaid>
   </Card>
 }

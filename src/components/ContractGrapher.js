@@ -4,6 +4,9 @@ import ContractGraph from './ContractGraph';
 import { Form } from 'react-bootstrap';
 import { allFromYAML } from '../libs/promise-tracker/contract';
 import PromiseTracker from '../libs/promise-tracker/promise-tracker';
+import Tab from 'react-bootstrap/Tab';
+import Tabs from 'react-bootstrap/Tabs';
+
 
 export default function ContractGrapher({contracts, simulations}) {
     const [dComponent, setDComponent] = useState("---");
@@ -87,8 +90,12 @@ export default function ContractGrapher({contracts, simulations}) {
                 )}
             </Form.Select>
         </Form>
+        <Tabs>
         {simulations.map((s, i) => {
-            return <ContractGraph key={i} simId={s} pt={sims[s]} selectedComponent={dComponent} selectedBehavior={dBehavior}/>
+            return <Tab title={s} key={i} eventKey={i}>
+                <ContractGraph simId={s} pt={sims[s]} selectedComponent={dComponent} selectedBehavior={dBehavior}/>
+            </Tab>
         })}
+        </Tabs>
     </>
 }
