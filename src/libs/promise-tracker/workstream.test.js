@@ -15,7 +15,7 @@ describe('rendering', () => {
     const r = workstream(input);
     expect(r).toEqual(`flowchart TD
     subgraph c2
-      b1
+      edbab45572c72a5d9440b40bcc0500c0["b1"]
     end`);
   });
 
@@ -49,16 +49,16 @@ describe('rendering', () => {
     const r = workstream(input);
     expect(r).toEqual(`flowchart TD
     subgraph c2
-      b1
+      edbab45572c72a5d9440b40bcc0500c0["b1"]
     end
     subgraph c3
-      b2
+      fbfba2e45c2045dc5cab22a5afe83d9d["b2"]
     end
     subgraph c4
-      b3
+      7a6f150b83091ce20c89368641f9a137["b3"]
     end
-    b2 ->> b1
-    b3 ->> b1`);
+    7a6f150b83091ce20c89368641f9a137 --> edbab45572c72a5d9440b40bcc0500c0
+    fbfba2e45c2045dc5cab22a5afe83d9d --> edbab45572c72a5d9440b40bcc0500c0`);
   });
 
 });
