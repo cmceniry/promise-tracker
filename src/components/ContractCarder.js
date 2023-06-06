@@ -126,7 +126,7 @@ export default function ContractCarder({contracts, setContracts, simulations}) {
     }));
   }
 
-  return <>
+  return <div style={{ height: '100vh', overflowY: 'auto' }}>
     <>
       {contracts.map((c) =>
         <ContractCard
@@ -146,10 +146,10 @@ export default function ContractCarder({contracts, setContracts, simulations}) {
     </>
     <Card>
       <Button onClick={addBlankContract}>Add Another Contract</Button>
-      </Card>
+    </Card>
     <Card>
       <input type="file" onChange={changeFile} />
       <Button onClick={uploadContract}>Upload</Button>
     </Card>
-  </>
+  </div>
 }

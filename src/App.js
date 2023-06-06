@@ -39,13 +39,13 @@ function App() {
   // TODO: highlight top level (comp/beh selection or sim) when there's a contract syntax error
   return (
     <div className="App"> 
-      <h1 className="header">Contract</h1>
       <Container fluid>
         <Row>
           <Col md={3} style={{overflowY: "scroll"}}>
             <ContractCarder contracts={contracts} setContracts={setContracts} simulations={simulations}/>
           </Col>
           <Col md={9} style={{overflowY: "scroll"}}>
+            <h1 className="header">Contract</h1>
             <ContractGrapher contracts={contracts} simulations={simulations}/>
           </Col>
         </Row>
