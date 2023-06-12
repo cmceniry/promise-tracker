@@ -1,5 +1,5 @@
-import { Behavior, Component } from './contract';
-import PromiseTracker from './promise-tracker';
+import { Behavior, Component } from './contract.js';
+import PromiseTracker from './promise-tracker.js';
 
 describe('Adding Components to Promise Tracker', () => {
 

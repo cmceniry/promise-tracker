@@ -1,5 +1,5 @@
 import YAMLException from 'js-yaml/lib/exception';
-import {Behavior, Component, compareBehavior, from_yaml, allFromYAML}  from './contract';
+import {Behavior, Component, compareBehavior, from_yaml, allFromYAML}  from './contract.js';
 
 describe('names', () => {
     it('Behavior returns main and condition names', () => {

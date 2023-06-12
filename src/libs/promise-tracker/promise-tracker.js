@@ -1,4 +1,4 @@
-import { compareBehavior } from "./contract";
+import { compareBehavior } from "./contract.js";
 
 export default class PromiseTracker {
     constructor() {
