@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import cryptojs from "crypto-js";
 
 function w({behavior, satisfied, unsatisfied}) {
   if (!satisfied) {
@@ -14,9 +14,9 @@ function w({behavior, satisfied, unsatisfied}) {
   if (s.conditions) {
     s.conditions.forEach((cond) => {
       steps.add(
-        createHash('md5').update(cond.behavior).digest('hex') +
+        cryptojs.MD5(cond.behavior).toString() +
         " --> " +
-        createHash('md5').update(behavior).digest('hex')
+        cryptojs.MD5(behavior).toString()
       );
       const condw = w({behavior: cond.behavior, satisfied: cond.satisfied, unsatisfied: cond.unsatisfied});
       for (const c in condw.components) {
@@ -39,7 +39,7 @@ export default function workstream(input) {
     subgraphs.push("subgraph " + c);
     r.components[c].forEach((b) =>
       subgraphs.push(
-        "  " + createHash('md5').update(b).digest('hex') + "[\"" + b + "\"]"
+        "  " + cryptojs.MD5(b).toString() + "[\"" + b + "\"]"
       )
     );
     subgraphs.push("end");
