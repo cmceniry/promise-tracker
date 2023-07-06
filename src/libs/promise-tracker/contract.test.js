@@ -1,5 +1,5 @@
 import YAMLException from 'js-yaml/lib/exception';
-import {Behavior, Component, compareBehavior, from_yaml, allFromYAML}  from './contract.js';
+import {Behavior, Component, compareBehavior, from_yaml, allFromYAML, Collective}  from './contract.js';
 
 describe('names', () => {
     it('Behavior returns main and condition names', () => {
@@ -131,5 +131,31 @@ name: baz`
             new Component("bar"),
             new Component("baz"),
         ]);
+    });
+
+    it(`handles optional kind for Component`, () => {
+        const input = `
+name: a
+`;
+        var c = null;
+        expect(() => {c = from_yaml(input)}).not.toThrow();
+        expect(c instanceof Component).toBeTruthy();
+        expect(c.name).toEqual("a");
+    });
+});
+
+// Test to verify that collectives are parsed correctly
+describe('collective parsing', () => {
+    it('basic parse', () => {
+        const input = `
+name: a
+kind: Collective
+componentNames:
+  - b
+  - c
+`;
+        const c = from_yaml(input);
+        expect(c.name).toEqual("a");
+        expect(c.componentNames).toEqual(["b", "c"]);
     });
 });

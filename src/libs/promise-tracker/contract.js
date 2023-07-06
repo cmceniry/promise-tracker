@@ -24,6 +24,22 @@ const behaviorSchema = {
     additionalProperties: false,
 };
 
+const collectiveSchema = {
+    $id: "/promise-tracker/collective.json",
+    $schema: "http://json-schema.org/schema#",
+    type: "object",
+    properties: {
+        kind: {enum: ["Collective"]},
+        name: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+        componentNames: {
+            type: "array",
+            items: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+        }
+    },
+    required: ["name"],
+    additionalProperties: false,
+}
+
 const componentSchema = {
     $id: "/promise-tracker/component.json",
     $schema: "http://json-schema.org/schema#",
@@ -44,7 +60,22 @@ const componentSchema = {
     additionalProperties: false,
 };
 
-const ajv = new Ajv({schemas: [behaviorName, behaviorSchema, componentSchema]});
+const contractSchema = {
+    $id: "/promise-tracker/contract.json",
+    $schema: "http://json-schema.org/schema#",
+    type: "object",
+    discriminator: {propertyName: "kind"},
+    required: ["kind", "name"],
+    oneOf: [
+        {$ref: "/promise-tracker/collective.json"},
+        {$ref: "/promise-tracker/component.json"},
+    ]
+}
+
+const ajv = new Ajv({
+    schemas: [behaviorName, behaviorSchema, collectiveSchema, componentSchema, contractSchema],
+    discriminator: true,
+});
 
 export class Behavior {
     constructor(name, conditions) {
@@ -68,6 +99,24 @@ export function compareBehavior(E1, E2) {
     if (E1.name < E2.name) return -1;
     if (E1.name > E2.name) return 1;
     return 0;
+}
+
+export class Collective {
+    constructor(name, componentNames) {
+        this.name = name;
+        this.componentNames = [];
+        if (componentNames) {
+            this.componentNames = [...componentNames];
+        };
+    }
+
+    getName() {
+        return this.name;
+    }
+
+    getComponentNames() {
+        return [...this.componentNames];
+    }
 }
 
 export class Component {
@@ -130,19 +179,24 @@ export function from_yaml(rawdata) {
     if (!("kind" in d)) {
         d["kind"] = "Component";
     }
-    const validate = ajv.getSchema("/promise-tracker/component.json");
+    const validate = ajv.getSchema("/promise-tracker/contract.json");
     const valid = validate(d)
     if (!valid) {
         throw new Error('Schema Syntax Error', {cause: valid});
     }
-    if (d["kind"] === "Component") {
-        return Component.from_object(d);
+    switch (d["kind"]) {
+        case "Component":
+            return Component.from_object(d);
+        case "Collective":
+            return new Collective(d.name, d.componentNames);
+        default:
+            return null;
     }
 }
 
 export function allFromYAML(rawdata) {
     const allDocs = yaml.loadAll(rawdata);
-    const validate = ajv.getSchema("/promise-tracker/component.json");
+    const validate = ajv.getSchema("/promise-tracker/contract.json");
     const c = [];
     let error = null;
     allDocs.every((d, idx) => {
@@ -155,12 +209,17 @@ export function allFromYAML(rawdata) {
             // error = new Error(`Schema Syntax Error`, {cause: valid, id: idx});
             return false;
         }
-        if (d["kind"] === "Component") {
-            c.push(Component.from_object(d));
-            return true;
+        switch (d["kind"]) {
+            case "Component":
+                c.push(Component.from_object(d));
+                return true;
+            case "Collective":
+                c.push(new Collective(d.name, d.componentNames));
+                return true;
+            default:
+                error = new Error(`Unknown kind ${d["kind"]}`, {id: idx});
+                return false;
         }
-        error = new Error(`Unknown kind ${d["kind"]}`, {id: idx});
-        return false;
     });
     if (error) {
         throw error;
