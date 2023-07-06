@@ -29,6 +29,7 @@ const componentSchema = {
     $schema: "http://json-schema.org/schema#",
     type: "object",
     properties: {
+        kind: {enum: ["Component"]},
         name: {type: "string", pattern: "^[A-Za-z0-9-]+"},
         wants: {
             type: "array",
@@ -82,6 +83,12 @@ export class Component {
         }
     }
 
+    static from_object(obj) {
+        const w = obj["wants"]?.map((b) => new Behavior(b.name));
+        const p = obj["provides"]?.map((b) => new Behavior(b.name, b.conditions));
+        return new Component(obj.name, w, p);
+    }
+
     getBehaviorNames() {
         const ws = this.wants.flatMap((w) => w.getBehaviorNames());
         const ps = this.provides.flatMap((p) => p.getBehaviorNames());
@@ -120,16 +127,17 @@ export class SchemaSyntaxError extends Error {
 
 export function from_yaml(rawdata) {
     const d = yaml.load(rawdata);
-
+    if (!("kind" in d)) {
+        d["kind"] = "Component";
+    }
     const validate = ajv.getSchema("/promise-tracker/component.json");
     const valid = validate(d)
     if (!valid) {
         throw new Error('Schema Syntax Error', {cause: valid});
     }
-
-    const w = d["wants"]?.map((b) => new Behavior(b.name));
-    const p = d["provides"]?.map((b) => new Behavior(b.name, b.conditions));
-    return new Component(d.name, w, p)
+    if (d["kind"] === "Component") {
+        return Component.from_object(d);
+    }
 }
 
 export function allFromYAML(rawdata) {
@@ -138,16 +146,21 @@ export function allFromYAML(rawdata) {
     const c = [];
     let error = null;
     allDocs.every((d, idx) => {
+        if (!("kind" in d)) {
+            d["kind"] = "Component";
+        };
         const valid = validate(d);
         if (!valid) {
             error = new SchemaSyntaxError('Schema Syntax Error', {cause: valid, idx: idx, errors: validate.errors});
             // error = new Error(`Schema Syntax Error`, {cause: valid, id: idx});
             return false;
         }
-        const w = d["wants"]?.map((b) => new Behavior(b.name));
-        const p = d["provides"]?.map((b) => new Behavior(b.name, b.conditions));
-        c.push(new Component(d.name, w, p));
-        return true;
+        if (d["kind"] === "Component") {
+            c.push(Component.from_object(d));
+            return true;
+        }
+        error = new Error(`Unknown kind ${d["kind"]}`, {id: idx});
+        return false;
     });
     if (error) {
         throw error;
