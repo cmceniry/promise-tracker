@@ -1,4 +1,4 @@
-import { Behavior, Component } from './contract.js';
+import { Behavior, Collective, Component } from './contract.js';
 import PromiseTracker from './promise-tracker.js';
 
 describe('Adding Components to Promise Tracker', () => {
@@ -35,6 +35,57 @@ describe('Adding Components to Promise Tracker', () => {
         expect(pt.getComponentVariants("c").length).toEqual(1);
     });
 
+});
+
+describe('Adding Collectives to Promise Tracker', () => {
+    it('adds a single collective', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Collective("l1"));
+        expect(pt.getCollectiveNames()).toEqual(["l1"]);
+        expect(pt.getCollectiveComponents()).toEqual([]);
+    });
+
+    it('add multiple collectives', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Collective("l1", ["c1", "c2"]));
+        pt.add(new Collective("l2", ["c3", "c4"]));
+        expect(pt.getCollectiveNames()).toEqual(["l1", "l2"]);
+        expect(pt.getCollectiveComponents()).toEqual(["c1", "c2", "c3", "c4"]);
+    });
+
+    it('adds collective after components', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Component("c1", [], [new Behavior("b1")]));
+        pt.add(new Component("c2", [], [new Behavior("b2")]));
+        pt.add(new Component("c3", [], [new Behavior("b3")]));
+        pt.add(new Collective("l1", ["c1", "c2"]));
+        expect(pt.getComponentNames()).toEqual(["c3", "l1"]);
+        expect(pt.getCollectiveByComponentName("c1").name).toEqual("l1");
+        expect(pt.getCollectiveByComponentName("c3")).toEqual(undefined);
+    });
+
+    it('add collective between components', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Component("c1", [], [new Behavior("b1")]));
+        pt.add(new Collective("l1", ["c1", "c2"]));
+        expect(pt.getComponentNames()).toEqual(["l1"]);
+        pt.add(new Component("c2", [], [new Behavior("b2")]));
+        expect(pt.getComponentNames()).toEqual(["l1"]);
+        pt.add(new Component("c3", [], [new Behavior("b3")]));
+        expect(pt.getComponentNames()).toEqual(["c3", "l1"]);
+    });
+
+    it('add collective with overlapping components', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Component("c1", [], [new Behavior("b1")]));
+        pt.add(new Component("c1", [], [new Behavior("b2")]));
+        pt.add(new Collective("l1", ["c1", "c2"]));
+        expect(pt.getComponentNames()).toEqual(["l1"]);
+        expect(pt.getBehaviorNames()).toEqual(["b1", "b2"]);
+        pt.add(new Component("c1", [], [new Behavior("b3")]));
+        pt.add(new Component("c2", [], [new Behavior("b4")]));
+        expect(pt.getBehaviorNames()).toEqual(["b1", "b2", "b3", "b4"]);
+    });
 });
 
 describe('full resolving', () => {

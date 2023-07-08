@@ -1,11 +1,25 @@
-import { compareBehavior } from "./contract.js";
+import { compareBehavior, Collective, Component } from "./contract.js";
 
 export default class PromiseTracker {
     constructor() {
+        this.Collectives = new Map();
         this.Components = new Map();
+        this.rawComponents = new Map();
     }
 
-    addComponent(c) {
+    add(c) {
+        switch (c.constructor) {
+            case Component:
+                this.addComponent(c);
+                break;
+            case Collective:
+                this.addCollective(c);
+                break;
+            default:
+        }
+    }
+
+    addWorkingComponent(c) {
         const cs = this.Components.get(c.name);
         if (!cs) {
             this.Components.set(c.name, [c]);
@@ -15,6 +29,70 @@ export default class PromiseTracker {
             return;
         }
         this.Components.set(c.name, [...cs, c]);
+    }
+    removeWorkingComponent(cn) {
+        this.Components.delete(cn);
+    }
+
+    addRawComponent(c) {
+        const cs = this.rawComponents.get(c.name);
+        if (!cs) {
+            this.rawComponents.set(c.name, [c]);
+            return;
+        }
+        if (cs.some(ec => ec.isEqual(c))) {
+            return;
+        }
+        this.rawComponents.set(c.name, [...cs, c]);
+    }
+
+    reComponentizeCollective(c) {
+        this.removeWorkingComponent(c.name);
+        c.getComponentNames().forEach((cn) => {
+            this.removeWorkingComponent(cn);
+            const rcs = this.rawComponents.get(cn);
+            if (!rcs) {
+                return;
+            }
+            rcs.forEach((rc) => {
+                this.addWorkingComponent(new Component(
+                    c.name,
+                    rc.getWants(),
+                    rc.getProvides(),
+                ));
+            });
+        });
+    }
+
+    addCollective(c) {
+        this.Collectives.set(c.name, c);
+        this.reComponentizeCollective(c);
+    }
+
+    addComponent(c) {
+        this.addRawComponent(c);
+        const coll = this.getCollectiveByComponentName(c.name);
+        if (coll) {
+            this.reComponentizeCollective(coll);
+        } else {
+            this.addWorkingComponent(c);
+        }
+    }
+
+    getCollectiveNames() {
+        return [...this.Collectives.keys()].sort();
+    }
+
+    getCollectiveComponents(collectiveName) {
+        return [...this.Collectives.values()].map((c) => c.getComponentNames()).flat().sort();
+    }
+
+    getCollectiveByComponentName(componentName) {
+        for (const c of this.Collectives.values()) {
+            if (c.getComponentNames().includes(componentName)) {
+                return c;
+            }
+        }
     }
 
     getComponentNames() {
