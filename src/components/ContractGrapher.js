@@ -32,8 +32,8 @@ export default function ContractGrapher({contracts, simulations}) {
                     if (c.text) {
                         const allComponents = allFromYAML(c.text);
                         allComponents.forEach((comp) => {
-                            npt.addComponent(comp);
-                            [...c.sims].filter((s) => simulations.includes(s)).forEach((s) => nsims[s].addComponent(comp));
+                            npt.add(comp);
+                            [...c.sims].filter((s) => simulations.includes(s)).forEach((s) => nsims[s].add(comp));
                         });
                     };
                 });

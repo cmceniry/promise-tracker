@@ -11,7 +11,7 @@ async function loadFile(pt, filename) {
         const data = await fs.readFile(filename, 'utf8');
         const allComponents = allFromYAML(data);
         for (const comp of allComponents) {
-            pt.addComponent(comp);
+            pt.add(comp);
             addCount += 1;
         };
     } catch (e) {
