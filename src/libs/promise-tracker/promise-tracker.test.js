@@ -86,6 +86,20 @@ describe('Adding Collectives to Promise Tracker', () => {
         pt.add(new Component("c2", [], [new Behavior("b4")]));
         expect(pt.getBehaviorNames()).toEqual(["b1", "b2", "b3", "b4"]);
     });
+
+    it('collective behavior providers', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Component("c1", [], [new Behavior("b1")]));
+        pt.add(new Component("c2", [], [new Behavior("b2")]));
+        pt.add(new Component("c3", [], [new Behavior("b3", ["b2"])]));
+        pt.add(new Collective("l1", ["c3"]));
+        expect(pt.getBehaviorProviders("b1")).toEqual([
+            {behavior: new Behavior("b1"), componentName: "c1"}
+        ]);
+        expect(pt.getBehaviorProviders("b3")).toEqual([
+            {behavior: new Behavior("b3", ["b2"]), componentName: "l1"}
+        ]);
+    });
 });
 
 describe('full resolving', () => {
@@ -493,4 +507,23 @@ describe('prune resolves', () => {
 
     });
 
+});
+
+describe('collective resolving', () => {
+    it('resolve collective', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Collective("l1", ["c1", "c2"]));
+        pt.addComponent(new Component("c1", [], [new Behavior("b1")]));
+        pt.addComponent(new Component("c2", [], [new Behavior("b2")]));
+        pt.addComponent(new Component("c3", [], [new Behavior("b3", ["b1"])]));
+        expect(pt.resolve("b3")).toEqual(
+            {behavior: "b3", satisfied: [
+                {component: "c3", conditions: [
+                    {behavior: "b1", satisfied: [
+                        {component: "l1"},
+                    ]},
+                ]},
+            ]},
+        );
+    });
 });
