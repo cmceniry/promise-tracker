@@ -15,6 +15,7 @@ const behaviorSchema = {
     type: "object",
     properties: {
         name: {$ref: "/promise-tracker/behavior-name.json"},
+        comment: {type: "string"},
         conditions: {
             type: "array",
             items: {$ref: "/promise-tracker/behavior-name.json"},
@@ -31,6 +32,7 @@ const collectiveSchema = {
     properties: {
         kind: {enum: ["Collective"]},
         name: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+        comment: {type: "string"},
         componentNames: {
             type: "array",
             items: {type: "string", pattern: "^[A-Za-z0-9-]+"},
@@ -47,6 +49,7 @@ const componentSchema = {
     properties: {
         kind: {enum: ["Component"]},
         name: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+        comment: {type: "string"},
         wants: {
             type: "array",
             items: {$ref: "/promise-tracker/behavior.json"},
