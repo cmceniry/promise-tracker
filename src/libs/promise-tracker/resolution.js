@@ -24,6 +24,35 @@ export class Resolution {
     return this.satisfied.length > 0;
   }
 
+  isInsatiable() {
+    return this.satisfied.length === 0 && this.unsatisfied.length === 0;
+  }
+
+  // TODO
+  // This should be able to gather ANDs and ORs, but for now, it just gets
+  // everything that's at the leaf of unsatisfied
+  neededConditions() {
+    if (this.isInsatiable()) {
+      return [this.behavior];
+    }
+    var ret = [];
+    this.satisfied.forEach((s) => {
+      if (s.isUnconditional()) {
+        return;
+      }
+      s.conditions.forEach(c => {
+        ret = ret.concat(c.neededConditions());
+      });
+    });
+    this.unsatisfied.forEach((u) => {
+      // if it's here, it has to be conditional
+      u.conditions.forEach(c => {
+        ret = ret.concat(c.neededConditions());
+      });
+    });
+    return ret;
+  }
+
   prune() {
     const ret = new Resolution(this.behavior);
     ret.satisfied = this.satisfied.map((s) => {return s.prune()});
