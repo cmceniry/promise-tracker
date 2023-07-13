@@ -36,7 +36,7 @@ export default function workstream(input) {
   let connections = [];;
   const r = w(input);
   for (const c in r.components) {
-    subgraphs.push("subgraph " + c);
+    subgraphs.push(`subgraph "${c}"`);
     r.components[c].forEach((b) =>
       subgraphs.push(
         "  " + cryptojs.MD5(b).toString() + "[\"" + b + "\"]"
