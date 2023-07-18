@@ -1,4 +1,4 @@
-import { Behavior, Collective, Component } from './contract.js';
+import { Behavior, Collective, Component, compareBehavior } from './contract.js';
 import PromiseTracker from './promise-tracker.js';
 
 describe('Adding Components to Promise Tracker', () => {
@@ -99,6 +99,69 @@ describe('Adding Collectives to Promise Tracker', () => {
         expect(pt.getBehaviorProviders("b3")).toEqual([
             {behavior: new Behavior("b3", ["b2"]), componentName: "l1"}
         ]);
+    });
+
+    it('handling collective with instances', () => {
+        const pt = new PromiseTracker();
+        pt.add(new Component("c1", [], [new Behavior("b1", ["b2"])]));
+        pt.add(new Component("c2", [], [new Behavior("b2", ["b3", "b4", "b5"])]));
+        pt.add(new Component("c3", [], [new Behavior("b3")]));
+        pt.add(new Collective("l1", [], [
+            {
+                "name": "i1",
+                "components": ["c1", "c2", "c3", "c4"],
+                "providesTag": "pt1",
+                "conditionsTag": "ct1",
+            },
+            {
+                "name": "i2",
+                "components": ["c1", "c2", "c3", "c4"],
+                "providesTag": "pt2",
+                "conditionsTag": "ct2",
+            },
+        ]));
+        pt.add(new Component("c4", [], [new Behavior("b4")]));
+        pt.add(new Component("c5", [], [new Behavior("b5 | ct1")]));
+        expect(pt.getBehaviorNames()).toEqual([
+            "b1 | pt1", "b1 | pt2",
+            "b2 | pt1", "b2 | pt2",
+            "b3 | pt1", "b3 | pt2",
+            "b4 | pt1", "b4 | pt2",
+            "b5 | ct1", "b5 | ct2",
+        ]);
+        expect(pt.getBehaviorProviders("b1 | pt1")).toEqual([
+            {behavior: new Behavior("b1 | pt1", ["b5 | ct1"]), componentName: "i1"},
+        ]);
+        expect(pt.getBehaviorProviders("b3 | pt1")).toEqual([
+            {behavior: new Behavior("b3 | pt1"), componentName: "i1"},
+        ]);
+        expect(pt.getBehaviorProviders("b5 | ct1")).toEqual([
+            {behavior: new Behavior("b5 | ct1"), componentName: "c5"},
+        ]);
+        expect(pt.getBehaviorProviders("b1 | pt2")).toEqual([
+            {behavior: new Behavior("b1 | pt2", ["b5 | ct2"]), componentName: "i2"},
+        ]);
+        expect(pt.resolve("b1 | pt1")).toEqual(
+            {behavior: "b1 | pt1", satisfied: [
+                {component: "i1", conditions: [
+                    {behavior: "b5 | ct1", satisfied: [
+                        {component: "c5"},
+                    ]},
+                ]},
+            ]},
+        );
+        expect(pt.resolve("b3 | pt1")).toEqual(
+            {behavior: "b3 | pt1", satisfied: [
+                {component: "i1"},
+            ]},
+        );
+        expect(pt.resolve("b2 | pt2")).toEqual(
+            {behavior: "b2 | pt2", unsatisfied: [
+                {component: "i2", conditions: [
+                    {behavior: "b5 | ct2", unsatisfied: []},
+                ]},
+            ]},
+        );
     });
 });
 

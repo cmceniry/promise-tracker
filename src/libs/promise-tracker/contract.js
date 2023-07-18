@@ -36,7 +36,23 @@ const collectiveSchema = {
         componentNames: {
             type: "array",
             items: {type: "string", pattern: "^[A-Za-z0-9-]+"},
-        }
+        },
+        instances: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    name: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+                    providesTag: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+                    conditionsTag: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+                    components: {
+                        type: "array",
+                        items: {type: "string", pattern: "^[A-Za-z0-9-]+"},
+                    },
+                },
+                required: ["name"],
+            },
+        },
     },
     required: ["name"],
     additionalProperties: false,
@@ -96,6 +112,17 @@ export class Behavior {
     getBehaviorNames() {
         return [...(new Set([this.name, ...this.conditions]))].sort();
     }
+
+    instancize(providesTag, conditionsTag) {
+        if (providesTag) {
+            this.name = `${this.name} | ${providesTag}`;
+        };
+        if (conditionsTag) {
+            if (this.conditions) {
+                this.conditions = this.conditions.map((c) => `${c} | ${conditionsTag}`);
+            };
+        };
+    }
 }
 
 export function compareBehavior(E1, E2) {
@@ -105,12 +132,16 @@ export function compareBehavior(E1, E2) {
 }
 
 export class Collective {
-    constructor(name, componentNames) {
+    constructor(name, componentNames, instances) {
         this.name = name;
         this.componentNames = [];
+        this.instances = [];
         if (componentNames) {
             this.componentNames = [...componentNames];
         };
+        if (instances) {
+            this.instances = [...instances];
+        }
     }
 
     getName() {
@@ -118,7 +149,17 @@ export class Collective {
     }
 
     getComponentNames() {
-        return [...this.componentNames];
+        const ret = [...this.componentNames];
+        this.instances.forEach((i) => {
+            if (i.components) {
+                i.components.forEach((c) => ret.push(c));
+            };
+        });
+        return [...new Set(ret)].sort();
+    }
+
+    getInstanceNames() {
+        return this.instances.map((i) => `${i.name}`).sort();
     }
 }
 
@@ -152,19 +193,75 @@ export class Component {
     }
 
     getProvides(behaviorName) {
-        if (!behaviorName) {
-            return [...this.provides].sort(compareBehavior);
-        }
-        return (this.provides.filter((p) => p.name === behaviorName)).sort(compareBehavior);
+        const f = behaviorName ? (p) => p.name === behaviorName : (p) => true;
+        return this.provides.filter(f).map((p) => new Behavior(p.name, p.conditions)).sort(compareBehavior);
     }
 
     getWants(behaviorName) {
-        if (!behaviorName) {
-            return [...this.wants].sort(compareBehavior);
-        }
-        return (this.wants.filter((w) => w.name === behaviorName)).sort(compareBehavior);
+        const f = behaviorName ? (w) => w.name === behaviorName : (w) => true;
+        return this.wants.filter(f).map((w) => new Behavior(w.name, w.conditions)).sort(compareBehavior);
     }
 
+    addWants(wants) {
+        this.wants = [...this.wants, ...wants];
+    }
+
+    addProvides(provides) {
+        this.provides = [...this.provides, ...provides];
+    }
+
+    reduce() {
+        const reducedProvides = new Map();
+        const todoProvides = this.provides.map((p) => new Behavior(p.name, p.conditions));
+        const behaviors = [...new Set(this.provides.map((p) => p.getName()))];
+        var i = 0;
+        while (todoProvides.length > 0) {
+            // circular refence escape
+            if (i > 10) { return };
+            i++;
+            const cur = todoProvides.shift();
+            // if every condition points outside of this component, consider
+            // this provider to be reduced as much as it can be
+            if (cur.conditions.every((c) => !behaviors.includes(c))) {
+                const rp = reducedProvides.get(cur.name);
+                if (!rp) {
+                    reducedProvides.set(cur.name, [cur]);
+                } else {
+                    reducedProvides.set(cur.name, [...rp, cur]);
+                }
+                continue;
+            }
+            // if every condition points outside or points to a reduced
+            // provider, replace this condition with the dependent providers'
+            // conditions
+            // and do that for every dependent provider
+            if (cur.conditions.every((c) => !behaviors.includes(c) || reducedProvides.has(c))) {
+                const reducedConditionGroups = cur.conditions.map((c) => {
+                    if (!behaviors.includes(c)) {
+                        return [c];
+                    }
+                    return reducedProvides.get(c).map((b) => b.conditions);
+                })
+                    .reduce((a,c) => a.flatMap((x) => c.map((y) => [x,y].flat())))
+                    .map((conditions) => new Behavior(cur.name, conditions));
+                const rp = reducedProvides.get(cur.name);
+                if (!rp) {
+                    reducedProvides.set(cur.name, reducedConditionGroups);
+                } else {
+                    reducedProvides.set(cur.name, [...rp, ...reducedConditionGroups]);
+                }
+                continue;
+            };
+            // Put it back at the end of the list to try to reduce
+            todoProvides.push(cur);
+        }
+        this.provides = [...reducedProvides.values()].flat().sort(compareBehavior);
+        // TODO wants
+    }
+
+    instancize(providesTag, conditionsTag) {
+        this.provides.forEach((p) => p.instancize(providesTag, conditionsTag));
+    }
 }
 
 export class SchemaSyntaxError extends Error {
@@ -191,7 +288,7 @@ export function from_yaml(rawdata) {
         case "Component":
             return Component.from_object(d);
         case "Collective":
-            return new Collective(d.name, d.componentNames);
+            return new Collective(d.name, d.componentNames, d.instances);
         default:
             return null;
     }
@@ -217,7 +314,7 @@ export function allFromYAML(rawdata) {
                 c.push(Component.from_object(d));
                 return true;
             case "Collective":
-                c.push(new Collective(d.name, d.componentNames));
+                c.push(new Collective(d.name, d.componentNames, d.instances));
                 return true;
             default:
                 error = new Error(`Unknown kind ${d["kind"]}`, {id: idx});

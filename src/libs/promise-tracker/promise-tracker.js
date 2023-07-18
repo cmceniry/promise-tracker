@@ -49,19 +49,39 @@ export default class PromiseTracker {
 
     reComponentizeCollective(c) {
         this.removeWorkingComponent(c.name);
-        c.getComponentNames().forEach((cn) => {
-            this.removeWorkingComponent(cn);
-            const rcs = this.rawComponents.get(cn);
-            if (!rcs) {
-                return;
-            }
-            rcs.forEach((rc) => {
-                this.addWorkingComponent(new Component(
-                    c.name,
-                    rc.getWants(),
-                    rc.getProvides(),
-                ));
+        if (!(c.instances) || c.instances.length === 0) {
+            c.getComponentNames().forEach((cn) => {
+                this.removeWorkingComponent(cn);
+                const rcs = this.rawComponents.get(cn);
+                if (!rcs) {
+                    return;
+                }
+                rcs.forEach((rc) => {
+                    this.addWorkingComponent(new Component(
+                        c.name,
+                        rc.getWants(),
+                        rc.getProvides(),
+                    ));
+                });
             });
+        }
+        c.instances.forEach((i) => {
+            const ic = new Component(i.name);
+            this.removeWorkingComponent(i.name);
+            i.components.forEach((cn) => {
+                const rcs = this.rawComponents.get(cn);
+                if (!rcs) {
+                    return;
+                }
+                rcs.forEach((rc) => {
+                    ic.addWants(rc.getWants());
+                    ic.addProvides(rc.getProvides());
+                });
+                this.removeWorkingComponent(cn);
+            });
+            ic.reduce();
+            ic.instancize(i.providesTag, i.conditionsTag);
+            this.addWorkingComponent(ic);
         });
     }
 
@@ -106,11 +126,11 @@ export default class PromiseTracker {
 
     getBehaviorNames() {
         const cs = [...this.Components.values()];
-        return cs.flatMap(cArray => 
+        return [...new Set(cs.flatMap(cArray =>
             cArray.flatMap(c => 
                 c.getBehaviorNames()
             )
-        ).sort();
+        ))].sort();
     }
 
     getBehaviorProviders(behaviorName) {

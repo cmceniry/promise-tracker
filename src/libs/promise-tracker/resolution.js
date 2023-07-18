@@ -50,7 +50,7 @@ export class Resolution {
         ret = ret.concat(c.neededConditions());
       });
     });
-    return ret;
+    return [...new Set(ret)];
   }
 
   prune() {

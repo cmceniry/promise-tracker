@@ -97,8 +97,8 @@ provides:
 `;
         const c = from_yaml(input);
         expect(c.name).toEqual("a");
-        expect(c.wants[0].name).toEqual("b");
-        expect(c.provides[0].name).toEqual("d");
+        expect(c.wants[0].getName()).toEqual("b");
+        expect(c.provides[0].getName()).toEqual("d");
         expect(c.provides[0].conditions[0]).toEqual("c");
     });
 
@@ -117,7 +117,7 @@ foo: blah
 
     it('handles invalid name', () => {
         const input = `name: "#^)()"`;
-        expect(() => {from_yaml(input)}).toThrow(/^Schema Syntax Error$/);
+        expect(() => {allFromYAML(input)}).toThrow(/^Schema Syntax Error$/);
     });
 
     it('handles multiple yaml', () => {
@@ -144,6 +144,53 @@ name: a
     });
 });
 
+describe('reduction', () => {
+    it('handles simple', () => {
+        const input = `
+name: a
+provides:
+- name: a1
+  conditions:
+  - a2
+- name: a1
+  conditions:
+  - a5
+- name: a2
+  conditions:
+  - a3
+- name: a4
+  conditions:
+  - b1
+  - b2
+- name: a3
+  conditions:
+  - a4
+- name: c1
+  conditions:
+  - d1
+- name: c1
+  conditions:
+  - d2
+`;
+        var c = from_yaml(input);
+        expect(() => c.reduce()).not.toThrow();
+        expect(c).toEqual(
+            new Component("a",
+                [],
+                [
+                    new Behavior("a1", ["a5"]),
+                    new Behavior("a1", ["b1", "b2"]),
+                    new Behavior("a2", ["b1", "b2"]),
+                    new Behavior("a3", ["b1", "b2"]),
+                    new Behavior("a4", ["b1", "b2"]),
+                    new Behavior("c1", ["d1"]),
+                    new Behavior("c1", ["d2"]),
+                ],
+            )
+        );
+    });
+})
+
 // Test to verify that collectives are parsed correctly
 describe('collective parsing', () => {
     it('basic parse', () => {
@@ -157,5 +204,42 @@ componentNames:
         const c = from_yaml(input);
         expect(c.name).toEqual("a");
         expect(c.componentNames).toEqual(["b", "c"]);
+    });
+
+    it('handles instances', () => {
+        const input = `
+name: a
+kind: Collective
+instances:
+  - name: uvw
+    providesTag: uvw
+    conditionsTag: xyz
+    components:
+      - b
+      - c
+      - d
+  - name: opq
+    providesTag: opq
+    conditionsTag: rst
+    components:
+      - e
+      - f
+`;
+        var c = null;
+        expect(() => {c = from_yaml(input)}).not.toThrow();
+        expect(c.getName()).toEqual("a")
+        expect(c.getInstanceNames()).toEqual(["opq", "uvw"]);
+        expect(c.getComponentNames()).toEqual(["b", "c", "d", "e", "f"]);
+        expect(c.instances).toEqual([
+            {name: "uvw", providesTag: "uvw", conditionsTag: "xyz", components: ["b","c","d"]},
+            {name: "opq", providesTag: "opq", conditionsTag: "rst", components: ["e","f"]},
+        ]);
+        const d = allFromYAML(input);
+        expect(d[0].getName()).toEqual("a")
+        expect(d[0].instances).toEqual([
+            {name: "uvw", providesTag: "uvw", conditionsTag: "xyz", components: ["b","c","d"]},
+            {name: "opq", providesTag: "opq", conditionsTag: "rst", components: ["e","f"]},
+        ]);
+
     });
 });
