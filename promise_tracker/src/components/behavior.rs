@@ -20,15 +20,11 @@ impl Behavior {
   }
 
   pub fn get_name(&self) -> String {
-    format!("{}", self.name)
+    self.name.clone()
   }
 
   pub fn get_conditions(&self) -> Vec<String> {
-    let mut ret: Vec<String> = vec!();
-    for c in &self.conditions {
-      ret.push(format!("{}", c));
-    }
-    ret
+    self.conditions.clone()
   }
 
   pub fn is_unconditional(&self) -> bool {

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 use crate::components::behavior::Behavior;
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq,Clone)]
 #[derive(Deserialize,Serialize)]
 #[derive(JsonSchema)]
 pub struct Agent {
@@ -25,7 +25,7 @@ impl Agent {
   }
 
   fn get_name(&self) -> String {
-    format!("{}", self.name)
+    self.name.clone()
   }
 
 }
