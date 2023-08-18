@@ -4,12 +4,17 @@ import ContractCarder from './components/ContractCarder';
 import ContractGrapher from './components/ContractGrapher';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Container, Row, Col } from 'react-bootstrap';
+import init, { greet } from './wptpkg';
 
 function App() {
   const [contracts, setContracts] = useState([]);
   const simulations = ["A", "B", "C"];
 
   useEffect(() => {
+    (async function () {
+      await init();
+      greet("WebAssembly");
+    })();
     const c = localStorage.getItem('contracts');
     if (c) {
       try {
