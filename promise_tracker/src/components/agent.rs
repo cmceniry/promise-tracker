@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 use crate::components::behavior::Behavior;
 
-#[derive(Debug,PartialEq,Clone)]
+#[derive(Debug,PartialEq,Eq,Clone)]
 #[derive(Deserialize,Serialize)]
 #[derive(JsonSchema)]
 pub struct Agent {
@@ -16,7 +16,7 @@ pub struct Agent {
 }
 
 impl Agent {
-  fn new(name: String) -> Agent {
+  pub fn new(name: String) -> Agent {
     Agent{
       name: name,
       provides: vec!(),
@@ -24,8 +24,16 @@ impl Agent {
     }
   }
 
-  fn get_name(&self) -> String {
-    self.name.clone()
+  pub fn get_name(&self) -> &String {
+    &self.name
+  }
+
+  pub fn add_provide(&mut self, p: Behavior) {
+    self.provides.push(p)
+  }
+
+  pub fn add_want(&mut self, w: Behavior) {
+    self.provides.push(w)
   }
 
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq,Eq)]
 #[derive(Deserialize,Serialize,Clone)]
 #[derive(JsonSchema)]
 pub struct Behavior {
@@ -19,8 +19,15 @@ impl Behavior {
     }
   }
 
-  pub fn get_name(&self) -> String {
-    self.name.clone()
+  pub fn new_with_conditions(name: String, conditions: Vec<String>) -> Behavior {
+    Behavior{
+      name: name,
+      conditions: conditions,
+    }
+  }
+
+  pub fn get_name(&self) -> &String {
+    &self.name
   }
 
   pub fn get_conditions(&self) -> Vec<String> {
