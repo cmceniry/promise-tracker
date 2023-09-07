@@ -7,6 +7,7 @@ pub mod components;
 use components::SuperAgent;
 use components::Agent;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 pub struct Tracker {
   available_agents: Vec<Agent>,
@@ -48,14 +49,13 @@ impl Tracker {
     ret
   }
 
-  pub fn get_working_behaviors(&self) -> Vec<String> {
-    let mut ret = vec!();
-    for (_, a) in &self.working_agents {
-      for c in a.get_conditions() {
-        c.get
+  pub fn get_working_behaviors(&self) -> HashSet<String> {
+    let mut ret = HashSet::new();
+    for (_, variants) in &self.working_agents {
+      for variant_agent in variants {
+        ret.extend(variant_agent.get_behaviors());
       }
     }
-    ret.sort();
     ret
   }
 
@@ -74,16 +74,21 @@ mod tests {
       available_superagents: vec!(),
       working_agents: HashMap::new(),
     };
-    t.add_agent(Agent::new(String::from("abcd")));
-    t.add_agent(Agent::new(String::from("ijkl")));
-    let mut a = Agent::new(String::from("efgh"));
-    a.add_provide(Behavior::new_with_conditions(String::from("b1"), vec!(String::from("c1"))));
-    // a.add_provide(Behavior::new_with_conditions(name: String::from("b1"), conditions: vec!(String::from("c1"))));
-    // a.add_provide(Behavior::new_with_conditions(name: String::from("b2"), conditions: vec!(String::from("c2"))));
+    let mut a = Agent::new(String::from("abcd"));
+    a.add_provide(Behavior::new_with_conditions(String::from("ba"), vec!()));
     t.add_agent(a);
+    t.add_agent(Agent::new(String::from("ijkl")));
+    let mut b = Agent::new(String::from("efgh"));
+    b.add_provide(Behavior::new_with_conditions(String::from("b1"), vec!(String::from("c1"))));
+    b.add_provide(Behavior::new_with_conditions(String::from("b2"), vec!(String::from("c2"))));
+    t.add_agent(b);
 
     assert_eq!(t.get_agent_names(), vec!("abcd", "efgh", "ijkl"));
     assert_eq!(t.get_working_agent_names(), vec!("abcd", "efgh", "ijkl"));
-    assert_eq!(t.get_working_behaviors(), vec!["b1", "b2"]);
+    let expected_behaviors: HashSet<String> = HashSet::from(["b1", "b2", "ba", "c1", "c2"])
+      .iter()
+      .map(|x| x.to_string())
+      .collect();
+    assert_eq!(t.get_working_behaviors(), expected_behaviors);
   }
 }
