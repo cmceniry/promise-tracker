@@ -29,12 +29,16 @@ impl Agent {
     &self.name
   }
 
+  pub fn is_wants_empty(&self) -> bool {
+    self.wants.len() == 0
+  }
+
   pub fn add_provide(&mut self, p: Behavior) {
     self.provides.push(p)
   }
 
   pub fn add_want(&mut self, w: Behavior) {
-    self.provides.push(w)
+    self.wants.push(w)
   }
 
   pub fn get_conditions(&self) -> HashSet<String> {
@@ -70,17 +74,52 @@ mod tests {
 
   #[test]
   fn simple() {
-    let a = Agent::new(String::from("foo"));
+    let mut a = Agent::new(String::from("foo"));
     assert_eq!(a.name, "foo");
     assert_eq!(a.get_name(), "foo");
+    assert!(a.is_wants_empty());
+
+    a.add_want(Behavior::new(String::from("w1")));
+    assert_eq!(a.wants, vec!(Behavior::new(String::from("w1"))));
+    assert!(!a.is_wants_empty());
+
+    assert_eq!(a.provides, vec!());
+    a.add_provide(Behavior::new(String::from("p1")));
+    a.add_provide(Behavior::new_with_conditions(String::from("p2"), vec!(String::from("c1"), String::from("c2"))));
+    assert_eq!(
+      a.provides,
+      vec!(
+        Behavior::new(String::from("p1")),
+        Behavior::new_with_conditions(
+          String::from("p2"),
+          vec!(String::from("c1"), String::from("c2")),
+        ),
+      ),
+    );
   }
 
   #[test]
   fn simple_from_yaml() {
-    let a:Agent = serde_yaml::from_str("name: foo").expect("Unable to parse");
+    let a:Agent = serde_yaml::from_str("name: foo
+provides:
+  - name: p2
+    conditions:
+      - c2
+      - c1
+  - name: p1
+wants:
+  - name: w2
+  - name: w1
+").expect("Unable to parse");
     assert_eq!(a.name, "foo");
-    assert_eq!(a.provides, vec!());
-    assert_eq!(a.wants, vec!());
+    assert_eq!(a.provides, vec!(
+      Behavior::new_with_conditions(String::from("p2"), vec!(String::from("c2"), String::from("c1"))),
+      Behavior::new(String::from("p1")),
+    ));
+    assert_eq!(a.wants, vec!(
+      Behavior::new(String::from("w2")),
+      Behavior::new(String::from("w1")),
+    ));
   }
 
   #[test]
@@ -136,10 +175,5 @@ wants:
       .collect();
     assert_eq!(a.get_behaviors(), expected);
   }
-
-  // #[test]
-  // fn deep_from_yaml() {
-  //   let a:Agent = serde_yaml
-  // }
 
 }

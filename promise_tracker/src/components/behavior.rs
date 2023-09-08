@@ -12,7 +12,7 @@ pub struct Behavior {
 }
 
 impl Behavior {
-  fn new(name: String) -> Behavior {
+  pub fn new(name: String) -> Behavior {
     Behavior{
       name: name,
       conditions: vec!(),
