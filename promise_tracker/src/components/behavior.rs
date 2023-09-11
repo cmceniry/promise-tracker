@@ -37,6 +37,11 @@ impl Behavior {
   pub fn is_unconditional(&self) -> bool {
     self.conditions.len() == 0
   }
+
+  pub fn has_behavior(&self, behavior_name: &String) -> bool {
+    self.name == *behavior_name || self.conditions.iter().any(|x| x == behavior_name)
+  }
+
 }
 
 #[cfg(test)]
@@ -60,6 +65,11 @@ mod tests {
     let p:Behavior = serde_yaml::from_str("name: foo\nconditions:\n  - bar\n  - baz").expect("Unable to parse");
     assert!(p.name == "foo");
     assert!(p.conditions == ["bar", "baz"]);
+    
+    assert!(p.has_behavior(&String::from("foo")));
+    assert!(p.has_behavior(&String::from("bar")));
+    assert!(p.has_behavior(&String::from("baz")));
+    assert!(!p.has_behavior(&String::from("blah")));
   }
 
   #[test]

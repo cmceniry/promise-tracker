@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
-use std::collections::HashSet;
+use std::{collections::HashSet, hash::Hash};
 use crate::components::behavior::Behavior;
 
 #[derive(Debug,PartialEq,Eq,Clone)]
@@ -41,12 +41,25 @@ impl Agent {
     self.wants.push(w)
   }
 
+  pub fn has_behavior(&self, behavior_name: &String) -> bool {
+    self.provides.iter().any(|x| x.has_behavior(behavior_name)) ||
+    self.wants.iter().any(|x| x.get_name() == behavior_name)
+  }
+
   pub fn get_conditions(&self) -> HashSet<String> {
     let mut ret = HashSet::new();
     for p in &self.provides {
       for c in p.get_conditions() {
         ret.insert(c.clone());
       }
+    }
+    ret
+  }
+
+  pub fn get_wants(&self) -> HashSet<String> {
+    let mut ret = HashSet::new();
+    for w in &self.wants {
+      ret.insert(w.get_name().clone());
     }
     ret
   }
@@ -81,11 +94,19 @@ mod tests {
 
     a.add_want(Behavior::new(String::from("w1")));
     assert_eq!(a.wants, vec!(Behavior::new(String::from("w1"))));
+    assert_eq!(a.get_wants(), HashSet::from([String::from("w1")]));
     assert!(!a.is_wants_empty());
 
     assert_eq!(a.provides, vec!());
     a.add_provide(Behavior::new(String::from("p1")));
     a.add_provide(Behavior::new_with_conditions(String::from("p2"), vec!(String::from("c1"), String::from("c2"))));
+    assert!(a.has_behavior(&String::from("p1")));
+    assert!(a.has_behavior(&String::from("p2")));
+    assert!(a.has_behavior(&String::from("c1")));
+    assert!(a.has_behavior(&String::from("c2")));
+    assert!(!a.has_behavior(&String::from("c3")));
+    assert!(a.has_behavior(&String::from("w1")));
+    assert!(!a.has_behavior(&String::from("w2")));
     assert_eq!(
       a.provides,
       vec!(

@@ -61,8 +61,8 @@ export default function ContractGrapher({contracts, simulations}) {
 
     let wants = [];
     let wantsValid = false;
-    if (pt && dComponent !== "---" && pt.Components.get(dComponent)) {
-        const behaviorOptions = pt.Components.get(dComponent).map((c) => c.getWants().map((b) => b.name)).flat();
+    if (pt && dComponent !== "---" && pt.Components.get(dComponent)) { // TODO: ptrs - tracker.has_component
+        const behaviorOptions = pt.Components.get(dComponent).map((c) => c.getWants().map((b) => b.name)).flat(); // TODO: ptrs - tracker.get_component_wants(component_name)
         if (behaviorOptions.length === 0) {
             wants =  [{value: "---", display: "This component has no wants entries"}];
         } else {
@@ -80,7 +80,7 @@ export default function ContractGrapher({contracts, simulations}) {
         <Form>
             <Form.Select onChange={updateDComponent}>
                 <option value="---" >Select a Component</option>
-                {pt.getComponentNames().map((cName, i) =>
+                {pt.getComponentNames().map((cName, i) => // TODO: ptrs - tracker.get_component_names()
                     <option key={i} value={cName}>{cName}</option>
                 )}
             </Form.Select>
