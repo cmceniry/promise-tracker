@@ -25,6 +25,20 @@ impl Agent {
     }
   }
 
+  pub fn build(name: &str) -> Agent {
+    Agent::new(String::from(name))
+  }
+
+  pub fn with_provides(mut self, provides: Vec<Behavior>) -> Agent {
+    self.provides = provides;
+    self
+  }
+
+  pub fn with_wants(mut self, wants: Vec<Behavior>) -> Agent {
+    self.wants = wants;
+    self
+  }
+
   pub fn get_name(&self) -> &String {
     &self.name
   }
@@ -62,6 +76,20 @@ impl Agent {
       ret.insert(w.get_name().clone());
     }
     ret
+  }
+
+  pub fn get_provides(&self, behavior_name: &str) -> Option<HashSet<Behavior>> {
+    let mut ret = HashSet::new();
+    for b in self.provides.iter() {
+      if b.get_name() == behavior_name {
+        ret.insert(b.clone());
+      }
+    }
+    if ret.len() > 0 {
+      Some(ret)
+    } else {
+      None
+    }
   }
 
   pub fn get_behaviors(&self) -> HashSet<String> {

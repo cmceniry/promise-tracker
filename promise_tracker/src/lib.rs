@@ -9,6 +9,11 @@ use components::Agent;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+pub mod resolve;
+use resolve::Resolution;
+use resolve::Offer;
+
+#[derive(Debug)]
 pub struct Tracker {
   available_agents: Vec<Agent>,
   available_superagents: Vec<SuperAgent>,
@@ -17,7 +22,6 @@ pub struct Tracker {
 
 // Need:
 // - TODO - schema validation  - ContractCarder
-// - TODO - tracker.resolve(behavior_name, root_component)
 // - TODO ptdiagram?
 
 impl Tracker {
@@ -100,7 +104,40 @@ impl Tracker {
     ret
   }
 
+  // As a rule of thumb:
+  // - satisfied conditions will result in an Offer
+  // - unsatisfied conditions will result in an Resolution
+  pub fn resolve(&self, behavior_name: &str) -> Resolution {
+    let mut r = Resolution::new(behavior_name);
+    for (agent_name, variants) in &self.working_agents {
+      for variant_agent in variants {
+        if let Some(behaviors) = variant_agent.get_provides(behavior_name) {
+          for b in behaviors {
+            // if unconditional, add this as a satisfied Offer
+            if b.is_unconditional() {
+              r = r.add_satisfying_offer(Offer::new(agent_name));
+              continue;
+            }
+            // resolve conditions
+            let resolved_conditions = b.get_conditions().iter()
+              .map(|c| self.resolve(c))
+              .collect::<Vec<Resolution>>();
+            // if all conditions are satisfied, add this as a satisfied Offer
+            if resolved_conditions.iter().all(|x| x.is_satisfied()) {
+              r = r.add_satisfying_offer(Offer::new_conditional(agent_name, resolved_conditions));
+            // otherwise, add this as an unsatisfied Offer
+            } else {
+              r = r.add_unsatisfying_offer(Offer::new_conditional(agent_name, resolved_conditions));
+            }
+          }
+        }
+      }
+    }
+    r
+  }
+
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -176,6 +213,165 @@ mod tests {
     assert_eq!(t.get_agent_wants(String::from("efgh")), HashSet::from([
       String::from("efgh_w3"),
     ]));
+  }
+
+  #[test]
+  fn test_simple_resolve() {
+    let mut t = Tracker::new();
+    t.add_agent(Agent::build("a1")
+      .with_provides(vec!(
+        Behavior::build("b1"),
+      ))
+    );
+    assert_eq!(t.resolve("b1"), Resolution::new("b1")
+      .add_satisfying_offer(Offer::new("a1")));
+
+    t.add_agent(Agent::build("a2")
+      .with_provides(vec!(
+        Behavior::build("b1")
+          .with_conditions(vec!(String::from("b2"))),
+      ))
+    );
+    assert_eq!(t.resolve("b1"), Resolution::new("b1")
+      .add_satisfying_offer(Offer::new("a1"))
+      .add_unsatisfying_offer(Offer::new_conditional("a2", vec!(Resolution::new("b2"))))
+    );
+
+    t.add_agent(Agent::build("a3")
+      .with_provides(vec!(
+        Behavior::build("b2")
+      ))
+    );
+    assert_eq!(t.resolve("b1"), Resolution::new("b1")
+      .add_satisfying_offer(Offer::new("a1"))
+      .add_satisfying_offer(Offer::new_conditional("a2", vec!(Resolution::new("b2")
+        .add_satisfying_offer(Offer::new("a3"))
+      )))
+    );
+  }
+
+  #[test]
+  fn test_resolve_multiple_satisfying() {
+    let mut t = Tracker::new();
+    t.add_agent(Agent::build("a1")
+      .with_provides(vec!(
+        Behavior::build("b1"),
+      ))
+    );
+    t.add_agent(Agent::build("a2")
+      .with_provides(vec!(
+        Behavior::build("b1"),
+      ))
+    );
+    t.add_agent(Agent::build("a3")
+      .with_provides(vec!(
+        Behavior::build("b1"),
+      ))
+    );
+    let resolve_b1 = Resolution::new("b1")
+      .add_satisfying_offer(Offer::new("a1"))
+      .add_satisfying_offer(Offer::new("a2"))
+      .add_satisfying_offer(Offer::new("a3"));
+    assert_eq!(t.resolve("b1"), resolve_b1);
+  }
+
+  #[test]
+  fn test_resolve_unsatisfied() {
+    let mut t = Tracker::new();
+    t.add_agent(Agent::build("a1")
+      .with_provides(vec!(
+        Behavior::build("b1")
+          .with_conditions(vec!(String::from("b2a"), String::from("b2b"))),
+      ))
+    );
+    t.add_agent(Agent::build("a2")
+      .with_provides(vec!(
+        Behavior::build("b2a"),
+      ))
+    );
+
+    assert_eq!(t.resolve("b1"), Resolution::new("b1")
+      .add_unsatisfying_offer(
+        Offer::new_conditional("a1", vec!(
+          Resolution::new("b2a")
+            .add_satisfying_offer(Offer::new("a2"))
+          ,
+          Resolution::new("b2b")
+          ,
+      )))
+    )
+  }
+
+  #[test]
+  fn test_resolve_deep() {
+    let mut t = Tracker::new();
+    t.add_agent(Agent::build("a1")
+      .with_provides(vec!(
+        Behavior::build("b1")
+          .with_conditions(vec!(String::from("b2"))),
+      ))
+    );
+    t.add_agent(Agent::build("a2")
+      .with_provides(vec!(
+        Behavior::build("b2")
+          .with_conditions(vec!(String::from("b3"))),
+      ))
+    );
+    t.add_agent(Agent::build("a3")
+      .with_provides(vec!(
+        Behavior::build("b3")
+          .with_conditions(vec!(String::from("b4"))),
+      ))
+    );
+    t.add_agent(Agent::build("a4")
+      .with_provides(vec!(
+        Behavior::build("b4"),
+      ))
+    );
+    let satisfied_part = Resolution::new("b1")
+      .add_satisfying_offer(
+        Offer::new_conditional("a1", vec!(
+          Resolution::new("b2")
+            .add_satisfying_offer(
+              Offer::new_conditional("a2", vec!(
+                Resolution::new("b3")
+                  .add_satisfying_offer(
+                    Offer::new_conditional("a3", vec!(
+                      Resolution::new("b4")
+                        .add_satisfying_offer(Offer::new("a4"))
+                    ))
+                  )
+              ))
+            )
+        ))
+      );
+    assert_eq!(t.resolve("b1"), satisfied_part);
+    t.add_agent(Agent::build("a0")
+      .with_provides(vec!(
+        Behavior::build("b0")
+          .with_conditions(vec!(
+            String::from("b1"),
+            String::from("b1b"),
+          )),
+      ))
+    );
+    t.add_agent(Agent::build("a1b")
+      .with_provides(vec!(
+        Behavior::build("b1b")
+          .with_conditions(vec!(String::from("b2b"))),
+      ))
+    );
+    assert_eq!(t.resolve("b0"), Resolution::new("b0")
+      .add_unsatisfying_offer(Offer::new_conditional("a0", vec!(
+        satisfied_part,
+        Resolution::new("b1b")
+          .add_unsatisfying_offer(
+            Offer::new_conditional("a1b", vec!(
+              Resolution::new("b2b")
+            ))
+          )
+      )))
+    );
   }
 
 }

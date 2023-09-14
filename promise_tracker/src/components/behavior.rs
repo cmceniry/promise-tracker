@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 
 #[derive(Debug,PartialEq,Eq)]
-#[derive(Deserialize,Serialize,Clone)]
+#[derive(Deserialize,Serialize,Clone,Hash)]
 #[derive(JsonSchema)]
 pub struct Behavior {
   name: String,
@@ -24,6 +24,14 @@ impl Behavior {
       name: name,
       conditions: conditions,
     }
+  }
+
+  pub fn build(name: &str) -> Behavior {
+    Behavior::new(String::from(name))
+  }
+  pub fn with_conditions(mut self, conditions: Vec<String>) -> Behavior {
+    self.conditions = conditions;
+    self
   }
 
   pub fn get_name(&self) -> &String {
