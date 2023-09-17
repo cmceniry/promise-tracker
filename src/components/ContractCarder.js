@@ -1,11 +1,25 @@
 import React from 'react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, Button } from 'react-bootstrap';
 import ContractCard from './ContractCard'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
 
-export default function ContractCarder({contracts, setContracts, simulations}) {
+import yaml from 'js-yaml';
+import Ajv from 'ajv';
+
+export default function ContractCarder({contracts, setContracts, simulations, schema}) {
   const [selectedFile, setSelectedFile] = useState();
+  const [ajv, setAjv] = useState();
+
+  useEffect(() => {
+    if (!schema) {
+      return;
+    }
+    setAjv(new Ajv({
+      schemas: [schema],
+      discriminator: true,
+    }));
+  }, [schema]);
 
   const updateFilename = (e) => {
     e.preventDefault();
@@ -26,14 +40,27 @@ export default function ContractCarder({contracts, setContracts, simulations}) {
       let err = null;
       try {
         if (e.target.value) {
-          allFromYAML(e.target.value);
-        };
+          // allFromYAML(e.target.value);
+          if (!schema) {
+            throw new Error("No schema loaded");
+          }
+          const allDocs = yaml.loadAll(e.target.value);
+          const validate = ajv.getSchema("/promise-tracker.json");
+          allDocs.every((d, idx) => {
+            const valid = validate(d);
+            if (valid) {
+              return true;
+            }
+            err = `SchemaSyntaxError: Document ${idx}: ${validate.errors[0].instancePath} ${validate.errors[0].message}`;
+            return false;
+          });
+        }
       } catch (e) {
         if (e instanceof SchemaSyntaxError) {
           if (e.errors[0].message.match(/^must be/)) {
             err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
           } else {
-            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].message}`;
+            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
           };
         } else {
           err = e.toString();

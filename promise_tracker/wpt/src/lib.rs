@@ -1,26 +1,43 @@
 use wasm_bindgen::prelude::*;
+use schemars::JsonSchema;
+use serde_json::{self};
+use promise_tracker::components::Agent;
+use promise_tracker::components::SuperAgent;
+use promise_tracker;
 
-#[wasm_bindgen]
-extern "C" {
-    fn alert(s: &str);
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+#[serde(deny_unknown_fields)]
+enum PTComponent {
+    SuperAgent(SuperAgent),
+    Agent(Agent),
 }
 
 #[wasm_bindgen]
-pub fn greet(name: &str) {
-    alert(&format!("Hello, {}!", name));
+pub fn get_schema() -> String {
+    let schema = schemars::schema_for!(PTComponent);
+    serde_json::to_string_pretty(&schema).unwrap()
 }
 
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+#[wasm_bindgen]
+pub struct PT {
+    tracker: promise_tracker::Tracker,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[wasm_bindgen]
+pub fn get_pt() -> PT {
+    PT {
+        tracker: promise_tracker::Tracker::new(),
+    }
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+#[wasm_bindgen]
+impl PT {
+    pub fn add_stuff(& mut self, input: &str) {
+        self.tracker.add_agent(Agent::build(input));
+    }
+
+    pub fn check(&self, input: &str) -> bool {
+        self.tracker.has_agent(String::from(input))
     }
 }
