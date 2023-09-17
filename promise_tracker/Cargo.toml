@@ -13,5 +13,5 @@ serde_yaml = "0.9.25"
 
 [workspace]
 members = [
-  "cli", "schema",
+  "cli",
 ]
