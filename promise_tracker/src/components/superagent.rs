@@ -40,6 +40,10 @@ impl SuperAgent {
       instances: vec!(),
     }
   }
+
+  pub fn get_name(&self) -> &String {
+    &self.name
+  }
 }
 
 #[cfg(test)]
