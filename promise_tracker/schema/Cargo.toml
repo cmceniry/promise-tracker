@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 promise_tracker = { path = "../" }
 schemars = "0.8.12"
+serde = "1.0.188"
 serde_json = "1.0.104"
