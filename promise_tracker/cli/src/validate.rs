@@ -15,7 +15,7 @@ pub fn command(parameters: &Parameters) {
             Err(e) => {
                 println!("Error: {}", e);
                 process::exit(1);
-            },
+            }
         };
         for document in serde_yaml::Deserializer::from_str(&contents) {
             match promise_tracker::components::Item::deserialize(document) {

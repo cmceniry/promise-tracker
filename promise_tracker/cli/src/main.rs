@@ -23,10 +23,10 @@ fn main() {
     match &cli.command {
         Some(Command::Schema {}) => {
             schema::command();
-        },
+        }
         Some(Command::Validate(parameters)) => {
             validate::command(parameters);
-        },
-        None => {},
+        }
+        None => {}
     }
 }

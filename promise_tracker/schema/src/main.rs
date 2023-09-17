@@ -1,9 +1,9 @@
-use schemars::{schema_for,JsonSchema};
+use schemars::{schema_for, JsonSchema};
 use serde;
 use serde_json::{self};
 
-use promise_tracker::components::SuperAgent;
 use promise_tracker::components::Agent;
+use promise_tracker::components::SuperAgent;
 
 #[derive(JsonSchema)]
 #[serde(tag = "kind")]
