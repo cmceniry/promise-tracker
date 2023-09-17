@@ -6,6 +6,7 @@ use crate::components::behavior::Behavior;
 #[derive(Debug,PartialEq,Eq,Clone)]
 #[derive(Deserialize,Serialize)]
 #[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Agent {
   name: String,
 

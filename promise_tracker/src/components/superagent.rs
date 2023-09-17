@@ -5,6 +5,7 @@ use crate::components::behavior::Behavior;
 #[derive(Debug,PartialEq,Clone)]
 #[derive(Deserialize,Serialize)]
 #[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SuperAgentInstance {
   name: String,
   provides_tag: String,
@@ -20,6 +21,7 @@ struct SuperAgentInstance {
 #[derive(Debug,PartialEq)]
 #[derive(Deserialize,Serialize)]
 #[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SuperAgent {
   name: String,
 

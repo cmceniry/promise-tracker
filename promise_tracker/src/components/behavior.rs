@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 #[derive(Debug,PartialEq,Eq)]
 #[derive(Deserialize,Serialize,Clone,Hash)]
 #[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Behavior {
   name: String,
 
