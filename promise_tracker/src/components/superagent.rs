@@ -16,7 +16,7 @@ struct SuperAgentInstance {
     wants: Vec<Behavior>,
 }
 
-#[derive(Debug, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SuperAgent {
     name: String,

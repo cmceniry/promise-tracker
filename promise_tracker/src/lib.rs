@@ -4,6 +4,7 @@
 pub mod components;
 
 use components::Agent;
+use components::Item;
 use components::SuperAgent;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -44,6 +45,23 @@ impl Tracker {
         }
         let _ = &self.available_agents.push(a.clone());
         self.add_working_agent(a);
+    }
+
+    pub fn add_superagent(&mut self, sa: SuperAgent) {
+        for existing in &self.available_superagents {
+            if existing == &sa {
+                return;
+            }
+        }
+        let _ = &self.available_superagents.push(sa.clone());
+        // TODO - refresh working_agents
+    }
+
+    pub fn add_item(&mut self, i: Item) {
+        match i {
+            Item::Agent(a) => self.add_agent(a),
+            Item::SuperAgent(sa) => self.add_superagent(sa),
+        }
     }
 
     pub fn get_agent_names(&self) -> Vec<&String> {
