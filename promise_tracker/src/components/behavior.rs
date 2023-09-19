@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct Behavior {
     name: String,
+    #[serde(default)]
+    comment: String,
 
     #[serde(default)]
     conditions: Vec<String>,
@@ -14,6 +16,7 @@ impl Behavior {
     pub fn new(name: String) -> Behavior {
         Behavior {
             name: name,
+            comment: String::from(""),
             conditions: vec![],
         }
     }
@@ -21,6 +24,7 @@ impl Behavior {
     pub fn new_with_conditions(name: String, conditions: Vec<String>) -> Behavior {
         Behavior {
             name: name,
+            comment: String::from(""),
             conditions: conditions,
         }
     }
@@ -71,6 +75,7 @@ mod tests {
         let p: Behavior = serde_yaml::from_str("name: foo\nconditions:\n  - bar\n  - baz")
             .expect("Unable to parse");
         assert!(p.name == "foo");
+        assert!(p.comment == "");
         assert!(p.conditions == ["bar", "baz"]);
 
         assert!(p.has_behavior(&String::from("foo")));
@@ -83,6 +88,7 @@ mod tests {
     fn is_conditional() {
         let p = Behavior {
             name: String::from("a"),
+            comment: String::from(""),
             conditions: [].to_vec(),
         };
         assert!(p.is_unconditional());

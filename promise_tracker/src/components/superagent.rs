@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 struct SuperAgentInstance {
     name: String,
+    #[serde(default)]
+    comment: String,
     provides_tag: String,
     conditions_tag: String,
 
@@ -61,6 +63,7 @@ mod tests {
         let j = serde_json::to_string(&json!({
           "name": "j",
           "agents": ["a1", "a2"],
+          "comment": "this is a comment",
           "instances": [
             {
               "name": "i1",
@@ -79,6 +82,7 @@ mod tests {
         assert_eq!(s.name, "j");
         assert_eq!(s.agents, ["a1", "a2"]);
         assert_eq!(s.instances[0].name, "i1");
+        assert_eq!(s.instances[0].comment, "this is a comment");
         assert_eq!(s.instances[0].provides[0].get_name(), "p1");
         assert_eq!(s.instances[0].provides[1].get_conditions(), ["c1", "c2"]);
     }

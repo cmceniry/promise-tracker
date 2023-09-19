@@ -7,6 +7,8 @@ use std::{collections::HashSet, hash::Hash};
 #[serde(deny_unknown_fields)]
 pub struct Agent {
     name: String,
+    #[serde(default)]
+    comment: String,
 
     #[serde(default)]
     provides: Vec<Behavior>,
@@ -19,6 +21,7 @@ impl Agent {
     pub fn new(name: String) -> Agent {
         Agent {
             name: name,
+            comment: String::from(""),
             provides: vec![],
             wants: vec![],
         }
@@ -115,6 +118,7 @@ mod tests {
     fn simple() {
         let mut a = Agent::new(String::from("foo"));
         assert_eq!(a.name, "foo");
+        assert_eq!(a.comment, "");
         assert_eq!(a.get_name(), "foo");
         assert!(a.is_wants_empty());
 
@@ -152,6 +156,7 @@ mod tests {
     fn simple_from_yaml() {
         let a: Agent = serde_yaml::from_str(
             "name: foo
+comment: this is a comment
 provides:
   - name: p2
     conditions:
@@ -165,6 +170,7 @@ wants:
         )
         .expect("Unable to parse");
         assert_eq!(a.name, "foo");
+        assert_eq!(a.comment, "this is a comment");
         assert_eq!(
             a.provides,
             vec!(
