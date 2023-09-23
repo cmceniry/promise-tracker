@@ -142,6 +142,7 @@ mod tests {
         conditions.insert(String::from("c2"));
     }
 
+    #[test]
     fn test_make_instance() {
         let p = Behavior {
             name: String::from("b1"),

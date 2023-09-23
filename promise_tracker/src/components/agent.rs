@@ -1,7 +1,7 @@
 use crate::components::behavior::Behavior;
-use schemars::{visit::ReplaceBoolSchemas, JsonSchema};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, collections::VecDeque, hash::Hash};
+use std::collections::HashSet;
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

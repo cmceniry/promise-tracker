@@ -47,6 +47,9 @@ pub struct SuperAgent {
     name: String,
 
     #[serde(default)]
+    comment: String,
+
+    #[serde(default)]
     agents: Vec<String>,
 
     #[serde(default)]
@@ -57,6 +60,7 @@ impl SuperAgent {
     pub fn new(name: String) -> SuperAgent {
         SuperAgent {
             name: name,
+            comment: String::from(""),
             agents: vec![],
             instances: vec![],
         }
@@ -113,7 +117,6 @@ impl SuperAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::Agent;
     use crate::components::Behavior;
     use serde_json::json;
     use serde_yaml::{self};
@@ -127,6 +130,7 @@ mod tests {
         assert_eq!(s.instances, vec!());
     }
 
+    #[test]
     fn deep_from_yaml() {
         let j = serde_json::to_string(&json!({
           "name": "j",
@@ -135,8 +139,9 @@ mod tests {
           "instances": [
             {
               "name": "i1",
-              "provides_tag": "jp",
-              "conditions_tag": "jc",
+              "comment": "this is a comment",
+              "providesTag": "jp",
+              "conditionsTag": "jc",
               "provides": [
                 {"name": "p1"},
                 {"name": "p2", "conditions": ["c1", "c2"]},
