@@ -1,7 +1,7 @@
 use crate::components::behavior::Behavior;
-use schemars::JsonSchema;
+use schemars::{visit::ReplaceBoolSchemas, JsonSchema};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, hash::Hash};
+use std::{collections::HashSet, collections::VecDeque, hash::Hash};
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +94,14 @@ impl Agent {
         }
     }
 
+    pub fn get_all_provides(&self) -> HashSet<Behavior> {
+        let mut ret = HashSet::new();
+        for b in self.provides.iter() {
+            ret.insert(b.clone());
+        }
+        ret
+    }
+
     pub fn get_behaviors(&self) -> HashSet<String> {
         let mut ret = HashSet::new();
         for p in &self.provides {
@@ -106,6 +114,72 @@ impl Agent {
             ret.insert(w.get_name().clone());
         }
         ret
+    }
+
+    pub fn merge(&mut self, other: &Agent) {
+        for p in &other.provides {
+            if self.provides.contains(p) {
+                continue;
+            }
+            self.provides.push(p.clone());
+        }
+        for w in &other.wants {
+            if self.wants.contains(w) {
+                continue;
+            }
+            self.wants.push(w.clone());
+        }
+    }
+
+    // for each condition that is internally provided, replace it with the conditions required to internally provide it
+    pub fn reduce(&mut self) {
+        let internal_provides: HashSet<String> =
+            self.provides.iter().map(|p| p.get_name().clone()).collect();
+        let mut todo_provides = self.provides.clone();
+        let mut reduced_provides = vec![];
+        while todo_provides.len() > 0 {
+            let p = todo_provides.remove(0);
+            if p.is_unconditional() || p.has_none_of_these_conditions(&internal_provides) {
+                reduced_provides.push(p);
+                continue;
+            }
+            // Otherwise, one or more conditions need to be expanded
+            // If a condition is provided internally by multiple options, technically should expand each of them.
+            // Right now, just expand the first one.
+            let mut new_conditions: HashSet<String> = HashSet::new();
+            for c in p.get_conditions() {
+                // If this condition is not provided internally, just pass it through as is
+                if !internal_provides.contains(&c) {
+                    new_conditions.insert(c.clone());
+                    continue;
+                }
+                for ro in self.provides.iter().filter(|x| x.get_name() == &c).take(1) {
+                    new_conditions.extend(ro.get_conditions());
+                }
+            }
+            todo_provides.push(Behavior::new_with_conditions(
+                p.get_name().clone(),
+                new_conditions.iter().map(|x| x.clone()).collect(),
+            ));
+        }
+        reduced_provides.sort();
+        self.provides = reduced_provides;
+    }
+
+    pub fn make_instance(
+        &self,
+        instance_name: &String,
+        provides_tags: &String,
+        conditions_tags: &String,
+    ) -> Agent {
+        Agent::new(instance_name.clone())
+            .with_provides(
+                self.provides
+                    .iter()
+                    .map(|p| p.make_instance(provides_tags, conditions_tags))
+                    .collect(),
+            )
+            .with_wants(self.wants.clone())
     }
 }
 
@@ -249,5 +323,123 @@ wants:
                 .map(|x| x.to_string())
                 .collect();
         assert_eq!(a.get_behaviors(), expected);
+    }
+
+    #[test]
+    fn test_get_all_provides() {
+        let a = Agent::build("foo").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("c1")]),
+            Behavior::build("b2").with_conditions(vec![String::from("c2")]),
+        ]);
+        assert_eq!(
+            a.get_all_provides(),
+            HashSet::from([
+                Behavior::build("b1").with_conditions(vec![String::from("c1")]),
+                Behavior::build("b2").with_conditions(vec![String::from("c2")]),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_merge() {
+        let mut a = Agent::new(String::from("foo")).with_provides(vec![
+            Behavior::new(String::from("b1")),
+            Behavior::new(String::from("b2")),
+        ]);
+        a.merge(&Agent::new(String::from("bar")).with_provides(vec![
+            Behavior::new(String::from("b2")),
+            Behavior::new(String::from("b3")),
+        ]));
+        assert_eq!(
+            a.provides,
+            vec!(
+                Behavior::new(String::from("b1")),
+                Behavior::new(String::from("b2")),
+                Behavior::new(String::from("b3")),
+            )
+        );
+    }
+
+    #[test]
+    fn test_reduce() {
+        let mut a: Agent = serde_yaml::from_str(
+            "name: foo
+provides:
+  - name: b1
+    conditions:
+      - b2
+  - name: b2
+    conditions:
+      - b3
+",
+        )
+        .unwrap();
+        a.reduce();
+        assert_eq!(
+            a.provides,
+            vec!(
+                Behavior::build("b1").with_conditions(vec!(String::from("b3"))),
+                Behavior::build("b2").with_conditions(vec!(String::from("b3"))),
+            )
+        );
+
+        let mut a: Agent = serde_yaml::from_str(
+            "name: foo
+provides:
+  - name: b1
+    conditions:
+      - b2
+  - name: b2
+    conditions:
+      - b3
+  - name: b2
+    conditions:
+      - b4
+",
+        )
+        .unwrap();
+        a.reduce();
+        assert_eq!(
+            a.provides,
+            vec!(
+                Behavior::build("b1").with_conditions(vec!(String::from("b3"))),
+                Behavior::build("b2").with_conditions(vec!(String::from("b3"))),
+                Behavior::build("b2").with_conditions(vec!(String::from("b4"))),
+            )
+        );
+    }
+
+    #[test]
+    fn test_make_instance() {
+        let a = Agent::new(String::from("a1"))
+            .with_provides(vec![
+                Behavior::new(String::from("p1"))
+                    .with_conditions(vec![String::from("p1c1"), String::from("p1c2")]),
+                Behavior::new(String::from("p2")),
+            ])
+            .with_wants(vec![
+                Behavior::new(String::from("w1")),
+                Behavior::new(String::from("w2")),
+            ]);
+        let result = a.make_instance(
+            &String::from("i1"),
+            &String::from("i1p"),
+            &String::from("i1c"),
+        );
+        assert_eq!(
+            result,
+            Agent::new(String::from("i1"))
+                .with_provides(vec![
+                    Behavior::new(String::from("p1 | i1p")).with_conditions(vec![
+                        String::from("p1c1 | i1c"),
+                        String::from("p1c2 | i1c")
+                    ]),
+                    Behavior::new(String::from("p2 | i1p")),
+                ])
+                .with_wants(vec![
+                    Behavior::new(String::from("w1")),
+                    Behavior::new(String::from("w2")),
+                ])
+        );
     }
 }

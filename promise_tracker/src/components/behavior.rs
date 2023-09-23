@@ -1,7 +1,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-#[derive(Debug, PartialEq, Eq, Deserialize, Serialize, Clone, Hash, JsonSchema)]
+#[derive(
+    Debug, PartialEq, Eq, Deserialize, Serialize, Clone, Hash, JsonSchema, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Behavior {
     name: String,
@@ -37,6 +40,10 @@ impl Behavior {
         self
     }
 
+    pub fn add_condition(&mut self, c: String) {
+        self.conditions.push(c)
+    }
+
     pub fn get_name(&self) -> &String {
         &self.name
     }
@@ -49,8 +56,31 @@ impl Behavior {
         self.conditions.len() == 0
     }
 
+    pub fn has_none_of_these_conditions(&self, conditions: &HashSet<String>) -> bool {
+        !self.conditions.iter().any(|c| conditions.contains(c))
+    }
+
     pub fn has_behavior(&self, behavior_name: &String) -> bool {
         self.name == *behavior_name || self.conditions.iter().any(|x| x == behavior_name)
+    }
+
+    pub fn make_instance(&self, suffix: &str, condition_suffix: &str) -> Behavior {
+        Behavior {
+            name: if suffix == "" {
+                self.name.clone()
+            } else {
+                format!("{} | {}", self.name, suffix)
+            },
+            comment: self.comment.clone(),
+            conditions: if condition_suffix == "" {
+                self.conditions.clone()
+            } else {
+                self.conditions
+                    .iter()
+                    .map(|c| format!("{} | {}", c, condition_suffix))
+                    .collect()
+            },
+        }
     }
 }
 
@@ -86,13 +116,41 @@ mod tests {
 
     #[test]
     fn is_conditional() {
-        let p = Behavior {
+        let mut p = Behavior {
             name: String::from("a"),
             comment: String::from(""),
             conditions: [].to_vec(),
         };
         assert!(p.is_unconditional());
-        // assert_eq!(p.conditions, .to_vec());
+        p.add_condition(String::from("c1"));
+        assert!(!p.is_unconditional());
+    }
+
+    #[test]
+    fn test_has_none_of_these_conditions() {
+        let p = Behavior {
+            name: String::from("b1"),
+            comment: String::from(""),
+            conditions: [String::from("c1"), String::from("c2")].to_vec(),
+        };
+        let mut conditions = HashSet::new();
+        assert!(p.has_none_of_these_conditions(&conditions));
+        conditions.insert(String::from("c99"));
+        assert!(p.has_none_of_these_conditions(&conditions));
+        conditions.insert(String::from("c1"));
+        assert!(!p.has_none_of_these_conditions(&conditions));
+        conditions.insert(String::from("c2"));
+    }
+
+    fn test_make_instance() {
+        let p = Behavior {
+            name: String::from("b1"),
+            comment: String::from(""),
+            conditions: [String::from("c1"), String::from("c2")].to_vec(),
+        };
+        let p2 = p.make_instance("suf", "csuf");
+        assert_eq!(p2.name, "b1 | suf");
+        assert_eq!(p2.conditions, ["c1 | csuf", "c2 | csuf"]);
     }
 
     // #[test]

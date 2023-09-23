@@ -54,7 +54,44 @@ impl Tracker {
             }
         }
         let _ = &self.available_superagents.push(sa.clone());
-        // TODO - refresh working_agents
+
+        let contained_agents_names = sa.get_agent_names();
+        // superagent takes the place of all agents that it covers, so remove them
+        for contained_agent_name in contained_agents_names.iter() {
+            self.working_agents.remove(contained_agent_name);
+        }
+        // build out a stub agent that is a combination of all of the contained agents
+        let mut stub_agent = Agent::new(sa.get_name().clone());
+        self.available_agents
+            .iter()
+            .filter(|a| contained_agents_names.contains(a.get_name()))
+            .for_each(|a| {
+                stub_agent.merge(a);
+            });
+        // reduce its behaviors to those that are not internally handled
+        stub_agent.reduce();
+
+        // if there are instances of this sa, use those; otherwise use itself
+        let instances = sa.get_instances();
+        if instances.len() == 0 {
+            self.working_agents
+                .insert(sa.get_name().clone(), vec![stub_agent]);
+            return;
+        }
+        for i in instances.iter() {
+            let mut instance_agent = stub_agent.make_instance(
+                i.get_name(),
+                i.get_provides_tags(),
+                i.get_conditions_tags(),
+            );
+            for p in i.get_provides().iter() {
+                instance_agent.add_provide(p.clone());
+            }
+            for w in i.get_wants().iter() {
+                instance_agent.add_want(w.clone());
+            }
+            self.add_working_agent(instance_agent);
+        }
     }
 
     pub fn add_item(&mut self, i: Item) {
@@ -363,5 +400,157 @@ mod tests {
                 )
             ))
         );
+    }
+
+    #[test]
+    fn test_add_superagent() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        t.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b3")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2")
+                .with_agent("a3"),
+        );
+        assert_eq!(t.working_agents.len(), 1);
+        let wsa = t.working_agents.get("sa1").unwrap();
+        assert_eq!(wsa.len(), 1);
+        let all_provides = wsa[0].get_all_provides();
+        let mut combined_provides = all_provides.iter().collect::<Vec<&Behavior>>();
+        combined_provides.sort();
+        assert_eq!(
+            combined_provides,
+            vec![
+                &Behavior::build("b1"),
+                &Behavior::build("b2"),
+                &Behavior::build("b3"),
+            ]
+        );
+
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        t.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("b3").with_conditions(vec![String::from("b4")]),
+        ]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2")
+                .with_agent("a3")
+                .with_instance(
+                    "i1",
+                    "",
+                    "i1p",
+                    "i1c",
+                    vec![Behavior::build("i1p1")],
+                    vec![Behavior::build("i1w1")],
+                )
+                .with_instance("i2", "", "i2p", "i2c", vec![], vec![]),
+        );
+        assert_eq!(t.working_agents.len(), 2);
+        let wsa = t.working_agents.get("i1").unwrap();
+        let all_provides = wsa[0].get_all_provides();
+        let mut combined_provides = all_provides.iter().collect::<Vec<&Behavior>>();
+        combined_provides.sort();
+        assert_eq!(
+            combined_provides,
+            vec![
+                &Behavior::build("b1 | i1p"),
+                &Behavior::build("b2 | i1p"),
+                &Behavior::build("b3 | i1p").with_conditions(vec![String::from("b4 | i1c")]),
+                &Behavior::build("i1p1"),
+            ]
+        );
+        let wsa = t.working_agents.get("i2").unwrap();
+        let all_provides = wsa[0].get_all_provides();
+        let mut combined_provides = all_provides.iter().collect::<Vec<&Behavior>>();
+        combined_provides.sort();
+        assert_eq!(
+            combined_provides,
+            vec![
+                &Behavior::build("b1 | i2p"),
+                &Behavior::build("b2 | i2p"),
+                &Behavior::build("b3 | i2p").with_conditions(vec![String::from("b4 | i2c")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_superagent_resolve() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        t.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b3")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2")
+                .with_agent("a3"),
+        );
+        assert_eq!(
+            t.resolve("b1"),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("sa1"))
+        );
+        assert_eq!(
+            t.resolve("b2"),
+            Resolution::new("b2").add_satisfying_offer(Offer::new("sa1"))
+        );
+        assert_eq!(
+            t.resolve("b3"),
+            Resolution::new("b3").add_satisfying_offer(Offer::new("sa1"))
+        );
+    }
+
+    #[test]
+    fn test_superagent_instance_resolve() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        t.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("b3").with_conditions(vec![String::from("b4")]),
+        ]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2")
+                .with_agent("a3")
+                .with_instance(
+                    "i1",
+                    "",
+                    "i1p",
+                    "i1c",
+                    vec![Behavior::build("i1p1")],
+                    vec![Behavior::build("i1w1")],
+                )
+                .with_instance("i2", "", "i2p", "i2c", vec![], vec![]),
+        );
+        // fully internally resolved
+        assert_eq!(
+            t.resolve("b1 | i1p"),
+            Resolution::new("b1 | i1p").add_satisfying_offer(Offer::new("i1"))
+        );
+        // partially internally resolved but otherwise unresolved
+        assert_eq!(
+            t.resolve("b3 | i1p"),
+            Resolution::new("b3 | i1p").add_unsatisfying_offer(Offer::new_conditional(
+                "i1",
+                vec![Resolution::new("b4 | i1c")],
+            )),
+        );
+        t.add_agent(Agent::build("a4").with_provides(vec![Behavior::build("b4 | i1c")]));
+        assert_eq!(
+            t.resolve("b3 | i1p"),
+            Resolution::new("b3 | i1p").add_satisfying_offer(Offer::new_conditional(
+                "i1",
+                vec![Resolution::new("b4 | i1c").add_satisfying_offer(Offer::new("a4"))],
+            )),
+        )
     }
 }
