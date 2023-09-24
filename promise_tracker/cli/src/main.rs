@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+mod check_unsatisfied;
 mod schema;
 mod simulate;
 mod validate;
@@ -12,6 +13,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    CheckUnsatisfied(check_unsatisfied::Parameters),
     /// Display the json_schema for Agents et al
     Schema {},
     /// Check which behaviors are covered by the given file(s)
@@ -24,6 +26,9 @@ fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
+        Some(Command::CheckUnsatisfied(parameters)) => {
+            check_unsatisfied::command(parameters);
+        }
         Some(Command::Schema {}) => {
             schema::command();
         }
