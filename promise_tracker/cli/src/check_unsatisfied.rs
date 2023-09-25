@@ -114,6 +114,10 @@ pub fn command(parameters: &Parameters) {
         }
     }
     for want in wants {
-        println!("{:?}", tracker.resolve(&want));
+        let r = tracker.resolve(&want);
+        println!("{:?}", r);
+        for line in r.to_strings_compressed() {
+            println!("{}", line);
+        }
     }
 }
