@@ -73,6 +73,9 @@ impl PartialEq for Resolution {
         if self.satisfying_offers.len() != other.satisfying_offers.len() {
             return false;
         }
+        if self.unsatisfying_offers.len() != other.unsatisfying_offers.len() {
+            return false;
+        }
         for self_offer in &self.satisfying_offers {
             let mut found = false;
             for other_offer in &other.satisfying_offers {
@@ -169,6 +172,11 @@ mod tests_resolution {
                 .add_satisfying_offer(Offer::new("a3"))
                 .add_unsatisfying_offer(Offer::new_conditional("a3", vec!(Resolution::new("b2"))))
                 .add_unsatisfying_offer(Offer::new_conditional("a4", vec!(Resolution::new("b2")))),
+        );
+        // unequal in unsatifying offers
+        assert_ne!(
+            Resolution::new("b1"),
+            Resolution::new("b1").add_unsatisfying_offer(Offer::new("a1"))
         );
     }
 }
