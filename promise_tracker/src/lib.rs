@@ -167,13 +167,26 @@ impl Tracker {
     // - unsatisfied conditions will result in an Resolution
     pub fn resolve(&self, behavior_name: &str) -> Resolution {
         let mut r = Resolution::new(behavior_name);
-        for (agent_name, variants) in &self.working_agents {
+        let mut agent_names: Vec<String> = vec![];
+        for (a, _) in &self.working_agents {
+            if agent_names.contains(a) {
+                continue;
+            }
+            agent_names.push(a.clone());
+        }
+        agent_names.sort();
+        for agent_name in agent_names {
+            let variants = match self.working_agents.get(&agent_name) {
+                Some(variants) => variants,
+                None => continue,
+            };
+            // for (agent_name, variants) in &self.working_agents {
             for variant_agent in variants {
                 if let Some(behaviors) = variant_agent.get_provides(behavior_name) {
                     for b in behaviors {
                         // if unconditional, add this as a satisfied Offer
                         if b.is_unconditional() {
-                            r = r.add_satisfying_offer(Offer::new(agent_name));
+                            r = r.add_satisfying_offer(Offer::new(&agent_name));
                             continue;
                         }
                         // resolve conditions
@@ -185,13 +198,13 @@ impl Tracker {
                         // if all conditions are satisfied, add this as a satisfied Offer
                         if resolved_conditions.iter().all(|x| x.is_satisfied()) {
                             r = r.add_satisfying_offer(Offer::new_conditional(
-                                agent_name,
+                                &agent_name,
                                 resolved_conditions,
                             ));
                         // otherwise, add this as an unsatisfied Offer
                         } else {
                             r = r.add_unsatisfying_offer(Offer::new_conditional(
-                                agent_name,
+                                &agent_name,
                                 resolved_conditions,
                             ));
                         }
@@ -501,6 +514,19 @@ mod tests {
             t.resolve("b3"),
             Resolution::new("b3").add_satisfying_offer(Offer::new("sa1"))
         );
+    }
+
+    #[test]
+    fn test_resolve_torture() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b1")]));
+        for _ in 0..1_000 {
+            assert_eq!(
+                t.resolve("b1").to_strings_compressed(),
+                vec!["b1 |-> a1".to_string(), "   |-> a2".to_string(),]
+            )
+        }
     }
 
     #[test]

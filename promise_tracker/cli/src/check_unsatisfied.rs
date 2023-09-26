@@ -113,9 +113,10 @@ pub fn command(parameters: &Parameters) {
             wants.insert(want);
         }
     }
-    for want in wants {
+    let mut wants_ordered: Vec<_> = wants.iter().collect();
+    wants_ordered.sort();
+    for want in wants_ordered {
         let r = tracker.resolve(&want);
-        println!("{:?}", r);
         for line in r.to_strings_compressed() {
             println!("{}", line);
         }
