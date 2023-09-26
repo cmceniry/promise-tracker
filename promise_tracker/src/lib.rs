@@ -523,7 +523,7 @@ mod tests {
         t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b1")]));
         for _ in 0..1_000 {
             assert_eq!(
-                t.resolve("b1").to_strings_compressed(),
+                t.resolve("b1").to_strings_compressed(false),
                 vec!["b1 |-> a1".to_string(), "   |-> a2".to_string(),]
             )
         }

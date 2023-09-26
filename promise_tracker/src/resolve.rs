@@ -1,3 +1,5 @@
+use colored::Colorize;
+
 #[derive(Debug)]
 pub struct Resolution {
     behavior_name: String,
@@ -33,16 +35,31 @@ impl Resolution {
         self.satisfying_offers.len() > 0
     }
 
-    pub fn to_strings_compressed(&self) -> Vec<String> {
+    pub fn to_strings_compressed(&self, use_color: bool) -> Vec<String> {
         if self.satisfying_offers.len() == 0 && self.unsatisfying_offers.len() == 0 {
-            return vec![format!("{} |-> ?", self.behavior_name)];
+            return vec![format!(
+                "{} {} {}",
+                self.behavior_name,
+                if use_color {
+                    "|->".red().to_string()
+                } else {
+                    "|->".to_string()
+                },
+                "?"
+            )];
         }
         let mut ret = vec![];
         for offer in &self.satisfying_offers {
-            let mut children = offer.to_strings_compressed();
-            children[0].insert_str(
-                0,
-                &format!("{} |-> ", &" ".repeat(self.behavior_name.len())),
+            let mut children = offer.to_strings_compressed(use_color);
+            children[0] = format!(
+                "{} {} {}",
+                &" ".repeat(self.behavior_name.len()),
+                if use_color {
+                    "|->".green().to_string()
+                } else {
+                    "|->".to_string()
+                },
+                children[0]
             );
             for child in &mut children[1..] {
                 child.insert_str(0, &" ".repeat(self.behavior_name.len() + 5));
@@ -50,10 +67,16 @@ impl Resolution {
             ret.extend(children);
         }
         for offer in &self.unsatisfying_offers {
-            let mut children = offer.to_strings_compressed();
-            children[0].insert_str(
-                0,
-                &format!("{} |-> ", &" ".repeat(self.behavior_name.len())),
+            let mut children = offer.to_strings_compressed(use_color);
+            children[0] = format!(
+                "{} {} {}",
+                &" ".repeat(self.behavior_name.len()),
+                if use_color {
+                    "|->".red().to_string()
+                } else {
+                    "|->".to_string()
+                },
+                children[0]
             );
             for child in &mut children[1..] {
                 child.insert_str(0, &" ".repeat(self.behavior_name.len() + 5));
@@ -202,13 +225,13 @@ impl Offer {
         }
     }
 
-    pub fn to_strings_compressed(&self) -> Vec<String> {
+    pub fn to_strings_compressed(&self, use_color: bool) -> Vec<String> {
         if self.resolved_conditions.len() == 0 {
             return vec![format!("{}", self.agent_name)];
         }
         let mut ret = vec![];
         for condition in &self.resolved_conditions {
-            let mut children = condition.to_strings_compressed();
+            let mut children = condition.to_strings_compressed(use_color);
             children[0].insert_str(0, &format!("{} &-> ", &" ".repeat(self.agent_name.len())));
             for child in &mut children[1..] {
                 child.insert_str(0, &" ".repeat(self.agent_name.len() + 5));
@@ -273,7 +296,7 @@ mod tests_offer {
     #[test]
     fn test_simple_pretty_string() {
         assert_eq!(
-            Resolution::new("b1").to_strings_compressed(),
+            Resolution::new("b1").to_strings_compressed(false),
             vec!["b1 |-> ?".to_string(),]
         );
 
@@ -281,57 +304,57 @@ mod tests_offer {
             Resolution::new("b1")
                 .add_satisfying_offer(Offer::new("a1"))
                 .add_satisfying_offer(Offer::new("a2"))
-                .to_strings_compressed(),
+                .to_strings_compressed(false),
             vec!["b1 |-> a1".to_string(), "   |-> a2".to_string(),],
         );
 
         assert_eq!(
-            Offer::new("a1").to_strings_compressed(),
+            Offer::new("a1").to_strings_compressed(false),
             vec!["a1".to_string()],
         );
 
         assert_eq!(
             Offer::new_conditional("a1", vec![Resolution::new("c1"), Resolution::new("c2")])
-                .to_strings_compressed(),
+                .to_strings_compressed(false),
             vec!["a1 &-> c1 |-> ?".to_string(), "   &-> c2 |-> ?".to_string()],
         );
     }
 
     #[test]
     fn test_deep_pretty_string() {
+        let r = Resolution::new("b1")
+            .add_unsatisfying_offer(Offer::new_conditional(
+                "a1",
+                vec![
+                    Resolution::new("b2").add_satisfying_offer(Offer::new_conditional(
+                        "a2",
+                        vec![
+                            Resolution::new("ba2a").add_satisfying_offer(Offer::new("a2a")),
+                            Resolution::new("ba2b").add_satisfying_offer(Offer::new("a2b")),
+                        ],
+                    )),
+                    Resolution::new("b3"),
+                ],
+            ))
+            .add_satisfying_offer(Offer::new_conditional(
+                "a4",
+                vec![Resolution::new("b5")
+                    .add_satisfying_offer(Offer::new_conditional("a5", vec![]))],
+            ))
+            .add_unsatisfying_offer(Offer::new_conditional("a6", vec![Resolution::new("b7")]))
+            .add_unsatisfying_offer(Offer::new_conditional(
+                "a8",
+                vec![
+                    Resolution::new("b9").add_unsatisfying_offer(Offer::new_conditional(
+                        "a9",
+                        vec![Resolution::new("b10").add_unsatisfying_offer(
+                            Offer::new_conditional("a10", vec![Resolution::new("b11")]),
+                        )],
+                    )),
+                ],
+            ));
         assert_eq!(
-            Resolution::new("b1")
-                .add_unsatisfying_offer(Offer::new_conditional(
-                    "a1",
-                    vec![
-                        Resolution::new("b2").add_satisfying_offer(Offer::new_conditional(
-                            "a2",
-                            vec![
-                                Resolution::new("ba2a").add_satisfying_offer(Offer::new("a2a")),
-                                Resolution::new("ba2b").add_satisfying_offer(Offer::new("a2b")),
-                            ]
-                        ),),
-                        Resolution::new("b3"),
-                    ]
-                ))
-                .add_satisfying_offer(Offer::new_conditional(
-                    "a4",
-                    vec![Resolution::new("b5")
-                        .add_unsatisfying_offer(Offer::new_conditional("a5", vec![]))]
-                ))
-                .add_unsatisfying_offer(Offer::new_conditional("a6", vec![Resolution::new("b7")]))
-                .add_unsatisfying_offer(Offer::new_conditional(
-                    "a8",
-                    vec![
-                        Resolution::new("b9").add_unsatisfying_offer(Offer::new_conditional(
-                            "a9",
-                            vec![Resolution::new("b10").add_unsatisfying_offer(
-                                Offer::new_conditional("a10", vec![Resolution::new("b11")])
-                            )]
-                        ))
-                    ]
-                ))
-                .to_strings_compressed(),
+            r.to_strings_compressed(false),
             vec![
                 "b1 |-> a4 &-> b5 |-> a5".to_string(),
                 "   |-> a1 &-> b2 |-> a2 &-> ba2a |-> a2a".to_string(),
@@ -341,5 +364,27 @@ mod tests_offer {
                 "   |-> a8 &-> b9 |-> a9 &-> b10 |-> a10 &-> b11 |-> ?".to_string(),
             ],
         );
+        assert_eq!(
+            r.to_strings_compressed(true),
+            vec![
+                format!("b1 {} a4 &-> b5 {} a5", "|->".green(), "|->".green()),
+                format!(
+                    "   {} a1 &-> b2 {} a2 &-> ba2a {} a2a",
+                    "|->".red(),
+                    "|->".green(),
+                    "|->".green()
+                ),
+                format!("                        &-> ba2b {} a2b", "|->".green()),
+                format!("          &-> b3 {} ?", "|->".red()),
+                format!("   {} a6 &-> b7 {} ?", "|->".red(), "|->".red()),
+                format!(
+                    "   {} a8 &-> b9 {} a9 &-> b10 {} a10 &-> b11 {} ?",
+                    "|->".red(),
+                    "|->".red(),
+                    "|->".red(),
+                    "|->".red()
+                )
+            ],
+        )
     }
 }

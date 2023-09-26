@@ -117,7 +117,7 @@ pub fn command(parameters: &Parameters) {
     wants_ordered.sort();
     for want in wants_ordered {
         let r = tracker.resolve(&want);
-        for line in r.to_strings_compressed() {
+        for line in r.to_strings_compressed(true) {
             println!("{}", line);
         }
     }
