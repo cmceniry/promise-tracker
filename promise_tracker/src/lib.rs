@@ -41,7 +41,7 @@ impl Tracker {
             }
         }
         let _ = &self.available_agents.push(a.clone());
-        self.add_working_agent(a);
+        self.rebuild();
     }
 
     pub fn add_superagent(&mut self, sa: SuperAgent) {
@@ -51,44 +51,7 @@ impl Tracker {
             }
         }
         let _ = &self.available_superagents.push(sa.clone());
-
-        let contained_agents_names = sa.get_agent_names();
-        // superagent takes the place of all agents that it covers, so remove them
-        for contained_agent_name in contained_agents_names.iter() {
-            self.working_agents.remove(contained_agent_name);
-        }
-        // build out a stub agent that is a combination of all of the contained agents
-        let mut stub_agent = Agent::new(sa.get_name().clone());
-        self.available_agents
-            .iter()
-            .filter(|a| contained_agents_names.contains(a.get_name()))
-            .for_each(|a| {
-                stub_agent.merge(a);
-            });
-        // reduce its behaviors to those that are not internally handled
-        stub_agent.reduce();
-
-        // if there are instances of this sa, use those; otherwise use itself
-        let instances = sa.get_instances();
-        if instances.len() == 0 {
-            self.working_agents
-                .insert(sa.get_name().clone(), vec![stub_agent]);
-            return;
-        }
-        for i in instances.iter() {
-            let mut instance_agent = stub_agent.make_instance(
-                i.get_name(),
-                i.get_provides_tags(),
-                i.get_conditions_tags(),
-            );
-            for p in i.get_provides().iter() {
-                instance_agent.add_provide(p.clone());
-            }
-            for w in i.get_wants().iter() {
-                instance_agent.add_want(w.clone());
-            }
-            self.add_working_agent(instance_agent);
-        }
+        self.rebuild();
     }
 
     pub fn add_item(&mut self, i: Item) {
@@ -96,6 +59,64 @@ impl Tracker {
             Item::Agent(a) => self.add_agent(a),
             Item::SuperAgent(sa) => self.add_superagent(sa),
         }
+    }
+
+    pub fn rebuild(&mut self) {
+        let mut new_working_agents: HashMap<String, Vec<Agent>> = HashMap::new();
+        let mut all_contained_agent_names = HashSet::new();
+        for sa in &self.available_superagents {
+            let contained_agents_names = sa.get_agent_names();
+            for contained_agent_name in contained_agents_names.iter() {
+                all_contained_agent_names.insert(contained_agent_name.clone());
+            }
+            // build out a stub agent that is a combination of all of the contained agents
+            let mut stub_agent = Agent::new(sa.get_name().clone());
+            self.available_agents
+                .iter()
+                .filter(|a| contained_agents_names.contains(a.get_name()))
+                .for_each(|a| {
+                    stub_agent.merge(a);
+                });
+            // reduce its behaviors to those that are not internally handled
+            stub_agent.reduce();
+
+            // if there are instances of this sa, use those; otherwise use itself
+            let instances = sa.get_instances();
+            if instances.len() == 0 {
+                let e = new_working_agents
+                    .entry(stub_agent.get_name().clone())
+                    .or_insert(vec![stub_agent.clone()]);
+                e[0].merge(&stub_agent);
+                continue;
+            }
+            for i in instances.iter() {
+                let mut instance_agent = stub_agent.make_instance(
+                    i.get_name(),
+                    i.get_provides_tags(),
+                    i.get_conditions_tags(),
+                );
+                for p in i.get_provides().iter() {
+                    instance_agent.add_provide(p.clone());
+                }
+                for w in i.get_wants().iter() {
+                    instance_agent.add_want(w.clone());
+                }
+                let e = new_working_agents
+                    .entry(instance_agent.get_name().clone())
+                    .or_insert(vec![instance_agent.clone()]);
+                e[0].merge(&instance_agent);
+            }
+        }
+        for a in &self.available_agents {
+            if all_contained_agent_names.contains(a.get_name()) {
+                continue;
+            }
+            let e = new_working_agents
+                .entry(a.get_name().clone())
+                .or_insert(vec![a.clone()]);
+            e[0].merge(&a);
+        }
+        self.working_agents = new_working_agents;
     }
 
     pub fn get_agent_names(&self) -> Vec<&String> {
@@ -122,14 +143,6 @@ impl Tracker {
             todo!()
         };
         varients.iter().all(|a| a.is_wants_empty())
-    }
-
-    pub fn add_working_agent(&mut self, a: Agent) {
-        let wa_list = self
-            .working_agents
-            .entry(a.get_name().clone())
-            .or_insert(vec![]);
-        wa_list.push(a);
     }
 
     pub fn get_working_agent_names(&self) -> Vec<&String> {
