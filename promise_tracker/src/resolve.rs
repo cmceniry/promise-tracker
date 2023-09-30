@@ -35,6 +35,74 @@ impl Resolution {
         self.satisfying_offers.len() > 0
     }
 
+    // resolve strings is of the format
+    // behavior |-> offerer ...
+    // offer is of the format
+    //
+    pub fn to_colorized_compressed_strings(&self) -> Vec<String> {
+        if self.satisfying_offers.len() == 0 && self.unsatisfying_offers.len() == 0 {
+            return vec![format!(
+                "{} {} {}",
+                self.behavior_name.red(),
+                "|->".red(),
+                "?".red()
+            )];
+        }
+        let (colorized_behavior, spacer_behavior) = if self.is_satisfied() {
+            (
+                self.behavior_name.green(),
+                " ".repeat(self.behavior_name.len()).green(),
+            )
+        } else {
+            (
+                self.behavior_name.red(),
+                " ".repeat(self.behavior_name.len()).red(),
+            )
+        };
+        let mut ret: Vec<String> = vec![];
+        for offer in &self.satisfying_offers {
+            let colorized_agent = "|->".green();
+            let spacer_offer = "   ".green();
+            let mut offer_lines = offer.to_colorized_compressed_strings();
+            offer_lines[0] = format!(
+                "{} {} {}",
+                if ret.len() == 0 {
+                    &colorized_behavior
+                } else {
+                    &spacer_behavior
+                },
+                &colorized_agent,
+                &offer_lines[0],
+            );
+            for i in 1..offer_lines.len() {
+                offer_lines[i] =
+                    format!("{} {} {}", &spacer_behavior, &spacer_offer, &offer_lines[i]);
+            }
+            ret.extend(offer_lines);
+        }
+        for offer in &self.unsatisfying_offers {
+            let colorized_agent = "|->".red();
+            let spacer_offer = "   ".red();
+            let mut offer_lines = offer.to_colorized_compressed_strings();
+            offer_lines[0] = format!(
+                "{} {} {}",
+                if ret.len() == 0 {
+                    &colorized_behavior
+                } else {
+                    &spacer_behavior
+                },
+                &colorized_agent,
+                &offer_lines[0],
+            );
+            for i in 1..offer_lines.len() {
+                offer_lines[i] =
+                    format!("{} {} {}", &spacer_behavior, &spacer_offer, &offer_lines[i]);
+            }
+            ret.extend(offer_lines);
+        }
+        ret
+    }
+
     pub fn to_strings_compressed(&self, use_color: bool) -> Vec<String> {
         if self.satisfying_offers.len() == 0 && self.unsatisfying_offers.len() == 0 {
             return vec![format!(
@@ -241,6 +309,51 @@ impl Offer {
         ret[0].replace_range(0..self.agent_name.len(), &self.agent_name);
         ret
     }
+
+    pub fn to_colorized_compressed_strings(&self) -> Vec<String> {
+        if self.resolved_conditions.len() == 0 {
+            return vec![format!("{}", self.agent_name.green())];
+        }
+        let satisfied = self.resolved_conditions.iter().all(|c| c.is_satisfied());
+        let (colorized_agent, spacer_agent) = if satisfied {
+            (
+                self.agent_name.green(),
+                " ".repeat(self.agent_name.len()).green(),
+            )
+        } else {
+            (
+                self.agent_name.red(),
+                " ".repeat(self.agent_name.len()).red(),
+            )
+        };
+        let mut ret = vec![];
+        for condition in &self.resolved_conditions {
+            let (colorized_condition, spacer_condition) = if condition.is_satisfied() {
+                ("&->".green(), "   ".green())
+            } else {
+                ("&->".red(), "   ".red())
+            };
+            let mut condition_lines = condition.to_colorized_compressed_strings();
+            condition_lines[0] = format!(
+                "{} {} {}",
+                if ret.len() == 0 {
+                    &colorized_agent
+                } else {
+                    &spacer_agent
+                },
+                &colorized_condition,
+                &condition_lines[0],
+            );
+            for i in 1..condition_lines.len() {
+                condition_lines[i] = format!(
+                    "{} {} {}",
+                    &spacer_agent, &spacer_condition, &condition_lines[i],
+                )
+            }
+            ret.extend(condition_lines);
+        }
+        ret
+    }
 }
 
 impl PartialEq for Offer {
@@ -386,5 +499,83 @@ mod tests_offer {
                 )
             ],
         )
+    }
+
+    #[test]
+    fn test_to_colorized_compressed_string() {
+        // println!("{}", "foo".len());
+        // println!("{}", "foo".red().len());
+        // assert_eq!(
+        //     Resolution::new("b1").to_colorized_compressed_strings(),
+        //     vec![format!("{}", "b1 -> ?".red()),]
+        // )
+
+        assert_eq!(
+            Offer::new("a1").to_colorized_compressed_strings(),
+            vec![format!("{}", "a1".green(),)]
+        );
+
+        assert_eq!(
+            Resolution::new("b1").to_colorized_compressed_strings(),
+            vec![format!("{} {} {}", "b1".red(), "|->".red(), "?".red())],
+        );
+
+        assert_eq!(
+            Offer::new_conditional("a1", vec![Resolution::new("b1")])
+                .to_colorized_compressed_strings(),
+            vec![format!(
+                "{} {} {} {} {}",
+                "a1".red(),
+                "&->".red(),
+                "b1".red(),
+                "|->".red(),
+                "?".red()
+            )],
+        );
+
+        assert_eq!(
+            Offer::new_conditional(
+                "a1",
+                vec![Resolution::new("b1").add_satisfying_offer(Offer::new("a2"))]
+            )
+            .to_colorized_compressed_strings(),
+            vec![format!(
+                "{} {} {} {} {}",
+                "a1".green(),
+                "&->".green(),
+                "b1".green(),
+                "|->".green(),
+                "a2".green(),
+            )],
+        );
+
+        assert_eq!(
+            Offer::new_conditional(
+                "a1",
+                vec![
+                    Resolution::new("b2").add_satisfying_offer(Offer::new("a2")),
+                    Resolution::new("b3"),
+                ]
+            )
+            .to_colorized_compressed_strings(),
+            vec![
+                format!(
+                    "{} {} {} {} {}",
+                    "a1".red(),
+                    "&->".green(),
+                    "b2".green(),
+                    "|->".green(),
+                    "a2".green(),
+                ),
+                format!(
+                    "{} {} {} {} {}",
+                    "  ".red(),
+                    "&->".red(),
+                    "b3".red(),
+                    "|->".red(),
+                    "?".red()
+                ),
+            ]
+        );
     }
 }
