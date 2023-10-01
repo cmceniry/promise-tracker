@@ -8,6 +8,10 @@ use std::process;
 pub struct Parameters {
     /// The file(s) or dir(s) to check
     files: Vec<String>,
+
+    /// Show single line outputs per provides/conditions
+    #[clap(short, long)]
+    compressed: bool,
 }
 
 enum AddError {
@@ -117,8 +121,14 @@ pub fn command(parameters: &Parameters) {
     wants_ordered.sort();
     for want in wants_ordered {
         let r = tracker.resolve(&want);
-        for line in r.to_colorized_compressed_strings() {
-            println!("{}", line);
+        if parameters.compressed {
+            for line in r.to_colorized_compressed_strings() {
+                println!("{}", line);
+            }
+        } else {
+            for line in r.to_colorized_strings() {
+                println!("{}", line);
+            }
         }
     }
 }
