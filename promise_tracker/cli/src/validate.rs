@@ -1,32 +1,26 @@
 use clap::Parser;
-use serde::Deserialize;
 use std::process;
 
 #[derive(Parser)]
 pub struct Parameters {
     /// File(s) to validate
+    #[clap(short, long = "file")]
     files: Vec<String>,
 }
 
 pub fn command(parameters: &Parameters) {
-    parameters.files.iter().for_each(|file| {
-        let contents = match std::fs::read_to_string(file) {
-            Ok(contents) => contents,
-            Err(e) => {
-                println!("Error: {}", e);
-                process::exit(1);
-            }
-        };
-        for document in serde_yaml::Deserializer::from_str(&contents) {
-            match promise_tracker::components::Item::deserialize(document) {
-                Ok(item) => {
+    let todo = cli::ManifestList::new(&parameters.files).unwrap();
+    for file in todo.files {
+        match cli::check_file(&file) {
+            Ok(items) => {
+                for item in items {
                     println!("Found: {}", item.get_name());
                 }
-                Err(e) => {
-                    println!("Error: {}", e);
-                    process::exit(2);
-                }
+            }
+            Err(e) => {
+                println!("Error in {}: {}", file, e);
+                process::exit(1);
             }
         }
-    });
+    }
 }
