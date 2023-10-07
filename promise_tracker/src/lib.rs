@@ -138,6 +138,20 @@ impl Tracker {
             .any(|(_, variants)| variants.iter().any(|a| a.has_behavior(&behavior_name)))
     }
 
+    pub fn get_agent_provides(&self, agent_name: &str) -> Option<HashSet<String>> {
+        let agents = match self.working_agents.get(agent_name) {
+            Some(a) => a,
+            None => return None,
+        };
+        let mut ret: HashSet<String> = HashSet::new();
+        for agent in agents {
+            for behavior in agent.get_all_provides() {
+                ret.insert(behavior.get_name().clone());
+            }
+        }
+        Some(ret)
+    }
+
     pub fn is_agent_wants_empty(&self, agent_name: String) -> bool {
         let Some(&ref varients) = self.working_agents.get(&agent_name) else {
             todo!()
@@ -263,6 +277,26 @@ mod tests {
             .map(|x| x.to_string())
             .collect();
         assert_eq!(t.get_working_behaviors(), expected_behaviors);
+
+        assert_eq!(t.get_agent_provides("nope"), None);
+        assert_eq!(
+            t.get_agent_provides("abcd"),
+            Some(
+                HashSet::from(["ba"])
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect()
+            )
+        );
+        assert_eq!(
+            t.get_agent_provides("efgh"),
+            Some(
+                HashSet::from(["b1", "b2"])
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect()
+            )
+        );
     }
 
     #[test]
@@ -500,6 +534,16 @@ mod tests {
                 &Behavior::build("b2 | i2p"),
                 &Behavior::build("b3 | i2p").with_conditions(vec![String::from("b4 | i2c")]),
             ]
+        );
+
+        assert_eq!(
+            t.get_agent_provides("i1"),
+            Some(
+                HashSet::from(["i1p1", "b1 | i1p", "b2 | i1p", "b3 | i1p"])
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect()
+            )
         );
     }
 
