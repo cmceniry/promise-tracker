@@ -9,6 +9,7 @@ mod validate;
 mod who_provides;
 
 #[derive(Parser)]
+#[command(arg_required_else_help(true))]
 struct Cli {
     #[clap(subcommand)]
     command: Option<Command>,
