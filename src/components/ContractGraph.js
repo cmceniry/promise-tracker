@@ -2,38 +2,42 @@ import { Card } from 'react-bootstrap';
 import Mermaid from './Mermaid';
 import ptdiagram from '../libs/promise-tracker/diagram';
 
-function diagram({pt, selectedComponent, selectedBehavior}) {
+function diagram({ pt, selectedComponent, selectedBehavior }) {
   if (!pt) {
     return "sequenceDiagram\npromiseviewer->>you: bug\nyou->>promiseviewer: submit bug report";
   };
-  if (pt.getComponentNames().length === 0) { // TODO: ptrs - tracker.is_empty()
+  if (pt.is_empty()) {
     return "sequenceDiagram\nyou->>contract: add components to this simulation";
   };
   if (selectedComponent === undefined || selectedComponent === "---") {
     return "sequenceDiagram\nyou->>component: select component";
   };
-  if (!pt.getComponentNames().includes(selectedComponent)) { // TODO: ptrs - tracker.has_component(component_name)
+  if (!pt.has_agent(selectedComponent)) {
     return "sequenceDiagram\nyou->>component: select component in this simulation";
   };
-  if (selectedComponent && selectedComponent !== "---" && 
-      pt.Components.get(selectedComponent).map((c) => c.getWants().map((b) => b.name)).flat().length === 0) { // TODO: ptrs - tracker.has_component_wants(component_name)
+  if (pt.get_agent_wants(selectedComponent).length === 0) {
     return "sequenceDiagram\nyou->>component: select component with wants";
   };
   if (selectedBehavior === undefined || selectedBehavior === "---") {
-    return pt.Components.get(selectedComponent).map((c) => // TODO: ptrs - next line
-      c.getWants().map((b) => b.name) // TODO: ptrs - tracker.get_component_wants(component_name)
-    ).flat().map((b) => 
-      ptdiagram({...pt.resolve(b), component: selectedComponent}) // TODO: ptrs - tracker.resolve(behavior_name, root_component), ptdiagram?
-    ).join("\n").replaceAll(/\nsequenceDiagram/g, "\n");
+    // Can have this try to map out everything for this component/agent
+    // but not sure that that is necessary, so just show an explicit want
+    return "sequenceDiagram\nyou->>component: select behavior";
   };
-  if (selectedBehavior && !pt.getBehaviorNames().includes(selectedBehavior)) { // TODO: ptrs - tracker.has_behavior(behavior_name)
-    return "sequenceDiagram\nyou->>behavior: select behavior in this simulation";
-  };
-  return ptdiagram({...pt.resolve(selectedBehavior), component: selectedComponent}); // TODO: ptrs - tracker.resolve(behavior_name, root_component), ptdiagram?
+  if (!pt.has_behavior(selectedBehavior)) {
+    return "sequenceDiagram\nyou->>behavior: select behavior";
+  }
+  const r = pt.resolve(selectedBehavior);
+  const d = ptdiagram({
+    component: selectedComponent,
+    behavior: r.behavior_name,
+    satisfied: r.satisfying_offers,
+    unsatisfied: r.unsatisfying_offers,
+  });
+  return d;
 }
 
-export default function ContractGraph({simId, pt, selectedComponent, selectedBehavior}) {
+export default function ContractGraph({ simId, pt, selectedComponent, selectedBehavior }) {
   return <Card body>
-    <Mermaid id={simId} chart={diagram({pt,selectedComponent,selectedBehavior})}></Mermaid>
+    <Mermaid id={simId} chart={diagram({ pt, selectedComponent, selectedBehavior })}></Mermaid>
   </Card>
 }

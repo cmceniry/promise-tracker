@@ -171,7 +171,7 @@ impl Tracker {
     pub fn get_agent_wants(&self, agent_name: String) -> HashSet<String> {
         let mut ret = HashSet::new();
         let Some(&ref variants) = self.working_agents.get(&agent_name) else {
-            todo!()
+            return ret;
         };
         for varient in variants {
             ret.extend(varient.get_wants());

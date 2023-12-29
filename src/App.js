@@ -4,9 +4,7 @@ import ContractCarder from './components/ContractCarder';
 import ContractGrapher from './components/ContractGrapher';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Container, Row, Col } from 'react-bootstrap';
-// import init, { get_schema } from './wptpkg';
-import init from './wptpkg';
-import { get_schema, get_pt } from './wptpkg';
+import init, { get_schema } from './wptpkg';
 
 function App() {
   const [schema, setSchema] = useState(null);
@@ -20,16 +18,8 @@ function App() {
       try {
         const schemaObject = JSON.parse(schemaString);
         schemaObject.$id = "/promise-tracker.json";
-        schemaObject.discriminator = {propertyName: "kind"};
+        schemaObject.discriminator = { propertyName: "kind" };
         setSchema(schemaObject);
-      } catch (e) {
-          console.log(e);
-      }
-      try {
-        const pt = await get_pt();
-        pt.add_stuff("bleh");
-        console.log(pt.check("bleh"));
-        console.log(pt.check("blargh"));
       } catch (e) {
         console.log(e);
       }
@@ -43,7 +33,7 @@ function App() {
             sims: new Set(contract.sims)
           };
         }));
-      } finally {}
+      } finally { }
     }
   }, []);
 
@@ -62,15 +52,15 @@ function App() {
   // TODO: scroll pane for the list of ContractCards
   // TODO: highlight top level (comp/beh selection or sim) when there's a contract syntax error
   return (
-    <div className="App"> 
+    <div className="App">
       <Container fluid>
         <Row>
-          <Col md={3} style={{overflowY: "scroll"}}>
-            <ContractCarder contracts={contracts} setContracts={setContracts} simulations={simulations} schema={schema}/>
+          <Col md={3} style={{ overflowY: "scroll" }}>
+            <ContractCarder contracts={contracts} setContracts={setContracts} simulations={simulations} schema={schema} />
           </Col>
-          <Col md={9} style={{overflowY: "scroll"}}>
+          <Col md={9} style={{ overflowY: "scroll" }}>
             <h1 className="header">Contract</h1>
-            <ContractGrapher contracts={contracts} simulations={simulations}/>
+            <ContractGrapher contracts={contracts} simulations={simulations} />
           </Col>
         </Row>
       </Container>
