@@ -1,8 +1,5 @@
-# See here for image contents: https://github.com/microsoft/vscode-dev-containers/tree/v0.194.3/containers/javascript-node/.devcontainer/base.Dockerfile
-
-# [Choice] Node.js version: 16, 14, 12, 16-bullseye, 14-bullseye, 12-bullseye, 16-buster, 14-buster, 12-buster
-ARG VARIANT="16-bullseye"
-FROM mcr.microsoft.com/vscode/devcontainers/javascript-node:0-${VARIANT}
+# https://github.com/devcontainers/images/tree/main/src/javascript-node
+FROM mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm
 
 # [Optional] Uncomment this section to install additional OS packages.
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
@@ -16,4 +13,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 # [Optional] Uncomment if you want to install more global node modules
 # RUN su node -c "npm install -g <your-package-list-here>"
 
-# RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+RUN su node -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+RUN su node -c "/home/node/.cargo/bin/rustup target add wasm32-unknown-unknown"
+RUN su node -c "/home/node/.cargo/bin/cargo install wasm-pack"
+RUN su node -c "/home/node/.cargo/bin/cargo install wasm-opt"
