@@ -37,7 +37,7 @@ func (m *PromiseTracker) rust(
 }
 
 func (m *PromiseTracker) jsBase() *Container {
-	return dag.Container().From("node:16").
+	return dag.Container().From("node:22").
 		WithMountedCache("/.npm", dag.CacheVolume("npm")).
 		WithExec([]string{"apt", "update"}).
 		WithExec([]string{"apt", "install", "-y", "chromium"})
@@ -66,7 +66,7 @@ func (m *PromiseTracker) BuildWasm(
 ) *Directory {
 	return m.rust(src).
 		WithExec([]string{"cargo", "build", "--release", "--target", "wasm32-unknown-unknown"}).
-		WithExec([]string{"wasm-pack", "build", "--target", "web"}).
+		WithExec([]string{"wasm-pack", "build", "--target", "web", "--weak-refs"}).
 		Directory("/src/wpt/pkg")
 }
 
@@ -78,7 +78,7 @@ func (m *PromiseTracker) RunServer(
 	wpt := m.BuildWasm(ctx, wasmSrc)
 
 	return m.js(src).
-		WithMountedDirectory("/src/wpt/pkg", wpt).
+		WithMountedDirectory("/src/src/wptpkg", wpt).
 		WithExec([]string{"npm", "run", "start"}).
 		WithExposedPort(3000).
 		AsService()

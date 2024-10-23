@@ -3,23 +3,14 @@ import ContractGraph from './ContractGraph';
 import { Form } from 'react-bootstrap';
 import Tab from 'react-bootstrap/Tab';
 import Tabs from 'react-bootstrap/Tabs';
-import init, { get_pt } from '../wptpkg';
+import { get_pt } from '../wptpkg';
 
-export default function ContractGrapher({ contracts, simulations }) {
+export default function ContractGrapher({ initDone, contracts, simulations }) {
     const [dComponent, setDComponent] = useState("---");
     const [dBehavior, setDBehavior] = useState("---");
-    const [initDone, setInitDone] = useState(false);
     const [pt, setPt] = useState(null);
     // const [pt, setPt] = useState(new PromiseTracker());
     const [sims, setSims] = useState({});
-
-    useEffect(() => {
-        (async function () {
-            await init();
-            setPt(await get_pt());
-            setInitDone(true);
-        })();
-    }, []);
 
     useEffect(() => {
         const toHandler = setTimeout(() => {

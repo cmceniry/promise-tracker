@@ -7,22 +7,25 @@ import { Container, Row, Col } from 'react-bootstrap';
 import init, { get_schema } from './wptpkg';
 
 function App() {
+  const [initDone, setInitDone] = useState(null);
   const [schema, setSchema] = useState(null);
   const [contracts, setContracts] = useState([]);
   const simulations = ["A", "B", "C"];
 
   useEffect(() => {
     (async function () {
-      await init();
-      const schemaString = await get_schema();
-      try {
-        const schemaObject = JSON.parse(schemaString);
-        schemaObject.$id = "/promise-tracker.json";
-        schemaObject.discriminator = { propertyName: "kind" };
-        setSchema(schemaObject);
-      } catch (e) {
-        console.log(e);
-      }
+      init().then(() => {
+        try {
+          const schemaString = get_schema();
+          const schemaObject = JSON.parse(schemaString);
+          schemaObject.$id = "/promise-tracker.json";
+          schemaObject.discriminator = { propertyName: "kind" };
+          setSchema(schemaObject);
+        } catch (e) {
+          console.log(e);
+        }
+        setInitDone(true);
+      })
     })();
     const c = localStorage.getItem('contracts');
     if (c) {
@@ -60,7 +63,7 @@ function App() {
           </Col>
           <Col md={9} style={{ overflowY: "scroll" }}>
             <h1 className="header">Contract</h1>
-            <ContractGrapher contracts={contracts} simulations={simulations} />
+            <ContractGrapher initDone={initDone} contracts={contracts} simulations={simulations} />
           </Col>
         </Row>
       </Container>

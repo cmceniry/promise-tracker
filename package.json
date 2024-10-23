@@ -24,6 +24,12 @@
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
+    "env": {
+      "browser": true
+    },
+    "ignores": [
+      "wptpkg/*"
+    ],
     "extends": [
       "react-app",
       "react-app/jest"
