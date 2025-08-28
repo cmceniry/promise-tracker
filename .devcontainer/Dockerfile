@@ -13,7 +13,9 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 # [Optional] Uncomment if you want to install more global node modules
 # RUN su node -c "npm install -g <your-package-list-here>"
 
-RUN su node -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
-RUN su node -c "/home/node/.cargo/bin/rustup target add wasm32-unknown-unknown"
-RUN su node -c "/home/node/.cargo/bin/cargo install wasm-pack"
-RUN su node -c "/home/node/.cargo/bin/cargo install wasm-opt"
+# Install Rust and WebAssembly build tools
+RUN su node -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    RUSTUP_USE_CURL=1 sh -s -- -y \
+    && /home/node/.cargo/bin/rustup target add wasm32-unknown-unknown \
+    && /home/node/.cargo/bin/cargo install wasm-pack \
+    && /home/node/.cargo/bin/cargo install wasm-opt"
