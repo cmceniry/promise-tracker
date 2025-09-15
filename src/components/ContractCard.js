@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Form } from 'react-bootstrap';
+import './ContractCard.css';
 
-export default function ContractCard({contractId, contractFilename, contractText, contractError, contractSims, updateFilename, updateContract, deleteContract, updateContractSim, simulations}) {
+export default function ContractCard({contractId, contractFilename, contractText, contractError, contractSims, updateFilename, updateContract, deleteContract, updateContractSim, simulations, cardClassName}) {
   const downloadRef = useRef("");
   const [downloadLink, setDownloadLink] = useState("");
   useEffect(() => {
@@ -11,7 +12,7 @@ export default function ContractCard({contractId, contractFilename, contractText
     setDownloadLink(downloadRef.current);
   }, [contractText]);
 
-  return <Card body>
+  return <Card body className={cardClassName}>
     <Form>
       <Form.Control
         id={contractId}

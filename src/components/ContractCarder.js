@@ -155,7 +155,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   return <div style={{ height: '100vh', overflowY: 'auto' }}>
     <>
-      {contracts.map((c) =>
+      {contracts.map((c, i) =>
         <ContractCard
           key={c.id}
           contractId={c.id}
@@ -168,6 +168,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
           deleteContract={deleteContract}
           updateContractSim={updateContractSim}
           simulations={simulations}
+          cardClassName={i % 2 === 0 ? 'contract-card-even' : 'contract-card-odd'}
         />
       )}
     </>

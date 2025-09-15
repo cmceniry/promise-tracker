@@ -1,0 +1,9 @@
+.contract-card-even.card,
+.contract-card-even .card-body {
+  background-color: #f8f9fa !important;
+}
+
+.contract-card-odd.card,
+.contract-card-odd .card-body {
+  background-color: #e9ecef !important;
+}
