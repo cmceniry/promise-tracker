@@ -1,0 +1,30 @@
+.contract-text-card {
+  text-align: left;
+}
+
+.contract-text-card {
+  text-align: left;
+}
+
+.contract-text-list {
+  list-style-type: none;
+}
+
+.contract-text-list li {
+  text-align: left;
+}
+
+.contract-text-option {
+  color: green;
+  font-weight: bold;
+}
+
+.contract-text-possible {
+  color: red;
+  font-weight: bold;
+}
+
+.contract-text-error {
+  color: blue;
+  font-weight: bold;
+}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import ContractGraph from './ContractGraph';
+import ContractText from './ContractText';
 import { Form } from 'react-bootstrap';
 import Tab from 'react-bootstrap/Tab';
 import Tabs from 'react-bootstrap/Tabs';
@@ -95,7 +95,7 @@ export default function ContractGrapher({ initDone, contracts, simulations }) {
         <Tabs>
             {simulations.map((s, i) => {
                 return <Tab title={s} key={i} eventKey={i}>
-                    <ContractGraph simId={s} pt={sims[s]} selectedComponent={dComponent} selectedBehavior={dBehavior} />
+                    <ContractText simId={s} pt={sims[s]} selectedComponent={dComponent} selectedBehavior={dBehavior}/>
                 </Tab>
             })}
         </Tabs>
