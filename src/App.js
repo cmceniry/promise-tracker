@@ -10,7 +10,7 @@ function App() {
   const [initDone, setInitDone] = useState(null);
   const [schema, setSchema] = useState(null);
   const [contracts, setContracts] = useState([]);
-  const simulations = ["A", "B", "C"];
+  const simulations = ["A", "B"];
 
   useEffect(() => {
     (async function () {

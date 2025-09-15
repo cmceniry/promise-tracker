@@ -1,5 +1,9 @@
+
 .contract-text-card {
   text-align: left;
+  overflow-x: auto;
+  white-space: nowrap;
+  /* Optional: set a min-width or max-width if needed */
 }
 
 .contract-text-card {
@@ -7,7 +11,8 @@
 }
 
 .contract-text-list {
-  list-style-type: none;
+  list-style-type: disc;
+  padding-left: 20px;
 }
 
 .contract-text-list li {

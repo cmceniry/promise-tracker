@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from "react";
 import ContractText from './ContractText';
 import { Form } from 'react-bootstrap';
-import Tab from 'react-bootstrap/Tab';
-import Tabs from 'react-bootstrap/Tabs';
 import { get_pt } from '../wptpkg';
 
 export default function ContractGrapher({ initDone, contracts, simulations }) {
@@ -84,7 +82,6 @@ export default function ContractGrapher({ initDone, contracts, simulations }) {
                 {components.map((c, i) =>
                     <option key={i} value={c}>{c}</option>
                 )}
-                {/* {console.log(typeof (components))} */}
             </Form.Select>
             <Form.Select onChange={updateDBehavior} disabled={!wantsValid}>
                 {wants.map((w, i) =>
@@ -92,12 +89,13 @@ export default function ContractGrapher({ initDone, contracts, simulations }) {
                 )}
             </Form.Select>
         </Form>
-        <Tabs>
-            {simulations.map((s, i) => {
-                return <Tab title={s} key={i} eventKey={i}>
+        <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+            {simulations.map((s, i) => (
+                <div key={i} style={{ flex: 1, minWidth: 0, border: '1px solid #ccc', borderRadius: '4px', padding: '0.5rem', background: '#fafbfc' }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', textAlign: 'center' }}>{s}</div>
                     <ContractText simId={s} pt={sims[s]} selectedComponent={dComponent} selectedBehavior={dBehavior}/>
-                </Tab>
-            })}
-        </Tabs>
+                </div>
+            ))}
+        </div>
     </>
 }
