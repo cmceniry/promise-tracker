@@ -9,9 +9,11 @@ use std::collections::HashSet;
 pub struct Behavior {
     name: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     comment: String,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     conditions: Vec<String>,
 }
 
@@ -41,6 +43,15 @@ impl Behavior {
     }
 
     pub fn add_condition(&mut self, c: String) {
+        if self.conditions.contains(&c) {
+            return;
+        }
+        if c == "" {
+            return;
+        }
+        if c == self.name {
+            return;
+        }
         self.conditions.push(c)
     }
 
@@ -112,6 +123,28 @@ mod tests {
         assert!(p.has_behavior(&String::from("bar")));
         assert!(p.has_behavior(&String::from("baz")));
         assert!(!p.has_behavior(&String::from("blah")));
+    }
+
+    #[test]
+    fn add_condition() {
+        let mut p = Behavior {
+            name: String::from("a"),
+            comment: String::from(""),
+            conditions: [].to_vec(),
+        };
+        p.add_condition(String::from("c1"));
+        assert!(p.conditions == ["c1"]);
+        p.add_condition(String::from("c2"));
+        assert!(p.conditions == ["c1", "c2"]);
+        // test duplicate
+        p.add_condition(String::from("c1"));
+        assert!(p.conditions == ["c1", "c2"]);
+        // test empty
+        p.add_condition(String::from(""));
+        assert!(p.conditions == ["c1", "c2"]);
+        // test self-reference
+        p.add_condition(String::from("a"));
+        assert!(p.conditions == ["c1", "c2"]);
     }
 
     #[test]

@@ -5,6 +5,60 @@ use std::collections::HashSet;
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct IntermediateAgent {
+    pub name: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<Behavior>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub wants: Vec<Behavior>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub global_conditions: Vec<String>,
+}
+
+impl From<Agent> for IntermediateAgent {
+    fn from(value: Agent) -> Self {
+        let mut conditions = value.get_conditions().into_iter().collect::<Vec<String>>();
+        conditions.sort();
+        let mut global_conditions = vec![];
+        for c in conditions {
+            let mut inuse = true;
+            for p in value.provides.iter() {
+                if !p.get_conditions().contains(&c) {
+                    inuse = false;
+                    break;
+                }
+            }
+            if inuse {
+               global_conditions.push(c);
+            }
+        }
+        let provides = value.provides.iter().map(|p| {
+            let conditions = p.get_conditions().iter().filter(|c| {
+                !global_conditions.contains(c)
+            }).cloned().collect();
+            Behavior::new(p.get_name().clone()).with_conditions(conditions)
+        }).collect::<Vec<Behavior>>();
+
+       IntermediateAgent {
+            name: value.name,
+            comment: value.comment,
+            provides: provides,
+            wants: value.wants,
+            global_conditions: global_conditions,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(try_from = "IntermediateAgent")]
+#[serde(into = "IntermediateAgent")]
 pub struct Agent {
     name: String,
     #[serde(default)]
@@ -15,6 +69,26 @@ pub struct Agent {
 
     #[serde(default)]
     wants: Vec<Behavior>,
+}
+
+impl TryFrom<IntermediateAgent> for Agent {
+    type Error = String;
+
+    fn try_from(value: IntermediateAgent) -> Result<Self, Self::Error> {
+        let mut provides = value.provides.clone();
+        for p in &mut provides {
+            for c in &value.global_conditions {
+                p.add_condition(c.clone());
+            }
+        }
+
+        Ok(Agent {
+            name: value.name,
+            comment: value.comment,
+            provides: provides,
+            wants: value.wants,
+        })
+    }
 }
 
 impl Agent {
@@ -40,6 +114,8 @@ impl Agent {
         self.wants = wants;
         self
     }
+
+    // Does not provide a global_conditions since that could be modified after the fact
 
     pub fn get_name(&self) -> &String {
         &self.name
@@ -265,6 +341,83 @@ wants:
     }
 
     #[test]
+    fn from_yaml_with_global_conditions() {
+        let a: Agent = serde_yaml::from_str(
+            "name: foo
+comment: this is a comment
+provides:
+  - name: p1
+  - name: p2
+    conditions:
+      - c2
+      - c1
+wants:
+  - name: w1
+  - name: w2
+globalConditions:
+  - gc1
+  - gc2
+",
+        )
+        .expect("Unable to parse");
+        assert_eq!(a.name, "foo");
+        assert_eq!(a.comment, "this is a comment");
+        assert_eq!(
+            a.provides,
+            vec!(
+                Behavior::new_with_conditions(
+                    String::from("p1"),
+                    vec!(String::from("gc1"), String::from("gc2"))
+                ),
+                Behavior::new_with_conditions(
+                    String::from("p2"),
+                    vec!(String::from("c2"), String::from("c1"), String::from("gc1"), String::from("gc2"))
+                ),
+            ),
+        );
+    }
+
+    #[test]
+    fn to_yaml_simple() {
+        let a = Agent::new(String::from("foo"))
+            .with_provides(vec![
+                Behavior::new(String::from("p1"))
+                    .with_conditions(vec![String::from("p1c1"), String::from("p1c2")]),
+                Behavior::new(String::from("p2")),
+            ])
+            .with_wants(vec![
+                Behavior::new(String::from("w1")),
+                Behavior::new(String::from("w2")),
+            ]);
+        let s = serde_yaml::to_string(&a).expect("Unable to serialize");
+        let expected = "name: foo\nprovides:\n- name: p1\n  conditions:\n  - p1c1\n  - p1c2\n- name: p2\nwants:\n- name: w1\n- name: w2\n";
+        assert_eq!(s, expected);
+    }
+
+    #[test]
+    fn to_yaml_with_global_conditions() {
+        let a = Agent {
+            name: String::from("foo"),
+            comment: String::from(""),
+            provides: vec![
+                Behavior::new(
+                    String::from("p1"),
+                ).with_conditions(vec![String::from("gc1")]),
+                Behavior::new(
+                    String::from("p2"),
+                ).with_conditions(vec![String::from("c1"), String::from("c2"), String::from("gc1")]),
+            ],
+            wants: vec![
+                Behavior::new(String::from("w1")),
+                Behavior::new(String::from("w2")),
+            ],
+        };
+        let s = serde_yaml::to_string(&a).expect("Unable to serialize");
+        let expected = "name: foo\nprovides:\n- name: p1\n- name: p2\n  conditions:\n  - c1\n  - c2\nwants:\n- name: w1\n- name: w2\nglobalConditions:\n- gc1\n";
+        assert_eq!(s, expected);
+    }
+
+    #[test]
     fn get_conditions() {
         let a: Agent = serde_yaml::from_str(
             "name: foo
@@ -440,6 +593,30 @@ provides:
                     Behavior::new(String::from("w1")),
                     Behavior::new(String::from("w2")),
                 ])
+        );
+    }
+
+    #[test]
+    fn test_make_instance_global_conditions() {
+        let ia = IntermediateAgent {
+            name: String::from("a1"),
+            comment: String::from(""),
+            provides: vec![Behavior::new(String::from("p1"))
+                .with_conditions(vec![String::from("p1c1"), String::from("p1c2")])],
+            wants: vec![Behavior::new(String::from("w1"))],
+            global_conditions: vec![String::from("gc1"), String::from("gc2")],
+        };
+        let a = Agent::try_from(ia).unwrap();
+        assert_eq!(
+            a,
+            Agent::new(String::from("a1")).with_provides(vec![Behavior::new(String::from("p1"))
+                .with_conditions(vec![
+                    String::from("p1c1"),
+                    String::from("p1c2"),
+                    String::from("gc1"),
+                    String::from("gc2"),
+                ])])
+                .with_wants(vec![Behavior::new(String::from("w1"))])
         );
     }
 }
