@@ -18,4 +18,5 @@ RUN su node -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     RUSTUP_USE_CURL=1 sh -s -- -y \
     && /home/node/.cargo/bin/rustup target add wasm32-unknown-unknown \
     && /home/node/.cargo/bin/cargo install wasm-pack \
-    && /home/node/.cargo/bin/cargo install wasm-opt"
+    && /home/node/.cargo/bin/cargo install wasm-opt \
+    && /home/node/.cargo/bin/cargo install just"
