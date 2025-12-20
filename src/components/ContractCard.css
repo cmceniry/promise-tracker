@@ -7,3 +7,23 @@
 .contract-card-odd .card-body {
   background-color: #e9ecef !important;
 }
+
+.contract-card-expanded {
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+.contract-card-even .card-body,
+.contract-card-odd .card-body {
+  transition: padding 0.3s ease-out;
+}
