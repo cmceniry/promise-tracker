@@ -5,6 +5,8 @@ import { BsPlusLg, BsUpload } from 'react-icons/bs';
 import ContractCard from './ContractCard'
 import ContractEditModal from './ContractEditModal'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
+import { DndContext, closestCenter } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 
 import yaml from 'js-yaml';
 import Ajv from 'ajv';
@@ -200,24 +202,43 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     }));
   }
 
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    
+    if (over && active.id !== over.id) {
+      setContracts((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id);
+        const newIndex = items.findIndex((item) => item.id === over.id);
+        
+        const newItems = [...items];
+        const [removed] = newItems.splice(oldIndex, 1);
+        newItems.splice(newIndex, 0, removed);
+        
+        return newItems;
+      });
+    }
+  }
+
   return <div style={{ height: '100vh', overflowY: 'auto' }}>
-    <>
-      {contracts.map((c, i) =>
-        <ContractCard
-          key={c.id}
-          contractId={c.id}
-          contractFilename={c.filename}
-          contractText={c.text}
-          contractError={c.err}
-          contractSims={c.sims}
-          deleteContract={deleteContract}
-          updateContractSim={updateContractSim}
-          simulations={simulations}
-          cardClassName={i % 2 === 0 ? 'contract-card-even' : 'contract-card-odd'}
-          onEdit={openEditModal}
-        />
-      )}
-    </>
+    <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={contracts.map(c => c.id)} strategy={verticalListSortingStrategy}>
+        {contracts.map((c, i) =>
+          <ContractCard
+            key={c.id}
+            contractId={c.id}
+            contractFilename={c.filename}
+            contractText={c.text}
+            contractError={c.err}
+            contractSims={c.sims}
+            deleteContract={deleteContract}
+            updateContractSim={updateContractSim}
+            simulations={simulations}
+            cardClassName={i % 2 === 0 ? 'contract-card-even' : 'contract-card-odd'}
+            onEdit={openEditModal}
+          />
+        )}
+      </SortableContext>
+    </DndContext>
     <Card>
       <Button onClick={addBlankContract} aria-label="Add Another Contract"><BsPlusLg /></Button>
     </Card>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { Alert, Button, Card, Badge } from 'react-bootstrap';
-import { BsDownload, BsTrash } from 'react-icons/bs';
+import { BsDownload, BsTrash, BsGripVertical } from 'react-icons/bs';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import yaml from 'js-yaml';
 import './ContractCard.css';
 
@@ -45,6 +47,21 @@ export default function ContractCard({contractId, contractFilename, contractText
   const downloadRef = useRef("");
   const [downloadLink, setDownloadLink] = useState("");
   
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: contractId });
+  
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+  
   useEffect(() => {
     const d = new Blob([contractText], { type: 'text/json' });
     if (downloadRef.current !== "") window.URL.revokeObjectURL(downloadRef.current);
@@ -55,8 +72,8 @@ export default function ContractCard({contractId, contractFilename, contractText
   const { agents, superagents } = useMemo(() => extractAgentsAndSuperagents(contractText), [contractText]);
 
   const handleCardClick = (e) => {
-    // Don't trigger edit if clicking on action buttons or links
-    if (e.target.closest('button') || e.target.closest('a')) {
+    // Don't trigger edit if clicking on action buttons, links, or drag handle
+    if (e.target.closest('button') || e.target.closest('a') || e.target.closest('.drag-handle')) {
       return;
     }
     if (onEdit) {
@@ -65,18 +82,37 @@ export default function ContractCard({contractId, contractFilename, contractText
   };
 
   return <Card 
+    ref={setNodeRef}
     body 
     className={cardClassName}
     onClick={handleCardClick}
-    style={{ cursor: 'pointer' }}
+    style={{ ...style, cursor: 'pointer', position: 'relative' }}
   >
-      <div style={{ marginBottom: '0.5rem' }}>
+      <div 
+        className="drag-handle"
+        {...attributes}
+        {...listeners}
+        style={{ 
+          position: 'absolute',
+          left: '8px',
+          top: '50%',
+          transform: 'translateY(-50%)',
+          cursor: 'grab',
+          padding: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          zIndex: 1
+        }}
+      >
+        <BsGripVertical size={20} />
+      </div>
+      <div style={{ marginBottom: '0.5rem', marginLeft: '32px' }}>
         <strong>{contractFilename || 'untitled-contract.yaml'}</strong>
       </div>
       
       {/* Agents and Superagents - always visible */}
       {(agents.length > 0 || superagents.length > 0) && (
-        <div style={{ marginBottom: '0.5rem', fontSize: '0.9em' }}>
+        <div style={{ marginBottom: '0.5rem', marginLeft: '32px', fontSize: '0.9em' }}>
           {agents.length > 0 && (
             <div style={{ marginBottom: '0.25rem' }}>
               <strong>Agents:</strong>{' '}
@@ -97,7 +133,7 @@ export default function ContractCard({contractId, contractFilename, contractText
       )}
       
       {/* Simulation buttons - always visible */}
-      <div style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ marginBottom: '0.5rem', marginLeft: '32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           {simulations.map((s, i) => {
             return <Button key={i} id={contractId + ":" + s} variant={contractSims.has(s) ? "success" : "danger"} onClick={updateContractSim} size="sm">{s}</Button>
@@ -110,6 +146,6 @@ export default function ContractCard({contractId, contractFilename, contractText
       </div>
       
       {/* Error alert - always visible */}
-      {contractError && <Alert variant="danger" style={{ marginBottom: '0.5rem' }}>{contractError}</Alert>}
+      {contractError && <Alert variant="danger" style={{ marginBottom: '0.5rem', marginLeft: '32px' }}>{contractError}</Alert>}
   </Card>
 }
