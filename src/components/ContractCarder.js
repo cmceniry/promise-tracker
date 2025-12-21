@@ -15,6 +15,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
   const [showModal, setShowModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingContracts, setEditingContracts] = useState([]);
+  const [pendingContractId, setPendingContractId] = useState(null);
 
   useEffect(() => {
     if (!schema) {
@@ -25,6 +26,18 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       discriminator: true,
     }));
   }, [schema]);
+
+  // Auto-open modal when a new contract is created
+  useEffect(() => {
+    if (pendingContractId) {
+      const contract = contracts.find(c => c.id === pendingContractId);
+      if (contract) {
+        setPendingContractId(null);
+        setEditingContracts([contract]);
+        setShowEditModal(true);
+      }
+    }
+  }, [contracts, pendingContractId]);
 
   const openEditModal = (contractId) => {
     const contractToEdit = contracts.find(c => c.id === contractId);
@@ -87,18 +100,20 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   const addBlankContract = (e) => {
     e.preventDefault();
+    const newId = (() => {
+      let r = "";
+      for (var i = 0; i < 16; i++) {
+        r += "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".charAt(Math.floor(Math.random()*62));
+      }
+      return r;
+    })();
+    setPendingContractId(newId);
     setContracts([...contracts, {
       filename: "",
       text: "",
       err: "",
       sims: new Set(simulations),
-      id: (() => {
-        let r = "";
-        for (var i = 0; i < 16; i++) {
-          r += "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".charAt(Math.floor(Math.random()*62));
-        }
-        return r;
-      })(),
+      id: newId,
     }])
   }
 
@@ -229,6 +244,15 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       onSave={handleSaveEditModal}
       schema={schema}
       ajv={ajv}
+      simulations={simulations}
+      contractSimsMap={editingContracts.reduce((acc, ec) => {
+        const contract = contracts.find(c => c.id === ec.id);
+        if (contract) {
+          acc[ec.id] = contract.sims;
+        }
+        return acc;
+      }, {})}
+      updateContractSim={updateContractSim}
     />
   </div>
 }

@@ -3,7 +3,7 @@ import { Modal, Button, Form, Alert } from 'react-bootstrap';
 import yaml from 'js-yaml';
 import { SchemaSyntaxError } from '../libs/promise-tracker/contract';
 
-export default function ContractEditModal({ show, contracts, onHide, onSave, schema, ajv }) {
+export default function ContractEditModal({ show, contracts, onHide, onSave, schema, ajv, simulations, contractSimsMap, updateContractSim }) {
   const [editedContracts, setEditedContracts] = useState([]);
   const [errors, setErrors] = useState({});
 
@@ -131,6 +131,14 @@ export default function ContractEditModal({ show, contracts, onHide, onSave, sch
                   <span style={{ marginLeft: '1rem', color: 'red' }}>⚠</span>
                 )}
               </h5>
+              {simulations && contractSimsMap && updateContractSim && (
+                <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem' }}>
+                  {simulations.map((s, i) => {
+                    const contractSims = contractSimsMap[contract.id] || new Set();
+                    return <Button key={i} id={contract.id + ":" + s} variant={contractSims.has(s) ? "success" : "danger"} onClick={updateContractSim} size="sm">{s}</Button>
+                  })}
+                </div>
+              )}
               <Form>
                 <Form.Group className="mb-3">
                   <Form.Label>Filename</Form.Label>
