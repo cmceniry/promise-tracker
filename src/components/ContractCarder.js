@@ -162,7 +162,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   const deleteContract = (e) => {
     e.preventDefault();
-    setContracts(c => c.filter((contract) => contract.id !== e.target.id));
+    setContracts(c => c.filter((contract) => contract.id !== e.currentTarget.id));
   }
 
   const updateContractSim = (e) => {
