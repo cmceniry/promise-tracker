@@ -73,7 +73,7 @@ export default function PromiseNetworkGraph({ pt, simId }) {
     <Card body className="promise-network-container">
       <div className="promise-network-legend">
         <div className="promise-network-legend-item">
-          <span className="promise-network-legend-color" style={{ backgroundColor: '#1976D2' }}></span>
+          <span className="promise-network-legend-color circle" style={{ backgroundColor: '#1976D2' }}></span>
           <span>Component</span>
         </div>
         <div className="promise-network-legend-item">
