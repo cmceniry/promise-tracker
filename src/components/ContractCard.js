@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { Alert, Button, Card, Form, Badge } from 'react-bootstrap';
+import { BsDownload, BsTrash } from 'react-icons/bs';
 import yaml from 'js-yaml';
 import './ContractCard.css';
 
@@ -101,10 +102,16 @@ export default function ContractCard({contractId, contractFilename, contractText
       )}
       
       {/* Simulation buttons - always visible */}
-      <div style={{ marginBottom: '0.5rem' }}>
-        {simulations.map((s, i) => {
-          return <Button key={i} id={contractId + ":" + s} variant={contractSims.has(s) ? "success" : "danger"} onClick={updateContractSim} size="sm" style={{ marginRight: '0.25rem' }}>{s}</Button>
-        })}
+      <div style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', gap: '0.25rem' }}>
+          {simulations.map((s, i) => {
+            return <Button key={i} id={contractId + ":" + s} variant={contractSims.has(s) ? "success" : "danger"} onClick={updateContractSim} size="sm">{s}</Button>
+          })}
+        </div>
+        <div style={{ display: 'flex', gap: '0.25rem' }}>
+          <a download={contractFilename} href={downloadLink}><Button size="sm" aria-label="Download"><BsDownload /></Button></a>
+          <Button id={contractId} onClick={deleteContract} size="sm" variant="danger" aria-label="Delete"><BsTrash /></Button>
+        </div>
       </div>
       
       {/* Error alert - always visible */}
@@ -119,12 +126,7 @@ export default function ContractCard({contractId, contractFilename, contractText
             rows="10"
             value={contractText}
             onChange={updateContract}
-            style={{ marginBottom: '0.5rem' }}
           />
-          <div>
-            <a download={contractFilename} href={downloadLink}><Button size="sm">Download</Button></a>{' '}
-            <Button id={contractId} onClick={deleteContract} size="sm" variant="danger">Delete</Button>
-          </div>
         </div>
       )}
     </Form>

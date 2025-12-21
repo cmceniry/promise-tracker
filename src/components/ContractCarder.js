@@ -1,6 +1,7 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
 import { Card, Button } from 'react-bootstrap';
+import { BsPlusLg, BsUpload } from 'react-icons/bs';
 import ContractCard from './ContractCard'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
 
@@ -173,11 +174,11 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       )}
     </>
     <Card>
-      <Button onClick={addBlankContract}>Add Another Contract</Button>
+      <Button onClick={addBlankContract} aria-label="Add Another Contract"><BsPlusLg /></Button>
     </Card>
     <Card>
       <input type="file" onChange={changeFile} />
-      <Button onClick={uploadContract}>Upload</Button>
+      <Button onClick={uploadContract} aria-label="Upload"><BsUpload /></Button>
     </Card>
   </div>
 }
