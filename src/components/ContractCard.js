@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { Alert, Button, Card, Form, Badge } from 'react-bootstrap';
+import { Alert, Button, Card, Badge } from 'react-bootstrap';
 import { BsDownload, BsTrash } from 'react-icons/bs';
 import yaml from 'js-yaml';
 import './ContractCard.css';
@@ -41,10 +41,9 @@ function extractAgentsAndSuperagents(contractText) {
   return { agents, superagents };
 }
 
-export default function ContractCard({contractId, contractFilename, contractText, contractError, contractSims, updateFilename, updateContract, deleteContract, updateContractSim, simulations, cardClassName}) {
+export default function ContractCard({contractId, contractFilename, contractText, contractError, contractSims, deleteContract, updateContractSim, simulations, cardClassName, onEdit}) {
   const downloadRef = useRef("");
   const [downloadLink, setDownloadLink] = useState("");
-  const [isExpanded, setIsExpanded] = useState(false);
   
   useEffect(() => {
     const d = new Blob([contractText], { type: 'text/json' });
@@ -55,28 +54,24 @@ export default function ContractCard({contractId, contractFilename, contractText
 
   const { agents, superagents } = useMemo(() => extractAgentsAndSuperagents(contractText), [contractText]);
 
-  const toggleExpand = () => {
-    setIsExpanded(!isExpanded);
+  const handleCardClick = (e) => {
+    // Don't trigger edit if clicking on action buttons or links
+    if (e.target.closest('button') || e.target.closest('a')) {
+      return;
+    }
+    if (onEdit) {
+      onEdit(contractId);
+    }
   };
 
-  return <Card body className={cardClassName}>
-    <Form>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <Form.Control
-          id={contractId}
-          as="input"
-          value={contractFilename}
-          onChange={updateFilename}
-          style={{ flex: 1 }}
-        />
-        <Button 
-          variant="outline-secondary" 
-          onClick={toggleExpand}
-          style={{ minWidth: '2rem', padding: '0.25rem 0.5rem' }}
-          aria-label={isExpanded ? "Collapse" : "Expand"}
-        >
-          {isExpanded ? '▼' : '▶'}
-        </Button>
+  return <Card 
+    body 
+    className={cardClassName}
+    onClick={handleCardClick}
+    style={{ cursor: 'pointer' }}
+  >
+      <div style={{ marginBottom: '0.5rem' }}>
+        <strong>{contractFilename || 'untitled-contract.yaml'}</strong>
       </div>
       
       {/* Agents and Superagents - always visible */}
@@ -109,26 +104,12 @@ export default function ContractCard({contractId, contractFilename, contractText
           })}
         </div>
         <div style={{ display: 'flex', gap: '0.25rem' }}>
-          <a download={contractFilename} href={downloadLink}><Button size="sm" aria-label="Download"><BsDownload /></Button></a>
+          <a download={contractFilename || 'untitled-contract.yaml'} href={downloadLink}><Button size="sm" aria-label="Download"><BsDownload /></Button></a>
           <Button id={contractId} onClick={deleteContract} size="sm" variant="danger" aria-label="Delete"><BsTrash /></Button>
         </div>
       </div>
       
       {/* Error alert - always visible */}
       {contractError && <Alert variant="danger" style={{ marginBottom: '0.5rem' }}>{contractError}</Alert>}
-      
-      {/* Expanded content */}
-      {isExpanded && (
-        <div className="contract-card-expanded">
-          <Form.Control
-            id={contractId}
-            as="textarea"
-            rows="10"
-            value={contractText}
-            onChange={updateContract}
-          />
-        </div>
-      )}
-    </Form>
   </Card>
 }

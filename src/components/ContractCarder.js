@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { Card, Button, Modal } from 'react-bootstrap';
 import { BsPlusLg, BsUpload } from 'react-icons/bs';
 import ContractCard from './ContractCard'
+import ContractEditModal from './ContractEditModal'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
 
 import yaml from 'js-yaml';
@@ -12,6 +13,8 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
   const [selectedFile, setSelectedFile] = useState();
   const [ajv, setAjv] = useState();
   const [showModal, setShowModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingContracts, setEditingContracts] = useState([]);
 
   useEffect(() => {
     if (!schema) {
@@ -23,30 +26,29 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     }));
   }, [schema]);
 
-  const updateFilename = (e) => {
-    e.preventDefault();
-    setContracts(c => c.map((contract) => {
-      if (e.target.id !== contract.id) {
-        return contract;
-      }
-      return {...contract, filename: e.target.value};
-    }));
+  const openEditModal = (contractId) => {
+    const contractToEdit = contracts.find(c => c.id === contractId);
+    if (contractToEdit) {
+      setEditingContracts([contractToEdit]);
+      setShowEditModal(true);
+    }
   };
 
-  const contractUpdater = (e) => {
-    e.preventDefault();
+  const handleSaveEditModal = (editedContracts) => {
     setContracts(c => c.map((contract) => {
-      if (e.target.id !== contract.id) {
+      const edited = editedContracts.find(ec => ec.id === contract.id);
+      if (!edited) {
         return contract;
       }
+      
+      // Validate the contract
       let err = null;
       try {
-        if (e.target.value) {
-          // allFromYAML(e.target.value);
+        if (edited.text) {
           if (!schema) {
             throw new Error("No schema loaded");
           }
-          const allDocs = yaml.loadAll(e.target.value);
+          const allDocs = yaml.loadAll(edited.text);
           const validate = ajv.getSchema("/promise-tracker.json");
           allDocs.every((d, idx) => {
             const valid = validate(d);
@@ -68,8 +70,19 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
           err = e.toString();
         }
       };
-      return {...contract, text: e.target.value, err: err};
-    }))
+      
+      return {
+        ...contract,
+        filename: edited.filename,
+        text: edited.text,
+        err: err
+      };
+    }));
+  };
+
+  const handleCloseEditModal = () => {
+    setShowEditModal(false);
+    setEditingContracts([]);
   };
 
   const addBlankContract = (e) => {
@@ -182,12 +195,11 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
           contractText={c.text}
           contractError={c.err}
           contractSims={c.sims}
-          updateFilename={updateFilename}
-          updateContract={contractUpdater}
           deleteContract={deleteContract}
           updateContractSim={updateContractSim}
           simulations={simulations}
           cardClassName={i % 2 === 0 ? 'contract-card-even' : 'contract-card-odd'}
+          onEdit={openEditModal}
         />
       )}
     </>
@@ -210,5 +222,13 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
         </Button>
       </Modal.Footer>
     </Modal>
+    <ContractEditModal
+      show={showEditModal}
+      contracts={editingContracts}
+      onHide={handleCloseEditModal}
+      onSave={handleSaveEditModal}
+      schema={schema}
+      ajv={ajv}
+    />
   </div>
 }
