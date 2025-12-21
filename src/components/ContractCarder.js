@@ -1,6 +1,6 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
-import { Card, Button } from 'react-bootstrap';
+import { Card, Button, Modal } from 'react-bootstrap';
 import { BsPlusLg, BsUpload } from 'react-icons/bs';
 import ContractCard from './ContractCard'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
@@ -11,6 +11,7 @@ import Ajv from 'ajv';
 export default function ContractCarder({contracts, setContracts, simulations, schema}) {
   const [selectedFile, setSelectedFile] = useState();
   const [ajv, setAjv] = useState();
+  const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     if (!schema) {
@@ -88,14 +89,10 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     }])
   }
 
-  const changeFile = (e) => {
-    e.preventDefault();
-    setSelectedFile(e.target.files[0]);
-  }
-  const uploadContract = (e) => {
-    e.preventDefault();
+  const uploadContract = (file) => {
+    if (!file) return;
     const f = new FileReader();
-    f.readAsText(selectedFile);
+    f.readAsText(file);
     f.onload = () => {
       const cText = f.result;
       let err = "";
@@ -113,7 +110,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
         };
       };
       setContracts([...contracts, {
-        filename: selectedFile.name,
+        filename: file.name,
         text: cText,
         err: err,
         sims: new Set(simulations),
@@ -125,8 +122,29 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
           return r;
         })(),
       }]);
-      // setSelectedFile('');
+      setSelectedFile(null);
+      setShowModal(false);
     };
+  }
+
+  const changeFile = (e) => {
+    e.preventDefault();
+    const file = e.target.files[0];
+    if (file) {
+      uploadContract(file);
+      // Reset the input so the same file can be selected again
+      e.target.value = '';
+    }
+  }
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+    setSelectedFile(null);
+  }
+
+  const handleOpenModal = (e) => {
+    e.preventDefault();
+    setShowModal(true);
   }
 
   const deleteContract = (e) => {
@@ -177,8 +195,20 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       <Button onClick={addBlankContract} aria-label="Add Another Contract"><BsPlusLg /></Button>
     </Card>
     <Card>
-      <input type="file" onChange={changeFile} />
-      <Button onClick={uploadContract} aria-label="Upload"><BsUpload /></Button>
+      <Button onClick={handleOpenModal} aria-label="Upload Contract"><BsUpload /></Button>
     </Card>
+    <Modal show={showModal} onHide={handleCloseModal}>
+      <Modal.Header closeButton>
+        <Modal.Title>Upload Contract File</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <input type="file" onChange={changeFile} accept=".yaml,.yml" />
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={handleCloseModal}>
+          Cancel
+        </Button>
+      </Modal.Footer>
+    </Modal>
   </div>
 }
