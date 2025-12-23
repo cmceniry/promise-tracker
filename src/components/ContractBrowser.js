@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Modal, Button, ListGroup, Breadcrumb, Spinner, Alert } from 'react-bootstrap';
-import { BsFolder, BsFileEarmarkText } from 'react-icons/bs';
+import { Modal, Button, ListGroup, Spinner, Alert } from 'react-bootstrap';
+import { BsFolder, BsFileEarmarkText, BsChevronRight, BsChevronDown } from 'react-icons/bs';
 
 // API utility functions
 const getApiBaseUrl = () => {
@@ -55,91 +55,183 @@ const fetchContract = async (contractId) => {
   return await response.text();
 };
 
+// Recursive TreeNode component
+function TreeNode({ 
+  entry, 
+  path, 
+  level, 
+  expandedPaths, 
+  loadedChildren, 
+  loadingPaths,
+  onToggleExpand,
+  onSelectContract,
+  onHide,
+  onError
+}) {
+  const isExpanded = expandedPaths.has(path);
+  const isLoading = loadingPaths.has(path);
+  const children = loadedChildren.get(path) || [];
+  const indent = level * 20;
+
+  const handleDirectoryClick = (e) => {
+    e.stopPropagation();
+    onToggleExpand(path);
+  };
+
+  const handleContractClick = async (e) => {
+    e.stopPropagation();
+    try {
+      const contractContent = await fetchContract(path);
+      const name = entry.name;
+      onSelectContract(path, name, contractContent);
+      onHide();
+    } catch (err) {
+      onError(err.message);
+    }
+  };
+
+  return (
+    <>
+      <ListGroup.Item
+        action
+        onClick={entry.type === 'directory' ? handleDirectoryClick : handleContractClick}
+        style={{
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          paddingLeft: `${8 + indent}px`,
+        }}
+      >
+        {entry.type === 'directory' ? (
+          <>
+            {isExpanded ? (
+              <BsChevronDown size={16} style={{ flexShrink: 0 }} />
+            ) : (
+              <BsChevronRight size={16} style={{ flexShrink: 0 }} />
+            )}
+            <BsFolder size={20} style={{ flexShrink: 0 }} />
+          </>
+        ) : (
+          <span style={{ width: '16px', display: 'inline-block', flexShrink: 0 }} />
+        )}
+        {entry.type === 'contract' && (
+          <BsFileEarmarkText size={20} style={{ flexShrink: 0 }} />
+        )}
+        <span>{entry.name}</span>
+        {isLoading && (
+          <Spinner animation="border" size="sm" style={{ marginLeft: 'auto' }} />
+        )}
+      </ListGroup.Item>
+      {entry.type === 'directory' && isExpanded && !isLoading && (
+        <>
+          {children.length === 0 ? (
+            <ListGroup.Item style={{ paddingLeft: `${8 + indent + 20}px`, fontStyle: 'italic', color: '#666' }}>
+              Empty directory
+            </ListGroup.Item>
+          ) : (
+            children.map((child) => {
+              const childPath = path ? `${path}/${child.name}` : child.name;
+              return (
+                <TreeNode
+                  key={childPath}
+                  entry={child}
+                  path={childPath}
+                  level={level + 1}
+                  expandedPaths={expandedPaths}
+                  loadedChildren={loadedChildren}
+                  loadingPaths={loadingPaths}
+                  onToggleExpand={onToggleExpand}
+                  onSelectContract={onSelectContract}
+                  onHide={onHide}
+                  onError={onError}
+                />
+              );
+            })
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 export default function ContractBrowser({ show, onHide, onSelectContract }) {
-  const [currentPath, setCurrentPath] = useState(null);
-  const [entries, setEntries] = useState([]);
+  const [expandedPaths, setExpandedPaths] = useState(new Set());
+  const [loadedChildren, setLoadedChildren] = useState(new Map());
+  const [loadingPaths, setLoadingPaths] = useState(new Set());
+  const [rootEntries, setRootEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Fetch directory listing when modal opens or path changes
+  // Fetch root directory listing when modal opens
   useEffect(() => {
     if (show) {
-      setCurrentPath(null);
+      setExpandedPaths(new Set());
+      setLoadedChildren(new Map());
+      setLoadingPaths(new Set());
       setError(null);
-      loadDirectory(null);
+      loadRootDirectory();
     }
   }, [show]);
 
-  const loadDirectory = async (path) => {
+  const loadRootDirectory = async () => {
     setLoading(true);
     setError(null);
     try {
-      const listing = await fetchDirectoryListing(path);
-      setEntries(listing);
-      setCurrentPath(path);
+      const listing = await fetchDirectoryListing(null);
+      setRootEntries(listing);
     } catch (err) {
       setError(err.message);
-      setEntries([]);
+      setRootEntries([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleEntryClick = async (entry) => {
-    if (entry.type === 'directory') {
-      // Navigate into directory
-      const newPath = currentPath 
-        ? `${currentPath}/${entry.name}`
-        : entry.name;
-      await loadDirectory(newPath);
-    } else if (entry.type === 'contract') {
-      // Load the contract
-      const contractId = currentPath
-        ? `${currentPath}/${entry.name}`
-        : entry.name;
-      
-      setLoading(true);
-      setError(null);
-      try {
-        const contractContent = await fetchContract(contractId);
-        onSelectContract(contractId, entry.name, contractContent);
-        onHide();
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+  const loadDirectory = async (path) => {
+    // Check if already loaded
+    if (loadedChildren.has(path)) {
+      return;
     }
-  };
 
-  const handleBreadcrumbClick = (path) => {
-    loadDirectory(path);
-  };
-
-  const getBreadcrumbs = () => {
-    const breadcrumbs = [{ path: null, name: 'contracts' }];
-    
-    if (currentPath) {
-      const segments = currentPath.split('/');
-      let accumulatedPath = '';
-      
-      segments.forEach((segment, index) => {
-        accumulatedPath = index === 0 
-          ? segment 
-          : `${accumulatedPath}/${segment}`;
-        breadcrumbs.push({
-          path: accumulatedPath,
-          name: segment,
-        });
+    setLoadingPaths(prev => new Set(prev).add(path));
+    setError(null);
+    try {
+      const listing = await fetchDirectoryListing(path);
+      setLoadedChildren(prev => new Map(prev).set(path, listing));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingPaths(prev => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
       });
     }
+  };
+
+  const handleToggleExpand = async (path) => {
+    const isExpanded = expandedPaths.has(path);
     
-    return breadcrumbs;
+    if (isExpanded) {
+      // Collapse
+      setExpandedPaths(prev => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    } else {
+      // Expand - load children if not already loaded
+      setExpandedPaths(prev => new Set(prev).add(path));
+      await loadDirectory(path);
+    }
   };
 
   const handleClose = () => {
-    setCurrentPath(null);
-    setEntries([]);
+    setExpandedPaths(new Set());
+    setLoadedChildren(new Map());
+    setLoadingPaths(new Set());
+    setRootEntries([]);
     setError(null);
     onHide();
   };
@@ -155,25 +247,6 @@ export default function ContractBrowser({ show, onHide, onSelectContract }) {
             {error}
           </Alert>
         )}
-        
-        <Breadcrumb>
-          {getBreadcrumbs().map((crumb, index) => (
-            <Breadcrumb.Item
-              key={index}
-              active={index === getBreadcrumbs().length - 1}
-              onClick={() => {
-                if (index < getBreadcrumbs().length - 1) {
-                  handleBreadcrumbClick(crumb.path);
-                }
-              }}
-              style={{
-                cursor: index < getBreadcrumbs().length - 1 ? 'pointer' : 'default',
-              }}
-            >
-              {crumb.name || 'contracts'}
-            </Breadcrumb.Item>
-          ))}
-        </Breadcrumb>
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: '2rem' }}>
@@ -183,29 +256,27 @@ export default function ContractBrowser({ show, onHide, onSelectContract }) {
           </div>
         ) : (
           <ListGroup>
-            {entries.length === 0 ? (
+            {rootEntries.length === 0 ? (
               <ListGroup.Item>No contracts or directories found.</ListGroup.Item>
             ) : (
-              entries.map((entry, index) => (
-                <ListGroup.Item
-                  key={index}
-                  action
-                  onClick={() => handleEntryClick(entry)}
-                  style={{
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                  }}
-                >
-                  {entry.type === 'directory' ? (
-                    <BsFolder size={20} />
-                  ) : (
-                    <BsFileEarmarkText size={20} />
-                  )}
-                  <span>{entry.name}</span>
-                </ListGroup.Item>
-              ))
+              rootEntries.map((entry) => {
+                const path = entry.name;
+                return (
+                  <TreeNode
+                    key={path}
+                    entry={entry}
+                    path={path}
+                    level={0}
+                    expandedPaths={expandedPaths}
+                    loadedChildren={loadedChildren}
+                    loadingPaths={loadingPaths}
+                    onToggleExpand={handleToggleExpand}
+                    onSelectContract={onSelectContract}
+                    onHide={onHide}
+                    onError={setError}
+                  />
+                );
+              })
             )}
           </ListGroup>
         )}
