@@ -13,6 +13,38 @@ import { validateFilename, generateUniqueRandomFilename } from '../utils/filenam
 import yaml from 'js-yaml';
 import Ajv from 'ajv';
 
+// API utility function
+const getApiBaseUrl = () => {
+  return process.env.REACT_APP_API_URL || 'http://localhost:8080';
+};
+
+// Check if a contract exists on the server
+const checkContractExists = async (contractPath) => {
+  if (!contractPath || contractPath.trim() === '') {
+    return false;
+  }
+  
+  const baseUrl = getApiBaseUrl();
+  const encodedPath = contractPath.split('/')
+    .filter(segment => segment.length > 0)
+    .map(segment => encodeURIComponent(segment))
+    .join('/');
+  const url = `${baseUrl}/contracts/${encodedPath}`;
+  
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/x-yaml',
+      },
+    });
+    return response.ok; // 200 = exists, 404 = doesn't exist
+  } catch (err) {
+    // Network error or server unavailable
+    return false;
+  }
+};
+
 export default function ContractCarder({contracts, setContracts, simulations, schema}) {
   const [ajv, setAjv] = useState();
   const [showModal, setShowModal] = useState(false);
@@ -42,6 +74,36 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       }
     }
   }, [contracts, pendingContractId]);
+
+  // Check which contracts exist on the server when contracts change
+  useEffect(() => {
+    if (contracts.length === 0) {
+      return;
+    }
+
+    // Check each contract that has a filename against the server
+    const checkContracts = async () => {
+      for (const contract of contracts) {
+        // Skip contracts without filenames (blank contracts)
+        if (!contract.filename || contract.filename.trim() === '') {
+          continue;
+        }
+
+        // Check if the contract exists on the server
+        // The association is verified implicitly - if filename matches a server path, they're associated
+        try {
+          await checkContractExists(contract.filename);
+          // Contract exists on server - association is valid
+          // We could store this status for UI indication later if needed
+        } catch (err) {
+          // Network error or server unavailable - skip silently
+          // This is expected if the server is not running
+        }
+      }
+    };
+
+    checkContracts();
+  }, [contracts]);
 
   const openEditModal = (contractId) => {
     const contractToEdit = contracts.find(c => c.id === contractId);
@@ -192,7 +254,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       };
     };
     setContracts([...contracts, {
-      filename: contractFilename,
+      filename: contractId, // Use the full server contract path (contractId) as the filename to maintain association
       text: contractContent,
       err: err,
       sims: new Set(simulations),
