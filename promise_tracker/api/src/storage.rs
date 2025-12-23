@@ -175,8 +175,16 @@ impl Storage {
     /// Save a contract to the file system
     /// Creates directories as needed
     pub fn save_contract(&mut self, contract_id: &str, content: &str) -> Result<()> {
-        let target_path = self.base_dir.join(contract_id);
+        // Validate path before creating directories - reject any use of ..
+        let contract_path = PathBuf::from(contract_id);
+        for component in contract_path.components() {
+            if matches!(component, std::path::Component::ParentDir) || matches!(component, std::path::Component::CurDir) {
+                anyhow::bail!("Path traversal not allowed: '..' is not permitted in contract paths");
+            }
+        }
         
+        let target_path = self.base_dir.join(contract_id);
+
         // Create parent directories if they don't exist
         if let Some(parent) = target_path.parent() {
             std::fs::create_dir_all(parent)
