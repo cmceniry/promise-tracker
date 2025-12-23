@@ -16,4 +16,5 @@ serde_yaml = "0.9.25"
 members = [
   "cli",
   "wpt",
+  "api",
 ]
