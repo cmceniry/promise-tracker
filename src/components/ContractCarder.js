@@ -8,6 +8,7 @@ import ContractBrowser from './ContractBrowser'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
 
 import yaml from 'js-yaml';
 import Ajv from 'ajv';
@@ -109,9 +110,11 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       }
       return r;
     })();
+    // Generate a unique random filename for the new contract
+    const randomFilename = generateUniqueRandomFilename(contracts);
     setPendingContractId(newId);
     setContracts([...contracts, {
-      filename: "",
+      filename: randomFilename,
       text: "",
       err: "",
       sims: new Set(simulations),
@@ -121,6 +124,23 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   const uploadContract = (file) => {
     if (!file) return;
+    
+    // Validate filename format
+    const filenameValidationError = validateFilename(file.name);
+    if (filenameValidationError) {
+      alert(`Invalid filename: ${filenameValidationError}\n\nFile: ${file.name}`);
+      return;
+    }
+
+    // Check for duplicate filename
+    const existingFilenames = contracts
+      .map(c => c.filename)
+      .filter(f => f && f.trim() !== '');
+    if (existingFilenames.includes(file.name)) {
+      alert(`A contract with filename "${file.name}" already exists. Please rename the file or remove the existing contract.`);
+      return;
+    }
+
     const f = new FileReader();
     f.readAsText(file);
     f.onload = () => {
@@ -308,6 +328,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       simulations={simulations}
       contractSims={editingContract ? (contracts.find(c => c.id === editingContract.id)?.sims || new Set()) : new Set()}
       updateContractSim={updateContractSim}
+      contracts={contracts}
     />
   </div>
 }

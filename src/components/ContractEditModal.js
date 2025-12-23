@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { Modal, Button, Form, Alert } from 'react-bootstrap';
 import yaml from 'js-yaml';
 import { SchemaSyntaxError } from '../libs/promise-tracker/contract';
+import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
 
-export default function ContractEditModal({ show, contract, onHide, onSave, schema, ajv, simulations, contractSims, updateContractSim }) {
+export default function ContractEditModal({ show, contract, onHide, onSave, schema, ajv, simulations, contractSims, updateContractSim, contracts }) {
   const [editedContract, setEditedContract] = useState(null);
   const [error, setError] = useState(null);
+  const [filenameError, setFilenameError] = useState(null);
 
   // Initialize edited contract when modal opens or contract changes
   useEffect(() => {
@@ -16,6 +18,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
         text: contract.text || '',
       });
       setError(null);
+      setFilenameError(null);
     }
   }, [show, contract]);
 
@@ -50,6 +53,28 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
 
   const handleFilenameChange = (value) => {
     setEditedContract(prev => prev ? { ...prev, filename: value } : null);
+    
+    // Validate filename format
+    const validationError = validateFilename(value);
+    if (validationError) {
+      setFilenameError(validationError);
+      return;
+    }
+    
+    // Check for duplicate filename (excluding current contract)
+    if (contracts && value && value.trim() !== '') {
+      const duplicate = contracts.find(c => 
+        c.id !== contract.id && 
+        c.filename && 
+        c.filename.trim() === value.trim()
+      );
+      if (duplicate) {
+        setFilenameError(`A contract with filename "${value}" already exists.`);
+        return;
+      }
+    }
+    
+    setFilenameError(null);
   };
 
   const handleTextChange = (value) => {
@@ -66,16 +91,43 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
       return;
     }
 
+    // If filename is empty, generate a unique random one
+    let finalFilename = editedContract.filename;
+    if (!finalFilename || finalFilename.trim() === '') {
+      finalFilename = generateUniqueRandomFilename(contracts || []);
+      setEditedContract(prev => prev ? { ...prev, filename: finalFilename } : null);
+    }
+
+    // Validate filename format
+    const filenameValidationError = validateFilename(finalFilename);
+    if (filenameValidationError) {
+      setFilenameError(filenameValidationError);
+      return;
+    }
+
+    // Check for duplicate filename (excluding current contract)
+    if (contracts && finalFilename && finalFilename.trim() !== '') {
+      const duplicate = contracts.find(c => 
+        c.id !== contract.id && 
+        c.filename && 
+        c.filename.trim() === finalFilename.trim()
+      );
+      if (duplicate) {
+        setFilenameError(`A contract with filename "${finalFilename}" already exists.`);
+        return;
+      }
+    }
+
     const validationError = validateContract(editedContract.text);
     if (validationError) {
       setError(validationError);
       return;
     }
 
-    // Save contract
-    onSave(editedContract);
+    // Save contract with final filename
+    onSave({ ...editedContract, filename: finalFilename });
     onHide();
-  }, [editedContract, onSave, onHide, validateContract]);
+  }, [editedContract, onSave, onHide, validateContract, contract, contracts]);
 
   // Handle Enter key to trigger save
   useEffect(() => {
@@ -132,7 +184,11 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
                 value={editedContract.filename}
                 onChange={(e) => handleFilenameChange(e.target.value)}
                 placeholder="Enter filename"
+                isInvalid={!!filenameError}
               />
+              {filenameError && (
+                <Form.Text className="text-danger">{filenameError}</Form.Text>
+              )}
             </Form.Group>
             
             <Form.Group className="mb-3">
