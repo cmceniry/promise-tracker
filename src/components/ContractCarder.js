@@ -13,7 +13,6 @@ import yaml from 'js-yaml';
 import Ajv from 'ajv';
 
 export default function ContractCarder({contracts, setContracts, simulations, schema}) {
-  const [selectedFile, setSelectedFile] = useState();
   const [ajv, setAjv] = useState();
   const [showModal, setShowModal] = useState(false);
   const [showBrowserModal, setShowBrowserModal] = useState(false);
@@ -153,7 +152,6 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
           return r;
         })(),
       }]);
-      setSelectedFile(null);
       setShowModal(false);
     };
   }
@@ -205,7 +203,6 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   const handleCloseModal = () => {
     setShowModal(false);
-    setSelectedFile(null);
   }
 
   const handleOpenModal = (e) => {

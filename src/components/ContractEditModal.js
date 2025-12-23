@@ -19,7 +19,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
     }
   }, [show, contract]);
 
-  const validateContract = (contractText) => {
+  const validateContract = useCallback((contractText) => {
     if (!contractText || !contractText.trim()) {
       return null;
     }
@@ -46,7 +46,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
         return e.toString();
       }
     }
-  };
+  }, [schema, ajv]);
 
   const handleFilenameChange = (value) => {
     setEditedContract(prev => prev ? { ...prev, filename: value } : null);
@@ -75,7 +75,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
     // Save contract
     onSave(editedContract);
     onHide();
-  }, [editedContract, schema, ajv, onSave, onHide]);
+  }, [editedContract, onSave, onHide, validateContract]);
 
   // Handle Enter key to trigger save
   useEffect(() => {
