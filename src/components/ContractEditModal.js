@@ -3,23 +3,23 @@ import { Modal, Button, Form, Alert } from 'react-bootstrap';
 import yaml from 'js-yaml';
 import { SchemaSyntaxError } from '../libs/promise-tracker/contract';
 
-export default function ContractEditModal({ show, contracts, onHide, onSave, schema, ajv, simulations, contractSimsMap, updateContractSim }) {
-  const [editedContracts, setEditedContracts] = useState([]);
-  const [errors, setErrors] = useState({});
+export default function ContractEditModal({ show, contract, onHide, onSave, schema, ajv, simulations, contractSims, updateContractSim }) {
+  const [editedContract, setEditedContract] = useState(null);
+  const [error, setError] = useState(null);
 
-  // Initialize edited contracts when modal opens or contracts change
+  // Initialize edited contract when modal opens or contract changes
   useEffect(() => {
-    if (show && contracts && contracts.length > 0) {
-      setEditedContracts(contracts.map(c => ({
-        id: c.id,
-        filename: c.filename || '',
-        text: c.text || '',
-      })));
-      setErrors({});
+    if (show && contract) {
+      setEditedContract({
+        id: contract.id,
+        filename: contract.filename || '',
+        text: contract.text || '',
+      });
+      setError(null);
     }
-  }, [show, contracts]);
+  }, [show, contract]);
 
-  const validateContract = (contractText, contractId) => {
+  const validateContract = (contractText) => {
     if (!contractText || !contractText.trim()) {
       return null;
     }
@@ -48,44 +48,34 @@ export default function ContractEditModal({ show, contracts, onHide, onSave, sch
     }
   };
 
-  const handleFilenameChange = (contractId, value) => {
-    setEditedContracts(prev => prev.map(c => 
-      c.id === contractId ? { ...c, filename: value } : c
-    ));
+  const handleFilenameChange = (value) => {
+    setEditedContract(prev => prev ? { ...prev, filename: value } : null);
   };
 
-  const handleTextChange = (contractId, value) => {
-    setEditedContracts(prev => prev.map(c => 
-      c.id === contractId ? { ...c, text: value } : c
-    ));
+  const handleTextChange = (value) => {
+    setEditedContract(prev => prev ? { ...prev, text: value } : null);
     
     // Validate on change
-    const error = validateContract(value, contractId);
-    setErrors(prev => ({
-      ...prev,
-      [contractId]: error
-    }));
+    const validationError = validateContract(value);
+    setError(validationError);
   };
 
   const handleSave = useCallback(() => {
-    // Final validation for all contracts
-    const finalErrors = {};
-    editedContracts.forEach(c => {
-      const error = validateContract(c.text, c.id);
-      if (error) {
-        finalErrors[c.id] = error;
-      }
-    });
-
-    if (Object.keys(finalErrors).length > 0) {
-      setErrors(finalErrors);
+    // Final validation
+    if (!editedContract) {
       return;
     }
 
-    // Save all contracts
-    onSave(editedContracts);
+    const validationError = validateContract(editedContract.text);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    // Save contract
+    onSave(editedContract);
     onHide();
-  }, [editedContracts, schema, ajv, onSave, onHide]);
+  }, [editedContract, schema, ajv, onSave, onHide]);
 
   // Handle Enter key to trigger save
   useEffect(() => {
@@ -110,66 +100,58 @@ export default function ContractEditModal({ show, contracts, onHide, onSave, sch
     onHide();
   };
 
-  if (!contracts || contracts.length === 0) {
+  if (!contract || !editedContract) {
     return null;
   }
 
   return (
     <Modal show={show} onHide={handleCancel} size="lg">
       <Modal.Header closeButton>
-        <Modal.Title>Edit Contract{contracts.length > 1 ? 's' : ''}</Modal.Title>
+        <Modal.Title>Edit Contract</Modal.Title>
       </Modal.Header>
       <Modal.Body style={{ maxHeight: '70vh', overflowY: 'auto' }}>
-        {editedContracts.map((contract, index) => {
-          const originalContract = contracts.find(c => c.id === contract.id);
-          const contractError = errors[contract.id];
-          
-          return (
-            <div key={contract.id} style={{ marginBottom: index < editedContracts.length - 1 ? '2rem' : '0' }}>
-              <h5 style={{ marginBottom: '1rem' }}>
-                {contract.filename || 'untitled-contract.yaml'}
-                {contractError && (
-                  <span style={{ marginLeft: '1rem', color: 'red' }}>⚠</span>
-                )}
-              </h5>
-              {simulations && contractSimsMap && updateContractSim && (
-                <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem' }}>
-                  {simulations.map((s, i) => {
-                    const contractSims = contractSimsMap[contract.id] || new Set();
-                    return <Button key={i} id={contract.id + ":" + s} variant={contractSims.has(s) ? "success" : "danger"} onClick={updateContractSim} size="sm">{s}</Button>
-                  })}
-                </div>
-              )}
-              <Form>
-                <Form.Group className="mb-3">
-                  <Form.Label>Filename</Form.Label>
-                  <Form.Control
-                    type="text"
-                    value={contract.filename}
-                    onChange={(e) => handleFilenameChange(contract.id, e.target.value)}
-                    placeholder="Enter filename"
-                  />
-                </Form.Group>
-                
-                <Form.Group className="mb-3">
-                  <Form.Label>Contract YAML</Form.Label>
-                  <Form.Control
-                    as="textarea"
-                    rows={15}
-                    value={contract.text}
-                    onChange={(e) => handleTextChange(contract.id, e.target.value)}
-                    placeholder="Enter contract YAML"
-                    style={{ fontFamily: 'monospace' }}
-                  />
-                </Form.Group>
-                
-                {contractError && (
-                  <Alert variant="danger">{contractError}</Alert>
-                )}
-              </Form>
+        <div>
+          <h5 style={{ marginBottom: '1rem' }}>
+            {editedContract.filename || 'untitled-contract.yaml'}
+            {error && (
+              <span style={{ marginLeft: '1rem', color: 'red' }}>⚠</span>
+            )}
+          </h5>
+          {simulations && contractSims && updateContractSim && (
+            <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem' }}>
+              {simulations.map((s, i) => {
+                return <Button key={i} id={editedContract.id + ":" + s} variant={contractSims.has(s) ? "success" : "danger"} onClick={updateContractSim} size="sm">{s}</Button>
+              })}
             </div>
-          );
-        })}
+          )}
+          <Form>
+            <Form.Group className="mb-3">
+              <Form.Label>Filename</Form.Label>
+              <Form.Control
+                type="text"
+                value={editedContract.filename}
+                onChange={(e) => handleFilenameChange(e.target.value)}
+                placeholder="Enter filename"
+              />
+            </Form.Group>
+            
+            <Form.Group className="mb-3">
+              <Form.Label>Contract YAML</Form.Label>
+              <Form.Control
+                as="textarea"
+                rows={15}
+                value={editedContract.text}
+                onChange={(e) => handleTextChange(e.target.value)}
+                placeholder="Enter contract YAML"
+                style={{ fontFamily: 'monospace' }}
+              />
+            </Form.Group>
+            
+            {error && (
+              <Alert variant="danger">{error}</Alert>
+            )}
+          </Form>
+        </div>
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={handleCancel}>

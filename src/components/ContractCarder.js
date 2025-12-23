@@ -18,7 +18,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
   const [showModal, setShowModal] = useState(false);
   const [showBrowserModal, setShowBrowserModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [editingContracts, setEditingContracts] = useState([]);
+  const [editingContract, setEditingContract] = useState(null);
   const [pendingContractId, setPendingContractId] = useState(null);
 
   useEffect(() => {
@@ -37,7 +37,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       const contract = contracts.find(c => c.id === pendingContractId);
       if (contract) {
         setPendingContractId(null);
-        setEditingContracts([contract]);
+        setEditingContract(contract);
         setShowEditModal(true);
       }
     }
@@ -46,26 +46,25 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
   const openEditModal = (contractId) => {
     const contractToEdit = contracts.find(c => c.id === contractId);
     if (contractToEdit) {
-      setEditingContracts([contractToEdit]);
+      setEditingContract(contractToEdit);
       setShowEditModal(true);
     }
   };
 
-  const handleSaveEditModal = (editedContracts) => {
+  const handleSaveEditModal = (editedContract) => {
     setContracts(c => c.map((contract) => {
-      const edited = editedContracts.find(ec => ec.id === contract.id);
-      if (!edited) {
+      if (contract.id !== editedContract.id) {
         return contract;
       }
       
       // Validate the contract
       let err = null;
       try {
-        if (edited.text) {
+        if (editedContract.text) {
           if (!schema) {
             throw new Error("No schema loaded");
           }
-          const allDocs = yaml.loadAll(edited.text);
+          const allDocs = yaml.loadAll(editedContract.text);
           const validate = ajv.getSchema("/promise-tracker.json");
           allDocs.every((d, idx) => {
             const valid = validate(d);
@@ -90,8 +89,8 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       
       return {
         ...contract,
-        filename: edited.filename,
-        text: edited.text,
+        filename: editedContract.filename,
+        text: editedContract.text,
         err: err
       };
     }));
@@ -99,7 +98,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   const handleCloseEditModal = () => {
     setShowEditModal(false);
-    setEditingContracts([]);
+    setEditingContract(null);
   };
 
   const addBlankContract = (e) => {
@@ -304,19 +303,13 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     />
     <ContractEditModal
       show={showEditModal}
-      contracts={editingContracts}
+      contract={editingContract}
       onHide={handleCloseEditModal}
       onSave={handleSaveEditModal}
       schema={schema}
       ajv={ajv}
       simulations={simulations}
-      contractSimsMap={editingContracts.reduce((acc, ec) => {
-        const contract = contracts.find(c => c.id === ec.id);
-        if (contract) {
-          acc[ec.id] = contract.sims;
-        }
-        return acc;
-      }, {})}
+      contractSims={editingContract ? (contracts.find(c => c.id === editingContract.id)?.sims || new Set()) : new Set()}
       updateContractSim={updateContractSim}
     />
   </div>
