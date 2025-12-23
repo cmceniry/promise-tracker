@@ -1,9 +1,10 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
 import { Card, Button, Modal } from 'react-bootstrap';
-import { BsPlusLg, BsUpload } from 'react-icons/bs';
+import { BsPlusLg, BsUpload, BsCloudDownload } from 'react-icons/bs';
 import ContractCard from './ContractCard'
 import ContractEditModal from './ContractEditModal'
+import ContractBrowser from './ContractBrowser'
 import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -15,6 +16,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
   const [selectedFile, setSelectedFile] = useState();
   const [ajv, setAjv] = useState();
   const [showModal, setShowModal] = useState(false);
+  const [showBrowserModal, setShowBrowserModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingContracts, setEditingContracts] = useState([]);
   const [pendingContractId, setPendingContractId] = useState(null);
@@ -157,6 +159,41 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     };
   }
 
+  const loadContractFromAPI = (contractId, contractFilename, contractContent) => {
+    let err = "";
+    try {
+      allFromYAML(contractContent);
+    } catch (e) {
+      if (e instanceof SchemaSyntaxError) {
+        if (e.errors[0].message.match(/^must be/)) {
+          err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
+        } else {
+          err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].message}`;
+        };
+      } else {
+        err = e.toString();
+      };
+    };
+    setContracts([...contracts, {
+      filename: contractFilename,
+      text: contractContent,
+      err: err,
+      sims: new Set(simulations),
+      id: (() => {
+        let r = "";
+        for (var i = 0; i < 16; i++) {
+          r += "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".charAt(Math.floor(Math.random()*62));
+        }
+        return r;
+      })(),
+    }]);
+  }
+
+  const handleOpenBrowserModal = (e) => {
+    e.preventDefault();
+    setShowBrowserModal(true);
+  }
+
   const changeFile = (e) => {
     e.preventDefault();
     const file = e.target.files[0];
@@ -245,6 +282,9 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     <Card>
       <Button onClick={handleOpenModal} aria-label="Upload Contract"><BsUpload /></Button>
     </Card>
+    <Card>
+      <Button onClick={handleOpenBrowserModal} aria-label="Load Contract from API"><BsCloudDownload /></Button>
+    </Card>
     <Modal show={showModal} onHide={handleCloseModal}>
       <Modal.Header closeButton>
         <Modal.Title>Upload Contract File</Modal.Title>
@@ -258,6 +298,11 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
         </Button>
       </Modal.Footer>
     </Modal>
+    <ContractBrowser
+      show={showBrowserModal}
+      onHide={() => setShowBrowserModal(false)}
+      onSelectContract={loadContractFromAPI}
+    />
     <ContractEditModal
       show={showEditModal}
       contracts={editingContracts}
