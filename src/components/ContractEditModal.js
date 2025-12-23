@@ -93,7 +93,8 @@ export default function ContractEditModal({ show, contracts, onHide, onSave, sch
 
     const handleKeyDown = (e) => {
       // Trigger save on Enter, but not if user is typing in a textarea
-      if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+      // Also trigger save on SHIFT-ENTER even when typing in textarea or input fields
+      if (e.key === 'Enter' && (e.shiftKey || e.target.tagName !== 'TEXTAREA')) {
         e.preventDefault();
         handleSave();
       }
@@ -175,7 +176,7 @@ export default function ContractEditModal({ show, contracts, onHide, onSave, sch
           Cancel
         </Button>
         <Button variant="primary" onClick={handleSave}>
-          Save
+          Close
         </Button>
       </Modal.Footer>
     </Modal>
