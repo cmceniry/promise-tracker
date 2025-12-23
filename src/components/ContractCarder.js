@@ -214,9 +214,8 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     setShowModal(true);
   }
 
-  const deleteContract = (e) => {
-    e.preventDefault();
-    setContracts(c => c.filter((contract) => contract.id !== e.currentTarget.id));
+  const deleteContract = (contractId) => {
+    setContracts(c => c.filter((contract) => contract.id !== contractId));
   }
 
   const updateContractSim = (e) => {

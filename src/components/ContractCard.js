@@ -141,7 +141,7 @@ export default function ContractCard({contractId, contractFilename, contractText
         </div>
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           <a download={contractFilename || 'untitled-contract.yaml'} href={downloadLink}><Button size="sm" aria-label="Download"><BsDownload /></Button></a>
-          <Button id={contractId} onClick={deleteContract} size="sm" variant="danger" aria-label="Delete"><BsTrash /></Button>
+          <Button id={contractId} onClick={() => deleteContract(contractId)} size="sm" variant="danger" aria-label="Delete"><BsTrash /></Button>
         </div>
       </div>
       
