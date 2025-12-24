@@ -6,10 +6,17 @@ import { SchemaSyntaxError } from '../libs/promise-tracker/contract';
 import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
 import { fetchServerContract, compareContracts, checkFilenameDiff } from '../utils/contractDiff';
 
-export default function ContractEditModal({ show, contract, onHide, onSave, schema, ajv, simulations, contractSims, updateContractSim, contracts, diffStatus: initialDiffStatus = { isDifferent: false, isLoading: false, error: null } }) {
+// API utility function
+const getApiBaseUrl = () => {
+  return process.env.REACT_APP_API_URL || 'http://localhost:8080';
+};
+
+export default function ContractEditModal({ show, contract, onHide, onSave, onPush, schema, ajv, simulations, contractSims, updateContractSim, contracts, diffStatus: initialDiffStatus = { isDifferent: false, isLoading: false, error: null } }) {
   const [editedContract, setEditedContract] = useState(null);
   const [error, setError] = useState(null);
   const [filenameError, setFilenameError] = useState(null);
+  const [pushError, setPushError] = useState(null);
+  const [isPushing, setIsPushing] = useState(false);
   // Local diff status for real-time checking in modal
   const [localDiffStatus, setLocalDiffStatus] = useState({ isDifferent: false, isLoading: false, error: null });
 
@@ -23,6 +30,8 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
       });
       setError(null);
       setFilenameError(null);
+      setPushError(null);
+      setIsPushing(false);
       // Reset local diff status
       setLocalDiffStatus({ isDifferent: false, isLoading: false, error: null });
     }
@@ -239,6 +248,97 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
     onHide();
   };
 
+  const handlePush = useCallback(async () => {
+    if (!editedContract) {
+      return;
+    }
+
+    // If filename is empty, generate a unique random one
+    let finalFilename = editedContract.filename;
+    if (!finalFilename || finalFilename.trim() === '') {
+      finalFilename = generateUniqueRandomFilename(contracts || []);
+      setEditedContract(prev => prev ? { ...prev, filename: finalFilename } : null);
+    }
+
+    // Validate filename format
+    const filenameValidationError = validateFilename(finalFilename);
+    if (filenameValidationError) {
+      setFilenameError(filenameValidationError);
+      return;
+    }
+
+    // Check for duplicate filename (excluding current contract)
+    if (contracts && finalFilename && finalFilename.trim() !== '') {
+      const duplicate = contracts.find(c => 
+        c.id !== contract.id && 
+        c.filename && 
+        c.filename.trim() === finalFilename.trim()
+      );
+      if (duplicate) {
+        setFilenameError(`A contract with filename "${finalFilename}" already exists.`);
+        return;
+      }
+    }
+
+    // Validate contract content
+    const validationError = validateContract(editedContract.text);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    // Save contract locally first to handle unsaved edits
+    const contractToSave = { ...editedContract, filename: finalFilename };
+    onSave(contractToSave);
+
+    setIsPushing(true);
+    setPushError(null);
+
+    try {
+      const baseUrl = getApiBaseUrl();
+      // URL encode each path segment
+      const encodedPath = finalFilename.split('/')
+        .filter(segment => segment.length > 0)
+        .map(segment => encodeURIComponent(segment))
+        .join('/');
+      const url = `${baseUrl}/contracts/${encodedPath}`;
+
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/x-yaml',
+        },
+        body: contractToSave.text,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to push contract: ${response.status} ${response.statusText}`);
+      }
+
+      // Determine if filename changed
+      const originalServerPath = contract?.serverPath;
+      const filenameChanged = originalServerPath && finalFilename.trim() !== originalServerPath.trim();
+
+      // Update serverPath: use new filename if changed, otherwise keep existing or set to filename
+      const newServerPath = filenameChanged ? finalFilename : (originalServerPath || finalFilename);
+
+      // Call onPush callback with updated contract data
+      if (onPush) {
+        onPush({
+          ...contractToSave,
+          serverPath: newServerPath,
+        });
+      }
+
+      // Clear any errors
+      setPushError(null);
+    } catch (err) {
+      setPushError(err.message || 'Failed to push contract to server');
+    } finally {
+      setIsPushing(false);
+    }
+  }, [editedContract, validateContract, contract, contracts, onSave, onPush]);
+
   if (!contract || !editedContract) {
     return null;
   }
@@ -299,6 +399,11 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
               This contract differs from the server version.
             </Alert>
           )}
+          {pushError && (
+            <Alert variant="danger" style={{ marginBottom: '1rem' }}>
+              {pushError}
+            </Alert>
+          )}
           {simulations && contractSims && updateContractSim && (
             <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem' }}>
               {simulations.map((s, i) => {
@@ -345,14 +450,33 @@ export default function ContractEditModal({ show, contract, onHide, onSave, sche
           borderLeft: currentDiffStatus.isDifferent ? '3px solid #ffc107' : undefined,
           borderRight: currentDiffStatus.isDifferent ? '3px solid #ffc107' : undefined,
           backgroundColor: currentDiffStatus.isDifferent ? 'rgba(255, 193, 7, 0.05)' : undefined,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
         }}
       >
-        <Button variant="secondary" onClick={handleCancel}>
-          Cancel
+        <Button 
+          variant="primary" 
+          onClick={handlePush}
+          disabled={isPushing || !!error || !!filenameError || !currentDiffStatus.isDifferent}
+        >
+          {isPushing ? (
+            <>
+              <Spinner animation="border" size="sm" style={{ marginRight: '0.5rem' }} />
+              Pushing...
+            </>
+          ) : (
+            'Push'
+          )}
         </Button>
-        <Button variant="primary" onClick={handleSave}>
-          Close
-        </Button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <Button variant="secondary" onClick={handleCancel}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSave}>
+            Close
+          </Button>
+        </div>
       </Modal.Footer>
     </Modal>
   );

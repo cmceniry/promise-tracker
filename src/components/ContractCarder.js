@@ -186,6 +186,22 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     }));
   };
 
+  const handlePush = (pushedContract) => {
+    setContracts(c => c.map((contract) => {
+      if (contract.id !== pushedContract.id) {
+        return contract;
+      }
+      
+      // Update contract with new serverPath (and filename if changed)
+      return {
+        ...contract,
+        filename: pushedContract.filename,
+        text: pushedContract.text,
+        serverPath: pushedContract.serverPath,
+      };
+    }));
+  };
+
   const handleCloseEditModal = () => {
     setShowEditModal(false);
     setEditingContract(null);
@@ -415,6 +431,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       contract={editingContract}
       onHide={handleCloseEditModal}
       onSave={handleSaveEditModal}
+      onPush={handlePush}
       schema={schema}
       ajv={ajv}
       simulations={simulations}
