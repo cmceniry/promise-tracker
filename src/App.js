@@ -41,7 +41,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (contracts === null || contracts.length === 0) {
+    if (contracts === null) {
       return
     }
     localStorage.setItem('contracts', JSON.stringify(contracts.map((contract) => {
