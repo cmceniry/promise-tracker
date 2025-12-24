@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { Alert, Button, Card, Badge } from 'react-bootstrap';
-import { BsDownload, BsTrash, BsGripVertical } from 'react-icons/bs';
+import { Alert, Button, Card, Badge, Spinner } from 'react-bootstrap';
+import { BsDownload, BsTrash, BsGripVertical, BsExclamationTriangle } from 'react-icons/bs';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import yaml from 'js-yaml';
@@ -43,7 +43,7 @@ function extractAgentsAndSuperagents(contractText) {
   return { agents, superagents };
 }
 
-export default function ContractCard({contractId, contractFilename, contractText, contractError, contractSims, deleteContract, updateContractSim, simulations, cardClassName, onEdit}) {
+export default function ContractCard({contractId, contractFilename, contractText, contractError, contractSims, deleteContract, updateContractSim, simulations, cardClassName, onEdit, diffStatus = { isDifferent: false, isLoading: false, error: null }}) {
   const downloadRef = useRef("");
   const [downloadLink, setDownloadLink] = useState("");
   
@@ -81,12 +81,21 @@ export default function ContractCard({contractId, contractFilename, contractText
     }
   };
 
+  // Determine card styling based on diff status
+  const cardStyle = {
+    ...style,
+    cursor: 'pointer',
+    position: 'relative',
+    border: diffStatus.isDifferent ? '3px solid #ffc107' : undefined,
+    backgroundColor: diffStatus.isDifferent ? 'rgba(255, 193, 7, 0.1)' : undefined,
+  };
+
   return <Card 
     ref={setNodeRef}
     body 
     className={cardClassName}
     onClick={handleCardClick}
-    style={{ ...style, cursor: 'pointer', position: 'relative' }}
+    style={cardStyle}
   >
       <div 
         className="drag-handle"
@@ -106,8 +115,17 @@ export default function ContractCard({contractId, contractFilename, contractText
       >
         <BsGripVertical size={20} />
       </div>
-      <div style={{ marginBottom: '0.5rem', marginLeft: '32px' }}>
+      <div style={{ marginBottom: '0.5rem', marginLeft: '32px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <strong>{contractFilename || 'untitled-contract.yaml'}</strong>
+        {diffStatus.isLoading && (
+          <Spinner animation="border" size="sm" style={{ color: '#6c757d' }} />
+        )}
+        {!diffStatus.isLoading && diffStatus.isDifferent && (
+          <Badge bg="warning" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <BsExclamationTriangle size={14} />
+            <span>Diff</span>
+          </Badge>
+        )}
       </div>
       
       {/* Agents and Superagents - always visible */}

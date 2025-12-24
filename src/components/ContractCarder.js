@@ -9,41 +9,11 @@ import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
+import { fetchServerContract, compareContracts, checkFilenameDiff } from '../utils/contractDiff';
 
 import yaml from 'js-yaml';
 import Ajv from 'ajv';
 
-// API utility function
-const getApiBaseUrl = () => {
-  return process.env.REACT_APP_API_URL || 'http://localhost:8080';
-};
-
-// Check if a contract exists on the server
-const checkContractExists = async (contractPath) => {
-  if (!contractPath || contractPath.trim() === '') {
-    return false;
-  }
-  
-  const baseUrl = getApiBaseUrl();
-  const encodedPath = contractPath.split('/')
-    .filter(segment => segment.length > 0)
-    .map(segment => encodeURIComponent(segment))
-    .join('/');
-  const url = `${baseUrl}/contracts/${encodedPath}`;
-  
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/x-yaml',
-      },
-    });
-    return response.ok; // 200 = exists, 404 = doesn't exist
-  } catch (err) {
-    // Network error or server unavailable
-    return false;
-  }
-};
 
 export default function ContractCarder({contracts, setContracts, simulations, schema}) {
   const [ajv, setAjv] = useState();
@@ -52,6 +22,8 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingContract, setEditingContract] = useState(null);
   const [pendingContractId, setPendingContractId] = useState(null);
+  // Map<contractId, { isDifferent: boolean, isLoading: boolean, error: string | null }>
+  const [diffStatus, setDiffStatus] = useState(new Map());
 
   useEffect(() => {
     if (!schema) {
@@ -75,34 +47,90 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     }
   }, [contracts, pendingContractId]);
 
-  // Check which contracts exist on the server when contracts change
+  // Check diff status for contracts when contracts change
   useEffect(() => {
     if (contracts.length === 0) {
+      setDiffStatus(new Map());
       return;
     }
 
     // Check each contract that has a filename against the server
-    const checkContracts = async () => {
+    const checkContractDiffs = async () => {
+      const newDiffStatus = new Map();
+      
+      // Initialize all contracts as loading
+      contracts.forEach(contract => {
+        if (contract.filename && contract.filename.trim() !== '') {
+          newDiffStatus.set(contract.id, {
+            isDifferent: false,
+            isLoading: true,
+            error: null
+          });
+        }
+      });
+
+      setDiffStatus(newDiffStatus);
+
+      // Check each contract
       for (const contract of contracts) {
         // Skip contracts without filenames (blank contracts)
         if (!contract.filename || contract.filename.trim() === '') {
           continue;
         }
 
-        // Check if the contract exists on the server
-        // The association is verified implicitly - if filename matches a server path, they're associated
         try {
-          await checkContractExists(contract.filename);
-          // Contract exists on server - association is valid
-          // We could store this status for UI indication later if needed
+          // Determine server path to check: use serverPath if available (original association), otherwise use current filename
+          const serverPathToCheck = contract.serverPath || contract.filename;
+          
+          // Check for filename differences first
+          const filenameDiffers = checkFilenameDiff(contract.filename, contract.serverPath);
+          
+          // Fetch server contract content
+          const serverText = await fetchServerContract(serverPathToCheck);
+          
+          if (serverText === null) {
+            // Contract not found on server - contract exists locally but not on server, so it's a diff
+            // This covers: deleted/moved on server, created locally, uploaded but not on server
+            setDiffStatus(prev => {
+              const next = new Map(prev);
+              next.set(contract.id, {
+                isDifferent: true, // Always show diff when contract exists locally but not on server
+                isLoading: false,
+                error: null
+              });
+              return next;
+            });
+          } else {
+            // Compare local vs server content
+            const contentDiffers = compareContracts(contract.text, serverText);
+            // Contract is different if content differs OR filename differs
+            const isDifferent = contentDiffers || filenameDiffers;
+            setDiffStatus(prev => {
+              const next = new Map(prev);
+              next.set(contract.id, {
+                isDifferent: isDifferent,
+                isLoading: false,
+                error: null
+              });
+              return next;
+            });
+          }
         } catch (err) {
-          // Network error or server unavailable - skip silently
-          // This is expected if the server is not running
+          // Network error or server unavailable - handle gracefully
+          setDiffStatus(prev => {
+            const next = new Map(prev);
+            next.set(contract.id, {
+              isDifferent: false,
+              isLoading: false,
+              error: err.message || 'Server unavailable'
+            });
+            return next;
+          });
         }
       }
     };
 
-    checkContracts();
+    checkContractDiffs();
   }, [contracts]);
 
   const openEditModal = (contractId) => {
@@ -255,6 +283,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
     };
     setContracts([...contracts, {
       filename: contractId, // Use the full server contract path (contractId) as the filename to maintain association
+      serverPath: contractId, // Store the original server path to detect filename changes
       text: contractContent,
       err: err,
       sims: new Set(simulations),
@@ -349,6 +378,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
             simulations={simulations}
             cardClassName={i % 2 === 0 ? 'contract-card-even' : 'contract-card-odd'}
             onEdit={openEditModal}
+            diffStatus={diffStatus.get(c.id) || { isDifferent: false, isLoading: false, error: null }}
           />
         )}
       </SortableContext>
@@ -391,6 +421,7 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       contractSims={editingContract ? (contracts.find(c => c.id === editingContract.id)?.sims || new Set()) : new Set()}
       updateContractSim={updateContractSim}
       contracts={contracts}
+      diffStatus={editingContract ? (diffStatus.get(editingContract.id) || { isDifferent: false, isLoading: false, error: null }) : { isDifferent: false, isLoading: false, error: null }}
     />
   </div>
 }
