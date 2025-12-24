@@ -5,7 +5,6 @@ import { BsPlusLg, BsUpload, BsCloudDownload } from 'react-icons/bs';
 import ContractCard from './ContractCard'
 import ContractEditModal from './ContractEditModal'
 import ContractBrowser from './ContractBrowser'
-import { allFromYAML, SchemaSyntaxError } from '../libs/promise-tracker/contract'; // TODO: ptrs
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
@@ -151,30 +150,22 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       let err = null;
       try {
         if (editedContract.text) {
-          if (!schema) {
-            throw new Error("No schema loaded");
-          }
-          const allDocs = yaml.loadAll(editedContract.text);
-          const validate = ajv.getSchema("/promise-tracker.json");
-          allDocs.every((d, idx) => {
-            const valid = validate(d);
-            if (valid) {
-              return true;
+          if (!schema || !ajv) {
+            err = "No schema loaded";
+          } else {
+            const allDocs = yaml.loadAll(editedContract.text);
+            const validate = ajv.getSchema("/promise-tracker.json");
+            for (let idx = 0; idx < allDocs.length; idx++) {
+              const valid = validate(allDocs[idx]);
+              if (!valid) {
+                err = `SchemaSyntaxError: Document ${idx}: ${validate.errors[0].instancePath} ${validate.errors[0].message}`;
+                break;
+              }
             }
-            err = `SchemaSyntaxError: Document ${idx}: ${validate.errors[0].instancePath} ${validate.errors[0].message}`;
-            return false;
-          });
+          }
         }
       } catch (e) {
-        if (e instanceof SchemaSyntaxError) {
-          if (e.errors[0].message.match(/^must be/)) {
-            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
-          } else {
-            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
-          };
-        } else {
-          err = e.toString();
-        }
+        err = e.toString();
       };
       
       return {
@@ -253,17 +244,23 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       const cText = f.result;
       let err = "";
       try {
-        allFromYAML(cText);
-      } catch (e) {
-        if (e instanceof SchemaSyntaxError) {
-          if (e.errors[0].message.match(/^must be/)) {
-            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
+        if (cText && cText.trim()) {
+          if (!schema || !ajv) {
+            err = "No schema loaded";
           } else {
-            err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].message}`;
-          };
-        } else {
-          err = e.toString();
-        };
+            const allDocs = yaml.loadAll(cText);
+            const validate = ajv.getSchema("/promise-tracker.json");
+            for (let idx = 0; idx < allDocs.length; idx++) {
+              const valid = validate(allDocs[idx]);
+              if (!valid) {
+                err = `SchemaSyntaxError: Document ${idx}: ${validate.errors[0].instancePath} ${validate.errors[0].message}`;
+                break;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        err = e.toString();
       };
       setContracts([...contracts, {
         filename: file.name,
@@ -284,19 +281,25 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
 
   const loadContractFromAPI = (contractId, contractFilename, contractContent) => {
     let err = "";
-    try {
-      allFromYAML(contractContent);
-    } catch (e) {
-      if (e instanceof SchemaSyntaxError) {
-        if (e.errors[0].message.match(/^must be/)) {
-          err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
+    if (contractContent && contractContent.trim()) {
+      try {
+        if (!schema || !ajv) {
+          err = "No schema loaded";
         } else {
-          err = `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].message}`;
-        };
-      } else {
+          const allDocs = yaml.loadAll(contractContent);
+          const validate = ajv.getSchema("/promise-tracker.json");
+          for (let idx = 0; idx < allDocs.length; idx++) {
+            const valid = validate(allDocs[idx]);
+            if (!valid) {
+              err = `SchemaSyntaxError: Document ${idx}: ${validate.errors[0].instancePath} ${validate.errors[0].message}`;
+              break;
+            }
+          }
+        }
+      } catch (e) {
         err = e.toString();
       };
-    };
+    }
     setContracts([...contracts, {
       filename: contractId, // Use the full server contract path (contractId) as the filename to maintain association
       serverPath: contractId, // Store the original server path to detect filename changes

@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { Modal, Button, Form, Alert, Badge, Spinner } from 'react-bootstrap';
 import { BsExclamationTriangle } from 'react-icons/bs';
 import yaml from 'js-yaml';
-import { SchemaSyntaxError } from '../libs/promise-tracker/contract';
 import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
 import { fetchServerContract, compareContracts, checkFilenameDiff } from '../utils/contractDiff';
 
@@ -139,11 +138,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
       }
       return null;
     } catch (e) {
-      if (e instanceof SchemaSyntaxError) {
-        return `SchemaSyntaxError: Document ${e.idx}: ${e.errors[0].instancePath} ${e.errors[0].message}`;
-      } else {
-        return e.toString();
-      }
+      return e.toString();
     }
   }, [schema, ajv]);
 
