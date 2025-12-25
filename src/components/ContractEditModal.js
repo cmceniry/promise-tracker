@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Modal, Button, Form, Alert, Badge, Spinner } from 'react-bootstrap';
-import { BsExclamationTriangle } from 'react-icons/bs';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Modal, Button, Form, Alert, Badge, Spinner, Collapse } from 'react-bootstrap';
+import { BsExclamationTriangle, BsChevronDown, BsChevronRight } from 'react-icons/bs';
 import yaml from 'js-yaml';
+import { diffLines } from 'diff';
 import { validateFilename, generateUniqueRandomFilename } from '../utils/filenameValidation';
 import { fetchServerContract, compareContracts, checkFilenameDiff } from '../utils/contractDiff';
 
@@ -18,6 +19,10 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
   const [isPushing, setIsPushing] = useState(false);
   // Local diff status for real-time checking in modal
   const [localDiffStatus, setLocalDiffStatus] = useState({ isDifferent: false, isLoading: false, error: null });
+  // Store server text for diff computation
+  const [serverText, setServerText] = useState(null);
+  // Collapsible diff display state
+  const [showDiff, setShowDiff] = useState(false);
 
   // Initialize edited contract when modal opens or contract changes
   useEffect(() => {
@@ -33,6 +38,9 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
       setIsPushing(false);
       // Reset local diff status
       setLocalDiffStatus({ isDifferent: false, isLoading: false, error: null });
+      // Reset server text and diff display
+      setServerText(null);
+      setShowDiff(false);
     }
   }, [show, contract]);
 
@@ -55,15 +63,18 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
         const filenameDiffers = checkFilenameDiff(editedContract.filename, serverPath);
         
         // Fetch server contract content
-        const serverText = await fetchServerContract(serverPathToCheck);
+        const fetchedServerText = await fetchServerContract(serverPathToCheck);
         
-        if (serverText === null) {
+        // Store server text for diff computation
+        setServerText(fetchedServerText);
+        
+        if (fetchedServerText === null) {
           // Contract not found on server - contract exists locally but not on server, so it's a diff
           // This covers: deleted/moved on server, created locally, uploaded but not on server
           setLocalDiffStatus({ isDifferent: true, isLoading: false, error: null });
         } else {
           // Compare local vs server content
-          const contentDiffers = compareContracts(editedContract.text, serverText);
+          const contentDiffers = compareContracts(editedContract.text, fetchedServerText);
           // Contract is different if content differs OR filename differs
           const isDifferent = contentDiffers || filenameDiffers;
           setLocalDiffStatus({ isDifferent: isDifferent, isLoading: false, error: null });
@@ -95,15 +106,18 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
         const filenameDiffers = checkFilenameDiff(editedContract.filename, serverPath);
         
         // Fetch server contract content
-        const serverText = await fetchServerContract(serverPathToCheck);
+        const fetchedServerText = await fetchServerContract(serverPathToCheck);
         
-        if (serverText === null) {
+        // Store server text for diff computation
+        setServerText(fetchedServerText);
+        
+        if (fetchedServerText === null) {
           // Contract not found on server - contract exists locally but not on server, so it's a diff
           // This covers: deleted/moved on server, created locally, uploaded but not on server
           setLocalDiffStatus(prev => ({ ...prev, isDifferent: true }));
         } else {
           // Compare local vs server content
-          const contentDiffers = compareContracts(editedContract.text, serverText);
+          const contentDiffers = compareContracts(editedContract.text, fetchedServerText);
           // Contract is different if content differs OR filename differs
           const isDifferent = contentDiffers || filenameDiffers;
           setLocalDiffStatus(prev => ({ ...prev, isDifferent: isDifferent }));
@@ -141,6 +155,183 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
       return e.toString();
     }
   }, [schema, ajv]);
+
+  // Use local diff status if available, otherwise fall back to initial diff status
+  const currentDiffStatus = useMemo(() => {
+    return localDiffStatus.isLoading || localDiffStatus.error !== null 
+      ? localDiffStatus 
+      : (localDiffStatus.isDifferent ? localDiffStatus : initialDiffStatus);
+  }, [localDiffStatus, initialDiffStatus]);
+
+  // Compute diff lines with proper text preprocessing
+  const computeDiffLines = useCallback((newText, oldText) => {
+    // Handle null oldText (contract doesn't exist on server)
+    const normalizedOld = oldText === null ? '' : oldText.trim() + '\n';
+    const normalizedNew = (newText || '').trim() + '\n';
+    
+    // Use diff library to generate line-by-line diff
+    const diff = diffLines(normalizedOld, normalizedNew);
+    return diff;
+  }, []);
+
+  // Collapse diff when there's no difference
+  useEffect(() => {
+    if (!currentDiffStatus.isDifferent) {
+      setShowDiff(false);
+    }
+  }, [currentDiffStatus.isDifferent]);
+
+  // Compute diff when we have both texts and there's a difference
+  const diffResult = useMemo(() => {
+    if (!currentDiffStatus.isDifferent || !editedContract || currentDiffStatus.isLoading) {
+      return null;
+    }
+    return computeDiffLines(editedContract.text, serverText);
+  }, [currentDiffStatus.isDifferent, currentDiffStatus.isLoading, editedContract, serverText, computeDiffLines]);
+
+  // Render side-by-side diff view
+  const renderDiffView = () => {
+    if (!diffResult) {
+      return null;
+    }
+
+    // Build aligned lines for side-by-side display
+    const leftLines = [];
+    const rightLines = [];
+
+    // Process diff parts to align consecutive removed+added pairs
+    for (let i = 0; i < diffResult.length; i++) {
+      const part = diffResult[i];
+      const lines = part.value.split('\n');
+      // Remove the trailing empty line from split
+      if (lines.length > 0 && lines[lines.length - 1] === '') {
+        lines.pop();
+      }
+
+      if (part.added) {
+        // Added lines: show in left column, empty in right
+        lines.forEach((line) => {
+          leftLines.push({ text: line, type: 'added' });
+          rightLines.push({ text: '', type: 'empty' });
+        });
+      } else if (part.removed) {
+        // Check if next part is added (for alignment)
+        const nextPart = i + 1 < diffResult.length ? diffResult[i + 1] : null;
+        if (nextPart && nextPart.added) {
+          // Align removed with added - show them side-by-side
+          const nextLines = nextPart.value.split('\n');
+          if (nextLines.length > 0 && nextLines[nextLines.length - 1] === '') {
+            nextLines.pop();
+          }
+          const maxLines = Math.max(lines.length, nextLines.length);
+          for (let j = 0; j < maxLines; j++) {
+            if (j < lines.length && j < nextLines.length) {
+              // Both sides have content - show change
+              leftLines.push({ text: nextLines[j], type: 'added' });
+              rightLines.push({ text: lines[j], type: 'removed' });
+            } else if (j < lines.length) {
+              // Only removed side has content
+              leftLines.push({ text: '', type: 'empty' });
+              rightLines.push({ text: lines[j], type: 'removed' });
+            } else {
+              // Only added side has content
+              leftLines.push({ text: nextLines[j], type: 'added' });
+              rightLines.push({ text: '', type: 'empty' });
+            }
+          }
+          // Skip the next part since we've already processed it
+          i++;
+        } else {
+          // Removed lines without matching added: show in right column, empty in left
+          lines.forEach((line) => {
+            leftLines.push({ text: '', type: 'empty' });
+            rightLines.push({ text: line, type: 'removed' });
+          });
+        }
+      } else {
+        // Unchanged lines: show in both columns
+        lines.forEach((line) => {
+          leftLines.push({ text: line, type: 'unchanged' });
+          rightLines.push({ text: line, type: 'unchanged' });
+        });
+      }
+    }
+
+    return (
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: '1fr 1fr', 
+        gap: '1px',
+        border: '1px solid #dee2e6',
+        borderRadius: '4px',
+        overflow: 'hidden',
+        fontFamily: 'monospace',
+        fontSize: '0.9em',
+        maxHeight: '400px',
+        overflowY: 'auto'
+      }}>
+        {/* Left column - New code */}
+        <div style={{ backgroundColor: '#fff' }}>
+          <div style={{ 
+            padding: '0.5rem', 
+            backgroundColor: '#f6f8fa', 
+            borderBottom: '1px solid #dee2e6',
+            fontWeight: 'bold',
+            fontSize: '0.85em'
+          }}>
+            New (Local)
+          </div>
+          {leftLines.map((line, idx) => (
+            <div
+              key={`left-${idx}`}
+              style={{
+                padding: '0.25rem 0.5rem',
+                backgroundColor: line.type === 'added' 
+                  ? '#d4edda' 
+                  : line.type === 'unchanged' 
+                  ? '#f6f8fa' 
+                  : '#fff',
+                whiteSpace: 'pre-wrap',
+                minHeight: '1.5em'
+              }}
+            >
+              {line.text}
+            </div>
+          ))}
+        </div>
+        
+        {/* Right column - Old code */}
+        <div style={{ backgroundColor: '#fff' }}>
+          <div style={{ 
+            padding: '0.5rem', 
+            backgroundColor: '#f6f8fa', 
+            borderBottom: '1px solid #dee2e6',
+            fontWeight: 'bold',
+            fontSize: '0.85em'
+          }}>
+            Old (Server)
+          </div>
+          {rightLines.map((line, idx) => (
+            <div
+              key={`right-${idx}`}
+              style={{
+                padding: '0.25rem 0.5rem',
+                backgroundColor: line.type === 'removed' 
+                  ? '#f8d7da' 
+                  : line.type === 'unchanged' 
+                  ? '#f6f8fa' 
+                  : '#fff',
+                whiteSpace: 'pre-wrap',
+                minHeight: '1.5em'
+              }}
+            >
+              {line.text}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   const handleFilenameChange = (value) => {
     setEditedContract(prev => prev ? { ...prev, filename: value } : null);
@@ -338,11 +529,6 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
     return null;
   }
 
-  // Use local diff status if available, otherwise fall back to initial diff status
-  const currentDiffStatus = localDiffStatus.isLoading || localDiffStatus.error !== null 
-    ? localDiffStatus 
-    : (localDiffStatus.isDifferent ? localDiffStatus : initialDiffStatus);
-
   return (
     <Modal 
       show={show} 
@@ -389,10 +575,30 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
             )}
           </h5>
           {currentDiffStatus.isDifferent && (
-            <Alert variant="warning" style={{ marginBottom: '1rem' }}>
-              <BsExclamationTriangle style={{ marginRight: '0.5rem' }} />
-              This contract differs from the server version.
-            </Alert>
+            <div style={{ marginBottom: '1rem' }}>
+              <Button
+                variant="outline-warning"
+                onClick={() => setShowDiff(!showDiff)}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0.5rem 1rem'
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {showDiff ? <BsChevronDown /> : <BsChevronRight />}
+                  <BsExclamationTriangle />
+                  <span>Show diff with server version</span>
+                </span>
+              </Button>
+              <Collapse in={showDiff}>
+                <div style={{ marginTop: '1rem' }}>
+                  {renderDiffView()}
+                </div>
+              </Collapse>
+            </div>
           )}
           {pushError && (
             <Alert variant="danger" style={{ marginBottom: '1rem' }}>
