@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Modal, Button, ListGroup, Spinner, Alert } from 'react-bootstrap';
-import { BsFolder, BsFileEarmarkText, BsChevronRight, BsChevronDown } from 'react-icons/bs';
+import { BsFolder, BsFileEarmarkText, BsChevronRight, BsChevronDown, BsPlusLg } from 'react-icons/bs';
 
 // API utility functions
 const getApiBaseUrl = () => {
@@ -65,42 +65,43 @@ function TreeNode({
   loadingPaths,
   onToggleExpand,
   onSelectContract,
-  onHide,
-  onError
+  onError,
+  onDownloadContract,
+  downloadedContractPaths,
+  downloadingContracts
 }) {
   const isExpanded = expandedPaths.has(path);
   const isLoading = loadingPaths.has(path);
   const children = loadedChildren.get(path) || [];
   const indent = level * 20;
+  const isDownloaded = downloadedContractPaths.has(path);
+  const isDownloading = downloadingContracts.has(path);
+  const isDisabled = isDownloaded || isDownloading;
 
   const handleDirectoryClick = (e) => {
     e.stopPropagation();
     onToggleExpand(path);
   };
 
-  const handleContractClick = async (e) => {
+  const handleAddClick = (e) => {
     e.stopPropagation();
-    try {
-      const contractContent = await fetchContract(path);
-      const name = entry.name;
-      onSelectContract(path, name, contractContent);
-      onHide();
-    } catch (err) {
-      onError(err.message);
+    if (!isDisabled) {
+      onDownloadContract(path, entry.name);
     }
   };
 
   return (
     <>
       <ListGroup.Item
-        action
-        onClick={entry.type === 'directory' ? handleDirectoryClick : handleContractClick}
+        action={entry.type === 'directory'}
+        onClick={entry.type === 'directory' ? handleDirectoryClick : undefined}
         style={{
-          cursor: 'pointer',
+          cursor: entry.type === 'directory' ? 'pointer' : 'default',
           display: 'flex',
           alignItems: 'center',
           gap: '0.5rem',
           paddingLeft: `${8 + indent}px`,
+          opacity: isDownloaded ? 0.6 : 1,
         }}
       >
         {entry.type === 'directory' ? (
@@ -113,14 +114,39 @@ function TreeNode({
             <BsFolder size={20} style={{ flexShrink: 0 }} />
           </>
         ) : (
-          <span style={{ width: '16px', display: 'inline-block', flexShrink: 0 }} />
+          <>
+            {entry.type === 'contract' && (
+              <BsFileEarmarkText size={20} style={{ flexShrink: 0 }} />
+            )}
+          </>
         )}
+        <span style={{
+          textDecoration: isDownloaded ? 'line-through' : 'none',
+          flexGrow: 1
+        }}>
+          {entry.name}
+        </span>
         {entry.type === 'contract' && (
-          <BsFileEarmarkText size={20} style={{ flexShrink: 0 }} />
+          <Button
+            variant="link"
+            size="sm"
+            onClick={handleAddClick}
+            disabled={isDisabled}
+            style={{
+              padding: '0.25rem',
+              color: isDisabled ? '#ccc' : '#007bff',
+              cursor: isDisabled ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            title={isDownloaded ? 'Already downloaded' : isDownloading ? 'Downloading...' : 'Download contract'}
+          >
+            <BsPlusLg size={18} />
+          </Button>
         )}
-        <span>{entry.name}</span>
-        {isLoading && (
-          <Spinner animation="border" size="sm" style={{ marginLeft: 'auto' }} />
+        {(isLoading || isDownloading) && (
+          <Spinner animation="border" size="sm" style={{ marginLeft: '0.5rem' }} />
         )}
       </ListGroup.Item>
       {entry.type === 'directory' && isExpanded && !isLoading && (
@@ -143,8 +169,10 @@ function TreeNode({
                   loadingPaths={loadingPaths}
                   onToggleExpand={onToggleExpand}
                   onSelectContract={onSelectContract}
-                  onHide={onHide}
                   onError={onError}
+                  onDownloadContract={onDownloadContract}
+                  downloadedContractPaths={downloadedContractPaths}
+                  downloadingContracts={downloadingContracts}
                 />
               );
             })
@@ -155,13 +183,14 @@ function TreeNode({
   );
 }
 
-export default function ContractBrowser({ show, onHide, onSelectContract }) {
+export default function ContractBrowser({ show, onHide, onSelectContract, downloadedContractPaths = new Set() }) {
   const [expandedPaths, setExpandedPaths] = useState(new Set());
   const [loadedChildren, setLoadedChildren] = useState(new Map());
   const [loadingPaths, setLoadingPaths] = useState(new Set());
   const [rootEntries, setRootEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [downloadingContracts, setDownloadingContracts] = useState(new Set());
 
   // Fetch root directory listing when modal opens
   useEffect(() => {
@@ -169,6 +198,7 @@ export default function ContractBrowser({ show, onHide, onSelectContract }) {
       setExpandedPaths(new Set());
       setLoadedChildren(new Map());
       setLoadingPaths(new Set());
+      setDownloadingContracts(new Set());
       setError(null);
       loadRootDirectory();
     }
@@ -227,11 +257,39 @@ export default function ContractBrowser({ show, onHide, onSelectContract }) {
     }
   };
 
+  const handleDownloadContract = async (path, name) => {
+    // Check if already downloading or downloaded
+    if (downloadingContracts.has(path) || downloadedContractPaths.has(path)) {
+      return;
+    }
+
+    // Mark contract as downloading
+    setDownloadingContracts(prev => new Set(prev).add(path));
+    setError(null);
+
+    try {
+      const contractContent = await fetchContract(path);
+      // Extract name from path if name not provided
+      const contractName = name || path.split('/').pop();
+      onSelectContract(path, contractName, contractContent);
+    } catch (err) {
+      setError(prev => prev ? `${prev}; ${path}: ${err.message}` : `${path}: ${err.message}`);
+    } finally {
+      // Clear downloading state
+      setDownloadingContracts(prev => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    }
+  };
+
   const handleClose = () => {
     setExpandedPaths(new Set());
     setLoadedChildren(new Map());
     setLoadingPaths(new Set());
     setRootEntries([]);
+    setDownloadingContracts(new Set());
     setError(null);
     onHide();
   };
@@ -272,8 +330,10 @@ export default function ContractBrowser({ show, onHide, onSelectContract }) {
                     loadingPaths={loadingPaths}
                     onToggleExpand={handleToggleExpand}
                     onSelectContract={onSelectContract}
-                    onHide={onHide}
                     onError={setError}
+                    onDownloadContract={handleDownloadContract}
+                    downloadedContractPaths={downloadedContractPaths}
+                    downloadingContracts={downloadingContracts}
                   />
                 );
               })
@@ -283,7 +343,7 @@ export default function ContractBrowser({ show, onHide, onSelectContract }) {
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={handleClose}>
-          Cancel
+          Close
         </Button>
       </Modal.Footer>
     </Modal>

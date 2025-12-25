@@ -428,6 +428,11 @@ export default function ContractCarder({contracts, setContracts, simulations, sc
       show={showBrowserModal}
       onHide={() => setShowBrowserModal(false)}
       onSelectContract={loadContractFromAPI}
+      downloadedContractPaths={new Set(
+        contracts
+          .filter(c => c.serverPath && c.serverPath.trim() !== '')
+          .map(c => c.serverPath)
+      )}
     />
     <ContractEditModal
       show={showEditModal}
