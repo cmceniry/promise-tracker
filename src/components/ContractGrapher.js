@@ -17,6 +17,10 @@ export default function ContractGrapher({ initDone, contracts, simulations }) {
         const toHandler = setTimeout(() => {
             try {
                 if (contracts.length === 0) {
+                    setPt(null);
+                    setSims({});
+                    setDComponent("---");
+                    setDBehavior("---");
                     return;
                 }
                 if (contracts.filter((c) => c.err).length > 0) {
