@@ -86,7 +86,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
     };
 
     checkDiff();
-  }, [show, editedContract?.filename, editedContract?.id, contracts]);
+  }, [show, editedContract, contracts]);
 
   // Update diff status when contract text or filename changes in real-time
   useEffect(() => {
@@ -129,7 +129,7 @@ export default function ContractEditModal({ show, contract, onHide, onSave, onPu
     }, 500); // 500ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [show, editedContract?.text, editedContract?.filename, editedContract?.id, contracts]);
+  }, [show, editedContract, contracts]);
 
   const validateContract = useCallback((contractText) => {
     if (!contractText || !contractText.trim()) {
