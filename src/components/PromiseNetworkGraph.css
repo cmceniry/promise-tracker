@@ -7,8 +7,7 @@
 
 .promise-network-container canvas {
   display: block;
-  width: 100% !important;
-  height: 100% !important;
+  /* Removed width/height !important rules that conflict with ForceGraph2D's explicit dimensions */
 }
 
 /* Ensure the graph container takes full width */
