@@ -1,3 +1,4 @@
+import React from 'react';
 import { Card } from 'react-bootstrap';
 import './ContractText.css';
 
@@ -10,39 +11,41 @@ function prettyPrintContract({ component, behavior, satisfied, unsatisfied }) {
 
   let options = [];
   if (satisfied !== undefined && satisfied.length > 0) {
-    satisfied.forEach((e) => {
+    satisfied.forEach((e, idx) => {
       if (e.resolved_conditions && e.resolved_conditions.length > 0) {
         let children = <ul className="contract-text-list">
-          {e.resolved_conditions.map((c) => {
-            return prettyPrintContract({
+          {e.resolved_conditions.map((c, cIdx) => {
+            const elem = prettyPrintContract({
                 component: e.agent_name,
                 behavior: c.behavior_name,
                 satisfied: c.satisfying_offers,
                 unsatisfied: c.unsatisfying_offers,
             });
+            return React.cloneElement(elem, { key: cIdx });
           })} </ul>;
-        options.push(<li className="contract-text-option">{`OPTION: ${e.agent_name}`}{children}</li>);
+        options.push(<li key="satisfied-${idx}" className="contract-text-option">{`OPTION: ${e.agent_name}`}{children}</li>);
       } else {
-        options.push(<li className="contract-text-option">{`OPTION: ${e.agent_name}`}</li>);
+        options.push(<li key="satisfied-${idx}" className="contract-text-option">{`OPTION: ${e.agent_name}`}</li>);
       }
     });
   }
   if (unsatisfied !== undefined && unsatisfied.length > 0) {
-    unsatisfied.forEach((e) => {
+    unsatisfied.forEach((e, idx) => {
       if (e === undefined || e.resolved_conditions === undefined || e.resolved_conditions.length === 0) {
-        options.push(<li className="contract-text-error">{`ERROR: ${e.agent_name}`}</li>);
+        options.push(<li key="unsatisfied-${idx}" className="contract-text-error">{`ERROR: ${e.agent_name}`}</li>);
         return;
       }
       let children = <ul className="contract-text-list">
-        {e.resolved_conditions.map((c) => {
-          return prettyPrintContract({
+        {e.resolved_conditions.map((c, cIdx) => {
+          const elem = prettyPrintContract({
               component: e.agent_name,
               behavior: c.behavior_name,
               satisfied: c.satisfying_offers,
               unsatisfied: c.unsatisfying_offers,
           });
+          return React.cloneElement(elem, { key: cIdx });
       })} </ul>;
-      options.push(<li className="contract-text-possible">{`POSSIBLE: ${e.agent_name}`}{children}</li>);
+      options.push(<li key="unsatisfied-${idx}" className="contract-text-possible">{`POSSIBLE: ${e.agent_name}`}{children}</li>);
     });
   }
 
@@ -81,7 +84,6 @@ export default function ContractText({ pt, selectedComponent, selectedBehavior }
     return "sequenceDiagram\nyou->>behavior: select behavior";
   }
   const r = pt.resolve(selectedBehavior);
-  console.log(r);
   const contractText = prettyPrintContract({
     component: selectedComponent,
     behavior: r.behavior_name,
