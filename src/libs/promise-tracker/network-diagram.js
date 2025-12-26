@@ -52,6 +52,9 @@ export default function networkDiagram(pt) {
     satisfied.forEach((offer) => {
       const providerName = offer.agent_name || offer.component || offer.componentName;
       if (providerName) {
+        // Ensure provider component node exists
+        getOrCreateNode(providerName, providerName, 'component');
+
         // Create link from behavior to provider (provides relationship)
         if (!linkExists(behaviorName, providerName, 'provides')) {
           links.push({
@@ -67,6 +70,9 @@ export default function networkDiagram(pt) {
           offer.resolved_conditions.forEach((condition) => {
             const conditionBehaviorName = condition.behavior_name || condition.behavior;
             if (conditionBehaviorName) {
+              // Ensure condition behavior node exists
+              getOrCreateNode(conditionBehaviorName, conditionBehaviorName, 'behavior');
+
               // Create link from provider component to condition behavior (needs condition)
               if (!linkExists(providerName, conditionBehaviorName, 'needs')) {
                 links.push({
@@ -76,7 +82,7 @@ export default function networkDiagram(pt) {
                   satisfied: condition.satisfying_offers && condition.satisfying_offers.length > 0,
                 });
               }
-              
+
               // Recursively process the condition's resolution
               processResolution(conditionBehaviorName, condition, behaviorName);
             }
@@ -89,6 +95,9 @@ export default function networkDiagram(pt) {
     unsatisfied.forEach((offer) => {
       const providerName = offer.agent_name || offer.component || offer.componentName;
       if (providerName) {
+        // Ensure provider component node exists
+        getOrCreateNode(providerName, providerName, 'component');
+
         // Create link from behavior to provider (unsatisfied)
         if (!linkExists(behaviorName, providerName, 'provides')) {
           links.push({
@@ -104,6 +113,9 @@ export default function networkDiagram(pt) {
           offer.resolved_conditions.forEach((condition) => {
             const conditionBehaviorName = condition.behavior_name || condition.behavior;
             if (conditionBehaviorName) {
+              // Ensure condition behavior node exists
+              getOrCreateNode(conditionBehaviorName, conditionBehaviorName, 'behavior');
+
               // Create link from provider component to condition behavior (needs condition)
               const conditionSatisfied = condition.satisfying_offers && condition.satisfying_offers.length > 0;
               if (!linkExists(providerName, conditionBehaviorName, 'needs')) {
@@ -115,16 +127,16 @@ export default function networkDiagram(pt) {
                 });
               } else {
                 // Update existing link's satisfied status
-                const existingLink = links.find(link => 
-                  link.source === providerName && 
-                  link.target === conditionBehaviorName && 
+                const existingLink = links.find(link =>
+                  link.source === providerName &&
+                  link.target === conditionBehaviorName &&
                   link.type === 'needs'
                 );
                 if (existingLink) {
                   existingLink.satisfied = conditionSatisfied;
                 }
               }
-              
+
               // Recursively process the condition's resolution
               processResolution(conditionBehaviorName, condition, behaviorName);
             }
@@ -146,12 +158,15 @@ export default function networkDiagram(pt) {
 
   // Process each agent (component)
   agentNames.forEach((agentName) => {
+    // Create component node
+    getOrCreateNode(agentName, agentName, 'component');
+
     // Get what this agent wants
     const wants = pt.get_agent_wants(agentName);
-    
+
     wants.forEach((wantBehavior) => {
       const behaviorNode = getOrCreateNode(wantBehavior, wantBehavior, 'behavior');
-      
+
       // Create link from component to behavior (wants relationship)
       // We'll determine if it's satisfied after resolving
       if (!linkExists(agentName, wantBehavior, 'wants')) {
