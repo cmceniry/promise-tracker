@@ -52,8 +52,6 @@ export default function networkDiagram(pt) {
     satisfied.forEach((offer) => {
       const providerName = offer.agent_name || offer.component || offer.componentName;
       if (providerName) {
-        const providerNode = getOrCreateNode(providerName, providerName, 'component');
-        
         // Create link from behavior to provider (provides relationship)
         if (!linkExists(behaviorName, providerName, 'provides')) {
           links.push({
@@ -69,12 +67,6 @@ export default function networkDiagram(pt) {
           offer.resolved_conditions.forEach((condition) => {
             const conditionBehaviorName = condition.behavior_name || condition.behavior;
             if (conditionBehaviorName) {
-              const conditionBehaviorNode = getOrCreateNode(
-                conditionBehaviorName, 
-                conditionBehaviorName, 
-                'behavior'
-              );
-              
               // Create link from provider component to condition behavior (needs condition)
               if (!linkExists(providerName, conditionBehaviorName, 'needs')) {
                 links.push({
@@ -97,8 +89,6 @@ export default function networkDiagram(pt) {
     unsatisfied.forEach((offer) => {
       const providerName = offer.agent_name || offer.component || offer.componentName;
       if (providerName) {
-        const providerNode = getOrCreateNode(providerName, providerName, 'component');
-        
         // Create link from behavior to provider (unsatisfied)
         if (!linkExists(behaviorName, providerName, 'provides')) {
           links.push({
@@ -114,12 +104,6 @@ export default function networkDiagram(pt) {
           offer.resolved_conditions.forEach((condition) => {
             const conditionBehaviorName = condition.behavior_name || condition.behavior;
             if (conditionBehaviorName) {
-              const conditionBehaviorNode = getOrCreateNode(
-                conditionBehaviorName, 
-                conditionBehaviorName, 
-                'behavior'
-              );
-              
               // Create link from provider component to condition behavior (needs condition)
               const conditionSatisfied = condition.satisfying_offers && condition.satisfying_offers.length > 0;
               if (!linkExists(providerName, conditionBehaviorName, 'needs')) {
@@ -162,8 +146,6 @@ export default function networkDiagram(pt) {
 
   // Process each agent (component)
   agentNames.forEach((agentName) => {
-    const componentNode = getOrCreateNode(agentName, agentName, 'component');
-    
     // Get what this agent wants
     const wants = pt.get_agent_wants(agentName);
     
