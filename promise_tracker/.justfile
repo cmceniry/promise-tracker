@@ -1,4 +1,14 @@
 
+
+
+[working-directory: './api']
+build-backend:
+    cargo build --release
+
+[working-directory: './api']
+run-dev:
+    cargo run -- --dev
+
 [working-directory: './wpt']
 build-wasm:
     cargo build --release --target wasm32-unknown-unknown

@@ -5,6 +5,7 @@ use tracing::{info, warn};
 mod server;
 mod storage;
 mod validation;
+mod static_files;
 
 use server::{create_router, AppState};
 use storage::Storage;
@@ -24,6 +25,14 @@ struct Cli {
     /// Host to bind to
     #[arg(long, default_value = "0.0.0.0")]
     host: String,
+
+    /// Enable dev mode (proxy frontend requests to React dev server)
+    #[arg(long)]
+    dev: bool,
+
+    /// Dev server URL for frontend proxy (default: http://localhost:3000)
+    #[arg(long, default_value = "http://localhost:3000")]
+    dev_server_url: String,
 }
 
 #[tokio::main]
@@ -89,10 +98,18 @@ async fn main() -> anyhow::Result<()> {
     info!("Serving {} valid contract(s)", valid_count);
 
     // Create app state
-    let app_state = AppState::new(storage);
+    let app_state = AppState::new(storage, cli.dev, cli.dev_server_url.clone());
 
     // Create router
     let app = create_router(app_state);
+
+    // Log dev mode status
+    if cli.dev {
+        info!("Running in DEV mode - proxying frontend to {}", cli.dev_server_url);
+        info!("Note: For full hot reload support, access React dev server directly at {}", cli.dev_server_url);
+    } else {
+        info!("Running in PRODUCTION mode - serving embedded frontend");
+    }
 
     // Start server
     let addr = format!("{}:{}", cli.host, cli.port);

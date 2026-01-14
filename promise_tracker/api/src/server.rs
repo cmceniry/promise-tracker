@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -11,17 +11,22 @@ use tower_http::cors::CorsLayer;
 
 use crate::storage::{Storage, DirectoryEntry, EntryType};
 use crate::validation::validate_contract;
+use crate::static_files::serve_static_or_proxy;
 
 /// Application state containing the storage
 #[derive(Clone)]
 pub struct AppState {
     storage: Arc<tokio::sync::RwLock<Storage>>,
+    dev_mode: bool,
+    dev_server_url: Arc<String>,
 }
 
 impl AppState {
-    pub fn new(storage: Storage) -> Self {
+    pub fn new(storage: Storage, dev_mode: bool, dev_server_url: String) -> Self {
         Self {
             storage: Arc::new(tokio::sync::RwLock::new(storage)),
+            dev_mode,
+            dev_server_url: Arc::new(dev_server_url),
         }
     }
 }
@@ -245,11 +250,29 @@ fn html_escape(s: &str) -> String {
 
 /// Create the axum router with all routes
 pub fn create_router(state: AppState) -> Router {
+    // Conditional CORS (only needed in dev mode)
+    let cors_layer = if state.dev_mode {
+        CorsLayer::permissive()
+    } else {
+        CorsLayer::new()
+    };
+
     Router::new()
+        // API routes - checked first
         .route("/contracts", get(list_contracts))
         .route("/contracts/*contract_id", get(get_contract).put(put_contract))
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer)
+        // Fallback to static files for non-API routes
+        .fallback(static_file_handler)
         .with_state(state)
+}
+
+/// Handler for static files
+async fn static_file_handler(
+    State(state): State<AppState>,
+    uri: Uri,
+) -> Response {
+    serve_static_or_proxy(uri, state.dev_mode, &state.dev_server_url).await
 }
 
 /// GET /contracts - List contents of root directory (contracts and subdirectories)
