@@ -1,6 +1,6 @@
+use anyhow::Result;
 use promise_tracker::components::Item;
 use serde::Deserialize;
-use anyhow::Result;
 
 /// Validation error type
 #[derive(Debug)]
@@ -24,7 +24,7 @@ impl std::error::Error for ValidationError {}
 /// Returns the parsed Items if valid
 pub fn validate_contract(content: &str) -> Result<Vec<Item>, ValidationError> {
     let mut items: Vec<Item> = vec![];
-    
+
     // Parse multidoc YAML
     for document in serde_yaml::Deserializer::from_str(content) {
         match Item::deserialize(document) {

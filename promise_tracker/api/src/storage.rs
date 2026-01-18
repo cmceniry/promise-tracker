@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Type of directory entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,9 +28,11 @@ pub struct Storage {
 impl Storage {
     /// Create a new Storage instance with the given base directory
     pub fn new(base_dir: impl AsRef<Path>) -> Result<Self> {
-        let base_dir = base_dir.as_ref().canonicalize()
+        let base_dir = base_dir
+            .as_ref()
+            .canonicalize()
             .context("Failed to canonicalize base directory")?;
-        
+
         if !base_dir.is_dir() {
             anyhow::bail!("Base directory is not a directory: {:?}", base_dir);
         }
@@ -53,11 +55,7 @@ impl Storage {
     }
 
     /// Recursively scan a directory for YAML files
-    fn scan_directory_recursive(
-        &mut self,
-        current_dir: &Path,
-        base_dir: &Path,
-    ) -> Result<()> {
+    fn scan_directory_recursive(&mut self, current_dir: &Path, base_dir: &Path) -> Result<()> {
         let entries = std::fs::read_dir(current_dir)
             .with_context(|| format!("Failed to read directory: {:?}", current_dir))?;
 
@@ -95,9 +93,10 @@ impl Storage {
         };
 
         // Ensure the path is within base_dir for security
-        let canonical_target = target_dir.canonicalize()
+        let canonical_target = target_dir
+            .canonicalize()
             .context("Failed to canonicalize target directory")?;
-        
+
         if !canonical_target.starts_with(&self.base_dir) {
             anyhow::bail!("Path is outside base directory");
         }
@@ -113,11 +112,11 @@ impl Storage {
         for entry in dir_entries {
             let entry = entry.context("Failed to read directory entry")?;
             let path = entry.path();
-            let metadata = entry.metadata()
-                .context("Failed to read entry metadata")?;
+            let metadata = entry.metadata().context("Failed to read entry metadata")?;
 
             // Get relative path from base_dir
-            let relative_path = path.strip_prefix(&self.base_dir)
+            let relative_path = path
+                .strip_prefix(&self.base_dir)
                 .ok()
                 .and_then(|p| p.to_str())
                 .map(|s| s.to_string());
@@ -125,7 +124,8 @@ impl Storage {
             if relative_path.is_some() {
                 if metadata.is_dir() {
                     entries.push(DirectoryEntry {
-                        name: path.file_name()
+                        name: path
+                            .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("")
                             .to_string(),
@@ -135,7 +135,8 @@ impl Storage {
                     if let Some(ext) = path.extension() {
                         if ext == "yaml" || ext == "yml" {
                             entries.push(DirectoryEntry {
-                                name: path.file_name()
+                                name: path
+                                    .file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("")
                                     .to_string(),
@@ -165,9 +166,11 @@ impl Storage {
 
     /// Load a contract by its ID (relative path)
     pub fn load_contract(&self, contract_id: &str) -> Result<String> {
-        let absolute_path = self.contracts.get(contract_id)
+        let absolute_path = self
+            .contracts
+            .get(contract_id)
             .ok_or_else(|| anyhow::anyhow!("Contract not found: {}", contract_id))?;
-        
+
         std::fs::read_to_string(absolute_path)
             .with_context(|| format!("Failed to read contract file: {:?}", absolute_path))
     }
@@ -178,11 +181,15 @@ impl Storage {
         // Validate path before creating directories - reject any use of ..
         let contract_path = PathBuf::from(contract_id);
         for component in contract_path.components() {
-            if matches!(component, std::path::Component::ParentDir) || matches!(component, std::path::Component::CurDir) {
-                anyhow::bail!("Path traversal not allowed: '..' is not permitted in contract paths");
+            if matches!(component, std::path::Component::ParentDir)
+                || matches!(component, std::path::Component::CurDir)
+            {
+                anyhow::bail!(
+                    "Path traversal not allowed: '..' is not permitted in contract paths"
+                );
             }
         }
-        
+
         let target_path = self.base_dir.join(contract_id);
 
         // Create parent directories if they don't exist
@@ -206,4 +213,3 @@ impl Storage {
         &self.base_dir
     }
 }
-

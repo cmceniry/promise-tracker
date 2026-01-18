@@ -9,9 +9,9 @@ use axum::{
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
-use crate::storage::{Storage, DirectoryEntry, EntryType};
-use crate::validation::validate_contract;
 use crate::static_files::serve_static_or_proxy;
+use crate::storage::{DirectoryEntry, EntryType, Storage};
+use crate::validation::validate_contract;
 
 /// Application state containing the storage
 #[derive(Clone)]
@@ -53,7 +53,7 @@ fn prefers_html(headers: &HeaderMap) -> bool {
 fn render_directory_html(entries: &[DirectoryEntry], current_path: Option<&str>) -> String {
     let path_display = current_path.unwrap_or("/contracts");
     let is_root = current_path.is_none();
-    
+
     let mut html = String::from("<!DOCTYPE html>\n<html>\n<head>\n");
     html.push_str("<meta charset=\"utf-8\">\n");
     html.push_str("<title>Contracts - ");
@@ -79,7 +79,7 @@ fn render_directory_html(entries: &[DirectoryEntry], current_path: Option<&str>)
     html.push_str(&html_escape(path_display));
     html.push_str("</div>\n");
     html.push_str("<ul>\n");
-    
+
     // Add ".." entry if not at root
     if !is_root {
         let parent_path = if let Some(path) = current_path {
@@ -90,7 +90,8 @@ fn render_directory_html(entries: &[DirectoryEntry], current_path: Option<&str>)
                 } else {
                     let parent = &path[..last_slash];
                     // Encode the parent path segments
-                    let encoded_parent: String = parent.split('/')
+                    let encoded_parent: String = parent
+                        .split('/')
                         .filter(|s| !s.is_empty())
                         .map(|s| urlencoding::encode(s))
                         .collect::<Vec<_>>()
@@ -108,27 +109,32 @@ fn render_directory_html(entries: &[DirectoryEntry], current_path: Option<&str>)
         html.push_str(&parent_path);
         html.push_str("\">..</a></li>\n");
     }
-    
+
     // Add directory entries
     for entry in entries {
         let entry_name = &entry.name;
         let entry_url = if let Some(path) = current_path {
             // Encode both the current path and the entry name
-            let encoded_path: String = path.split('/')
+            let encoded_path: String = path
+                .split('/')
                 .filter(|s| !s.is_empty())
                 .map(|s| urlencoding::encode(s))
                 .collect::<Vec<_>>()
                 .join("/");
-            format!("/contracts/{}/{}", encoded_path, urlencoding::encode(entry_name))
+            format!(
+                "/contracts/{}/{}",
+                encoded_path,
+                urlencoding::encode(entry_name)
+            )
         } else {
             format!("/contracts/{}", urlencoding::encode(entry_name))
         };
-        
+
         let class = match entry.entry_type {
             EntryType::Directory => "dir",
             EntryType::Contract => "file",
         };
-        
+
         html.push_str("<li class=\"");
         html.push_str(class);
         html.push_str("\"><a href=\"");
@@ -137,7 +143,7 @@ fn render_directory_html(entries: &[DirectoryEntry], current_path: Option<&str>)
         html.push_str(&html_escape(entry_name));
         html.push_str("</a></li>\n");
     }
-    
+
     html.push_str("</ul>\n</div>\n</body>\n</html>");
     html
 }
@@ -162,7 +168,7 @@ fn render_contract_html(contract_id: &str, content: &str) -> String {
     html.push_str("</head>\n<body>\n<div class=\"container\">\n");
     html.push_str("<h1>Contract</h1>\n");
     html.push_str("<div class=\"path\">");
-    
+
     // Add breadcrumb navigation
     if let Some(last_slash) = contract_id.rfind('/') {
         let parent_path = &contract_id[..last_slash];
@@ -171,7 +177,8 @@ fn render_contract_html(contract_id: &str, content: &str) -> String {
         for segment in parent_path.split('/') {
             if !segment.is_empty() {
                 segments.push(segment);
-                let encoded_path: String = segments.iter()
+                let encoded_path: String = segments
+                    .iter()
                     .map(|s| urlencoding::encode(s))
                     .collect::<Vec<_>>()
                     .join("/");
@@ -188,7 +195,7 @@ fn render_contract_html(contract_id: &str, content: &str) -> String {
         html.push_str("<a href=\"/contracts\">/contracts</a> / ");
         html.push_str(&html_escape(contract_id));
     }
-    
+
     html.push_str("</div>\n");
     html.push_str("<pre><code>");
     html.push_str(&html_escape(content));
@@ -202,7 +209,7 @@ fn render_error_html(status: StatusCode, message: &str) -> String {
     let is_success = status.is_success();
     let title = if is_success { "Success" } else { "Error" };
     let title_color = if is_success { "#2e7d32" } else { "#d32f2f" };
-    
+
     let mut html = String::from("<!DOCTYPE html>\n<html>\n<head>\n");
     html.push_str("<meta charset=\"utf-8\">\n");
     html.push_str("<title>");
@@ -260,7 +267,10 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // API routes - checked first
         .route("/contracts", get(list_contracts))
-        .route("/contracts/*contract_id", get(get_contract).put(put_contract))
+        .route(
+            "/contracts/*contract_id",
+            get(get_contract).put(put_contract),
+        )
         .layer(cors_layer)
         // Fallback to static files for non-API routes
         .fallback(static_file_handler)
@@ -268,21 +278,15 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 /// Handler for static files
-async fn static_file_handler(
-    State(state): State<AppState>,
-    uri: Uri,
-) -> Response {
+async fn static_file_handler(State(state): State<AppState>, uri: Uri) -> Response {
     serve_static_or_proxy(uri, state.dev_mode, &state.dev_server_url).await
 }
 
 /// GET /contracts - List contents of root directory (contracts and subdirectories)
-async fn list_contracts(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn list_contracts(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let storage = state.storage.read().await;
     let wants_html = prefers_html(&headers);
-    
+
     match storage.list_directory(None) {
         Ok(entries) => {
             if wants_html {
@@ -333,7 +337,7 @@ async fn get_contract(
 
     let storage = state.storage.read().await;
     let wants_html = prefers_html(&headers);
-    
+
     // First, check if it's a directory
     if let Ok(entries) = storage.list_directory(Some(&contract_id)) {
         // It's a directory, return the listing
@@ -352,7 +356,7 @@ async fn get_contract(
                 .unwrap();
         }
     }
-    
+
     // Otherwise, try to load it as a contract file
     match storage.load_contract(&contract_id) {
         Ok(content) => {

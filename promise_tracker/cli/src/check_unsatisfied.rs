@@ -6,7 +6,7 @@ use std::process;
 #[derive(Parser)]
 pub struct Parameters {
     /// The file(s) or dir(s) to check
-    #[clap(short, long="file")]
+    #[clap(short, long = "file")]
     files: Vec<String>,
 
     /// Show single line outputs per provides/conditions

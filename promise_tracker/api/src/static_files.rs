@@ -46,11 +46,7 @@ impl StaticAssets {
 }
 
 /// Handler for serving static files or proxying to dev server
-pub async fn serve_static_or_proxy(
-    uri: Uri,
-    dev_mode: bool,
-    dev_server_url: &str,
-) -> Response {
+pub async fn serve_static_or_proxy(uri: Uri, dev_mode: bool, dev_server_url: &str) -> Response {
     if dev_mode {
         // Proxy to React dev server
         proxy_to_dev_server(&uri, dev_server_url).await
@@ -85,12 +81,10 @@ async fn serve_embedded_static(uri: &Uri) -> Response {
                 .body(Body::from(content.into_owned()))
                 .unwrap()
         }
-        None => {
-            Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("Not Found"))
-                .unwrap()
-        }
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("Not Found"))
+            .unwrap(),
     }
 }
 
@@ -105,13 +99,15 @@ async fn proxy_to_dev_server(uri: &Uri, dev_server_url: &str) -> Response {
             let headers = resp.headers().clone();
             let body = resp.bytes().await.unwrap_or_default();
 
-            let mut response = Response::builder()
-                .status(status);
+            let mut response = Response::builder().status(status);
 
             // Copy relevant headers (skip connection-specific headers)
             for (key, value) in headers.iter() {
                 let key_str = key.as_str();
-                if !matches!(key_str, "connection" | "transfer-encoding" | "content-length") {
+                if !matches!(
+                    key_str,
+                    "connection" | "transfer-encoding" | "content-length"
+                ) {
                     response = response.header(key, value);
                 }
             }

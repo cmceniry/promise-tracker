@@ -36,17 +36,24 @@ impl From<Agent> for IntermediateAgent {
                 }
             }
             if inuse {
-               global_conditions.push(c);
+                global_conditions.push(c);
             }
         }
-        let provides = value.provides.iter().map(|p| {
-            let conditions = p.get_conditions().iter().filter(|c| {
-                !global_conditions.contains(c)
-            }).cloned().collect();
-            Behavior::new(p.get_name().clone()).with_conditions(conditions)
-        }).collect::<Vec<Behavior>>();
+        let provides = value
+            .provides
+            .iter()
+            .map(|p| {
+                let conditions = p
+                    .get_conditions()
+                    .iter()
+                    .filter(|c| !global_conditions.contains(c))
+                    .cloned()
+                    .collect();
+                Behavior::new(p.get_name().clone()).with_conditions(conditions)
+            })
+            .collect::<Vec<Behavior>>();
 
-       IntermediateAgent {
+        IntermediateAgent {
             name: value.name,
             comment: value.comment,
             provides: provides,
@@ -371,7 +378,12 @@ globalConditions:
                 ),
                 Behavior::new_with_conditions(
                     String::from("p2"),
-                    vec!(String::from("c2"), String::from("c1"), String::from("gc1"), String::from("gc2"))
+                    vec!(
+                        String::from("c2"),
+                        String::from("c1"),
+                        String::from("gc1"),
+                        String::from("gc2")
+                    )
                 ),
             ),
         );
@@ -400,12 +412,12 @@ globalConditions:
             name: String::from("foo"),
             comment: String::from(""),
             provides: vec![
-                Behavior::new(
-                    String::from("p1"),
-                ).with_conditions(vec![String::from("gc1")]),
-                Behavior::new(
-                    String::from("p2"),
-                ).with_conditions(vec![String::from("c1"), String::from("c2"), String::from("gc1")]),
+                Behavior::new(String::from("p1")).with_conditions(vec![String::from("gc1")]),
+                Behavior::new(String::from("p2")).with_conditions(vec![
+                    String::from("c1"),
+                    String::from("c2"),
+                    String::from("gc1"),
+                ]),
             ],
             wants: vec![
                 Behavior::new(String::from("w1")),
@@ -609,13 +621,15 @@ provides:
         let a = Agent::try_from(ia).unwrap();
         assert_eq!(
             a,
-            Agent::new(String::from("a1")).with_provides(vec![Behavior::new(String::from("p1"))
-                .with_conditions(vec![
-                    String::from("p1c1"),
-                    String::from("p1c2"),
-                    String::from("gc1"),
-                    String::from("gc2"),
-                ])])
+            Agent::new(String::from("a1"))
+                .with_provides(vec![Behavior::new(String::from("p1")).with_conditions(
+                    vec![
+                        String::from("p1c1"),
+                        String::from("p1c2"),
+                        String::from("gc1"),
+                        String::from("gc2"),
+                    ]
+                )])
                 .with_wants(vec![Behavior::new(String::from("w1"))])
         );
     }

@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 mod server;
+mod static_files;
 mod storage;
 mod validation;
-mod static_files;
 
 use server::{create_router, AppState};
 use storage::Storage;
@@ -52,7 +52,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create storage and scan directory
-    info!("Initializing storage from base directory: {:?}", cli.base_dir);
+    info!(
+        "Initializing storage from base directory: {:?}",
+        cli.base_dir
+    );
     let storage = Storage::new(&cli.base_dir)?;
 
     // Validate all found contracts
@@ -64,26 +67,21 @@ async fn main() -> anyhow::Result<()> {
 
     for contract_id in &contracts {
         match storage.load_contract(contract_id) {
-            Ok(content) => {
-                match validation::validate_contract(&content) {
-                    Ok(_) => {
-                        valid_count += 1;
-                    }
-                    Err(e) => {
-                        invalid_count += 1;
-                        warn!(
-                            "Contract {} is invalid and will not be served: {}",
-                            contract_id, e
-                        );
-                    }
+            Ok(content) => match validation::validate_contract(&content) {
+                Ok(_) => {
+                    valid_count += 1;
                 }
-            }
+                Err(e) => {
+                    invalid_count += 1;
+                    warn!(
+                        "Contract {} is invalid and will not be served: {}",
+                        contract_id, e
+                    );
+                }
+            },
             Err(e) => {
                 invalid_count += 1;
-                warn!(
-                    "Failed to load contract {}: {}",
-                    contract_id, e
-                );
+                warn!("Failed to load contract {}: {}", contract_id, e);
             }
         }
     }
@@ -105,8 +103,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Log dev mode status
     if cli.dev {
-        info!("Running in DEV mode - proxying frontend to {}", cli.dev_server_url);
-        info!("Note: For full hot reload support, access React dev server directly at {}", cli.dev_server_url);
+        info!(
+            "Running in DEV mode - proxying frontend to {}",
+            cli.dev_server_url
+        );
+        info!(
+            "Note: For full hot reload support, access React dev server directly at {}",
+            cli.dev_server_url
+        );
     } else {
         info!("Running in PRODUCTION mode - serving embedded frontend");
     }
