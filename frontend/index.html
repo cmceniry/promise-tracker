@@ -66,6 +66,46 @@
             // Transform state for pan and zoom
             let transform = { x: 0, y: 0, scale: 1 };
 
+            // Fit the view to show all nodes with padding
+            function fitToBounds() {
+                if (graphNodes.length === 0) return;
+
+                // Calculate bounding box of all nodes
+                let minX = Infinity, minY = Infinity;
+                let maxX = -Infinity, maxY = -Infinity;
+
+                graphNodes.forEach(function(node) {
+                    if (node.x !== undefined && node.y !== undefined) {
+                        const radius = node.type === 'component' ? 12 : 10;
+                        minX = Math.min(minX, node.x - radius - 30); // Extra space for labels
+                        maxX = Math.max(maxX, node.x + radius + 30);
+                        minY = Math.min(minY, node.y - radius);
+                        maxY = Math.max(maxY, node.y + radius + 20); // Extra space for labels below
+                    }
+                });
+
+                if (minX === Infinity) return;
+
+                const graphWidth = maxX - minX;
+                const graphHeight = maxY - minY;
+                const padding = 40;
+
+                // Calculate scale to fit
+                const scaleX = (width - padding * 2) / graphWidth;
+                const scaleY = (height - padding * 2) / graphHeight;
+                const newScale = Math.min(scaleX, scaleY, 2); // Cap at 2x zoom
+
+                // Calculate center offset
+                const graphCenterX = (minX + maxX) / 2;
+                const graphCenterY = (minY + maxY) / 2;
+
+                transform.scale = newScale;
+                transform.x = width / 2 - graphCenterX * newScale;
+                transform.y = height / 2 - graphCenterY * newScale;
+
+                render();
+            }
+
             // Interaction state
             let draggedNode = null;
             let isPanning = false;
@@ -316,8 +356,21 @@
                 ctx.restore();
             }
 
+            // Track if we've done the initial fit
+            let initialFitDone = false;
+
             // Update on each tick
-            simulation.on('tick', render);
+            simulation.on('tick', function() {
+                render();
+                // Fit to bounds once layout is reasonably stable
+                if (!initialFitDone && simulation.alpha() < 0.1) {
+                    initialFitDone = true;
+                    fitToBounds();
+                }
+            });
+
+            // Also fit to bounds when simulation fully settles
+            simulation.on('end', fitToBounds);
 
             // Handle resize
             function handleResize() {
