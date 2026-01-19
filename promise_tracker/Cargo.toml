@@ -17,4 +17,5 @@ members = [
   "cli",
   "wpt",
   "api",
+  "frontend",
 ]

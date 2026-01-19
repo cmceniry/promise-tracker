@@ -26,7 +26,7 @@ struct Cli {
     #[arg(long, default_value = "0.0.0.0")]
     host: String,
 
-    /// Enable dev mode (proxy frontend requests to React dev server)
+    /// Enable dev mode (proxy frontend requests to Trunk dev server)
     #[arg(long)]
     dev: bool,
 
@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
             cli.dev_server_url
         );
         info!(
-            "Note: For full hot reload support, access React dev server directly at {}",
+            "Note: For full hot reload support, access Trunk dev server directly at {}",
             cli.dev_server_url
         );
     } else {

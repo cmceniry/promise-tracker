@@ -6,9 +6,9 @@ use axum::{
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 
-/// Embedded static files from React build
+/// Embedded static files from Leptos build
 #[derive(RustEmbed)]
-#[folder = "../../build/"]
+#[folder = "../frontend/dist/"]
 #[include = "*.html"]
 #[include = "*.js"]
 #[include = "*.css"]
@@ -17,7 +17,8 @@ use std::borrow::Cow;
 #[include = "*.png"]
 #[include = "*.svg"]
 #[include = "*.txt"]
-#[include = "static/*"]
+#[include = "*.wasm"]
+#[include = "snippets/**/*"]
 pub struct StaticAssets;
 
 impl StaticAssets {
@@ -45,10 +46,10 @@ impl StaticAssets {
     }
 }
 
-/// Handler for serving static files or proxying to dev server
+/// Handler for serving static files or proxying to Trunk dev server
 pub async fn serve_static_or_proxy(uri: Uri, dev_mode: bool, dev_server_url: &str) -> Response {
     if dev_mode {
-        // Proxy to React dev server
+        // Proxy to Trunk dev server
         proxy_to_dev_server(&uri, dev_server_url).await
     } else {
         // Serve embedded static files
@@ -66,11 +67,14 @@ async fn serve_embedded_static(uri: &Uri) -> Response {
             let cache_header = if path == "/" || path.ends_with("index.html") {
                 // No caching for HTML (SPA entrypoint)
                 "no-cache, no-store, must-revalidate"
-            } else if path.starts_with("/static/") {
-                // Aggressive caching for hashed static assets
+            } else if path.ends_with(".wasm") || path.ends_with(".js") {
+                // Aggressive caching for hashed Trunk assets (WASM/JS)
+                "public, max-age=31536000, immutable"
+            } else if path.starts_with("/snippets/") {
+                // Aggressive caching for JS snippets (wasm-bindgen generated)
                 "public, max-age=31536000, immutable"
             } else {
-                // Moderate caching for other assets
+                // Moderate caching for other assets (CSS, images)
                 "public, max-age=3600"
             };
 
@@ -88,7 +92,7 @@ async fn serve_embedded_static(uri: &Uri) -> Response {
     }
 }
 
-/// Proxy request to React dev server
+/// Proxy request to Trunk dev server
 async fn proxy_to_dev_server(uri: &Uri, dev_server_url: &str) -> Response {
     let client = reqwest::Client::new();
     let url = format!("{}{}", dev_server_url, uri);

@@ -1,4 +1,6 @@
 pub mod components;
+pub mod diagram;
+pub mod network_diagram;
 
 use components::Agent;
 use components::Item;
@@ -10,7 +12,7 @@ pub mod resolve;
 use resolve::Offer;
 use resolve::Resolution;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tracker {
     available_agents: Vec<Agent>,
     available_superagents: Vec<SuperAgent>,

@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Promise Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <link data-trunk rel="css" href="style/main.css">
+    <!-- D3.js for force-directed graph -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <!-- Mermaid for sequence diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+    <div id="app"></div>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <!-- Force graph functions (inlined to avoid file loading issues) -->
+    <script>
+    (function() {
+        // Store active simulations for cleanup
+        const activeSimulations = new Map();
+
+        // Colors matching the React implementation
+        const COLORS = {
+            component: '#1976D2',    // Blue for components
+            satisfied: '#4CAF50',    // Green for satisfied
+            unsatisfied: '#C62828',  // Red for unsatisfied
+        };
+
+        // Create and render a force-directed graph
+        window.create_force_graph = function(containerId, nodes, links) {
+            const container = document.getElementById(containerId);
+            if (!container) {
+                return;
+            }
+
+            // Clean up any existing simulation
+            window.destroy_force_graph(containerId);
+
+            // Clear the container
+            container.innerHTML = '';
+
+            // If no nodes, show a message
+            if (!nodes || nodes.length === 0) {
+                container.innerHTML = '<div style="padding: 2rem; text-align: center; color: #666;">No relationships found.</div>';
+                return;
+            }
+
+            // Create canvas
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Set canvas size
+            const rect = container.getBoundingClientRect();
+            const width = rect.width || 800;
+            const height = 400;
+
+            canvas.width = width;
+            canvas.height = height;
+            canvas.style.display = 'block';
+            canvas.style.width = '100%';
+            canvas.style.height = height + 'px';
+            canvas.style.cursor = 'grab';
+            container.appendChild(canvas);
+
+            // Transform state for pan and zoom
+            let transform = { x: 0, y: 0, scale: 1 };
+
+            // Interaction state
+            let draggedNode = null;
+            let isPanning = false;
+            let lastMousePos = { x: 0, y: 0 };
+
+            // Parse nodes and links - create deep copies
+            const graphNodes = nodes.map(function(n) {
+                return Object.assign({}, n, { x: width / 2 + (Math.random() - 0.5) * 100, y: height / 2 + (Math.random() - 0.5) * 100 });
+            });
+
+            const graphLinks = links.map(function(l) {
+                return Object.assign({}, l);
+            });
+
+            // Create D3 force simulation
+            const simulation = d3.forceSimulation(graphNodes)
+                .force('link', d3.forceLink(graphLinks)
+                    .id(function(d) { return d.id; })
+                    .distance(100)
+                    .strength(0.5))
+                .force('charge', d3.forceManyBody()
+                    .strength(-300))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide()
+                    .radius(30))
+                .alphaDecay(0.02);
+
+            // Store the simulation for later cleanup
+            activeSimulations.set(containerId, { simulation: simulation, canvas: canvas });
+
+            // Convert screen coordinates to graph coordinates
+            function screenToGraph(screenX, screenY) {
+                return {
+                    x: (screenX - transform.x) / transform.scale,
+                    y: (screenY - transform.y) / transform.scale
+                };
+            }
+
+            // Find node at position
+            function findNodeAt(graphX, graphY) {
+                for (let i = graphNodes.length - 1; i >= 0; i--) {
+                    const node = graphNodes[i];
+                    const radius = node.type === 'component' ? 12 : 10;
+                    const dx = graphX - node.x;
+                    const dy = graphY - node.y;
+                    if (dx * dx + dy * dy < radius * radius) {
+                        return node;
+                    }
+                }
+                return null;
+            }
+
+            // Get mouse position relative to canvas
+            function getMousePos(e) {
+                const rect = canvas.getBoundingClientRect();
+                return {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+            }
+
+            // Mouse down handler
+            function onMouseDown(e) {
+                const pos = getMousePos(e);
+                const graphPos = screenToGraph(pos.x, pos.y);
+                const node = findNodeAt(graphPos.x, graphPos.y);
+
+                lastMousePos = pos;
+
+                if (node) {
+                    // Start dragging node
+                    draggedNode = node;
+                    draggedNode.fx = draggedNode.x;
+                    draggedNode.fy = draggedNode.y;
+                    simulation.alphaTarget(0.3).restart();
+                    canvas.style.cursor = 'grabbing';
+                } else {
+                    // Start panning
+                    isPanning = true;
+                    canvas.style.cursor = 'grabbing';
+                }
+            }
+
+            // Mouse move handler
+            function onMouseMove(e) {
+                const pos = getMousePos(e);
+
+                if (draggedNode) {
+                    // Drag node
+                    const graphPos = screenToGraph(pos.x, pos.y);
+                    draggedNode.fx = graphPos.x;
+                    draggedNode.fy = graphPos.y;
+                } else if (isPanning) {
+                    // Pan view
+                    const dx = pos.x - lastMousePos.x;
+                    const dy = pos.y - lastMousePos.y;
+                    transform.x += dx;
+                    transform.y += dy;
+                    render();
+                } else {
+                    // Update cursor based on hover
+                    const graphPos = screenToGraph(pos.x, pos.y);
+                    const node = findNodeAt(graphPos.x, graphPos.y);
+                    canvas.style.cursor = node ? 'pointer' : 'grab';
+                }
+
+                lastMousePos = pos;
+            }
+
+            // Mouse up handler
+            function onMouseUp(e) {
+                if (draggedNode) {
+                    draggedNode.fx = null;
+                    draggedNode.fy = null;
+                    draggedNode = null;
+                    simulation.alphaTarget(0);
+                }
+                isPanning = false;
+
+                const pos = getMousePos(e);
+                const graphPos = screenToGraph(pos.x, pos.y);
+                const node = findNodeAt(graphPos.x, graphPos.y);
+                canvas.style.cursor = node ? 'pointer' : 'grab';
+            }
+
+            // Mouse leave handler
+            function onMouseLeave(e) {
+                if (draggedNode) {
+                    draggedNode.fx = null;
+                    draggedNode.fy = null;
+                    draggedNode = null;
+                    simulation.alphaTarget(0);
+                }
+                isPanning = false;
+                canvas.style.cursor = 'grab';
+            }
+
+            // Wheel handler for zoom
+            function onWheel(e) {
+                e.preventDefault();
+
+                const pos = getMousePos(e);
+                const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = Math.max(0.1, Math.min(5, transform.scale * scaleFactor));
+
+                // Zoom toward mouse position
+                const scaleChange = newScale / transform.scale;
+                transform.x = pos.x - (pos.x - transform.x) * scaleChange;
+                transform.y = pos.y - (pos.y - transform.y) * scaleChange;
+                transform.scale = newScale;
+
+                render();
+            }
+
+            // Add event listeners
+            canvas.addEventListener('mousedown', onMouseDown);
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseup', onMouseUp);
+            canvas.addEventListener('mouseleave', onMouseLeave);
+            canvas.addEventListener('wheel', onWheel, { passive: false });
+
+            // Render function
+            function render() {
+                ctx.clearRect(0, 0, width, height);
+
+                // Apply transform
+                ctx.save();
+                ctx.translate(transform.x, transform.y);
+                ctx.scale(transform.scale, transform.scale);
+
+                // Draw links
+                graphLinks.forEach(function(link) {
+                    if (!link.source.x || !link.target.x) return;
+
+                    ctx.beginPath();
+                    ctx.moveTo(link.source.x, link.source.y);
+                    ctx.lineTo(link.target.x, link.target.y);
+
+                    ctx.strokeStyle = link.satisfied ? COLORS.satisfied : COLORS.unsatisfied;
+                    ctx.lineWidth = (link.satisfied ? 2 : 1.5) / transform.scale;
+
+                    // Dashed line for unsatisfied
+                    if (!link.satisfied) {
+                        ctx.setLineDash([5 / transform.scale, 5 / transform.scale]);
+                    } else {
+                        ctx.setLineDash([]);
+                    }
+
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Draw arrow
+                    const dx = link.target.x - link.source.x;
+                    const dy = link.target.y - link.source.y;
+                    const angle = Math.atan2(dy, dx);
+                    const nodeRadius = link.target.type === 'component' ? 12 : 10;
+                    const arrowX = link.target.x - nodeRadius * Math.cos(angle);
+                    const arrowY = link.target.y - nodeRadius * Math.sin(angle);
+
+                    const arrowLength = 8;
+                    const arrowWidth = Math.PI / 6;
+
+                    ctx.beginPath();
+                    ctx.moveTo(arrowX, arrowY);
+                    ctx.lineTo(
+                        arrowX - arrowLength * Math.cos(angle - arrowWidth),
+                        arrowY - arrowLength * Math.sin(angle - arrowWidth)
+                    );
+                    ctx.lineTo(
+                        arrowX - arrowLength * Math.cos(angle + arrowWidth),
+                        arrowY - arrowLength * Math.sin(angle + arrowWidth)
+                    );
+                    ctx.closePath();
+                    ctx.fillStyle = link.satisfied ? COLORS.satisfied : COLORS.unsatisfied;
+                    ctx.fill();
+                });
+
+                // Draw nodes
+                graphNodes.forEach(function(node) {
+                    if (!node.x || !node.y) return;
+
+                    const radius = node.type === 'component' ? 12 : 10;
+
+                    // Node color based on type and satisfaction
+                    var color;
+                    if (node.type === 'component') {
+                        color = COLORS.component;
+                    } else {
+                        color = node.satisfied ? COLORS.satisfied : COLORS.unsatisfied;
+                    }
+
+                    ctx.beginPath();
+                    ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2 / transform.scale;
+                    ctx.stroke();
+
+                    // Draw label
+                    ctx.fillStyle = '#333';
+                    ctx.font = (11 / transform.scale) + 'px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(node.label, node.x, node.y + radius + 4);
+                });
+
+                ctx.restore();
+            }
+
+            // Update on each tick
+            simulation.on('tick', render);
+
+            // Handle resize
+            function handleResize() {
+                const newRect = container.getBoundingClientRect();
+                const newWidth = newRect.width || 800;
+
+                if (Math.abs(newWidth - canvas.width) > 10) {
+                    canvas.width = newWidth;
+                    canvas.style.width = '100%';
+                    simulation.force('center', d3.forceCenter(newWidth / 2, height / 2));
+                    simulation.alpha(0.3).restart();
+                }
+            }
+
+            // Add resize observer
+            const resizeObserver = new ResizeObserver(handleResize);
+            resizeObserver.observe(container);
+
+            // Store resize observer and event cleanup for later
+            const stored = activeSimulations.get(containerId);
+            if (stored) {
+                stored.resizeObserver = resizeObserver;
+                stored.cleanup = function() {
+                    canvas.removeEventListener('mousedown', onMouseDown);
+                    canvas.removeEventListener('mousemove', onMouseMove);
+                    canvas.removeEventListener('mouseup', onMouseUp);
+                    canvas.removeEventListener('mouseleave', onMouseLeave);
+                    canvas.removeEventListener('wheel', onWheel);
+                };
+            }
+
+            // Initial render
+            render();
+        };
+
+        // Destroy a force graph and clean up resources
+        window.destroy_force_graph = function(containerId) {
+            const stored = activeSimulations.get(containerId);
+            if (stored) {
+                if (stored.simulation) {
+                    stored.simulation.stop();
+                }
+                if (stored.resizeObserver) {
+                    stored.resizeObserver.disconnect();
+                }
+                if (stored.cleanup) {
+                    stored.cleanup();
+                }
+                activeSimulations.delete(containerId);
+            }
+        };
+
+        // Update an existing force graph with new data
+        window.update_force_graph = function(containerId, nodes, links) {
+            // For simplicity, just recreate the graph
+            window.create_force_graph(containerId, nodes, links);
+        };
+    })();
+    </script>
+    <!-- Mermaid rendering functions -->
+    <script>
+    (function() {
+        // Track render counter for unique IDs
+        let renderCounter = 0;
+
+        // Initialize mermaid with settings for sequence diagrams
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'default',
+            sequence: {
+                useMaxWidth: false,
+            },
+            securityLevel: 'loose',
+        });
+
+        // Render a mermaid diagram and return the SVG
+        // Returns a Promise that resolves to the SVG string or rejects with an error
+        window.render_mermaid = async function(source) {
+            if (!source || source.trim() === '') {
+                return '';
+            }
+
+            try {
+                // Generate a unique ID for this render
+                const id = 'mermaid-' + (++renderCounter);
+
+                // Render the diagram
+                const result = await mermaid.render(id, source);
+
+                // Result is an object with .svg property in mermaid v10+
+                return result.svg || result;
+            } catch (e) {
+                console.error('Mermaid rendering error:', e);
+                throw new Error(e.message || 'Failed to render diagram');
+            }
+        };
+    })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+</body>
+</html>

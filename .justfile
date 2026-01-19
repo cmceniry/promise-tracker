@@ -3,15 +3,23 @@ mod rust "promise_tracker/"
 # Build frontend and backend into single binary
 # build: build-frontend build-backend
 
-# Build React frontend for production
+# Build React frontend for production (legacy)
 build-frontend:
     npm run build
+
+# Build Leptos frontend for production
+build-leptos:
+    just rust build-leptos
+
+# Development: Run Leptos frontend with hot reload (serves on port 3000)
+dev-leptos:
+    just rust dev-leptos
 
 # # Build Rust backend with embedded frontend
 # build-backend: build-frontend
 #     cd promise_tracker/api && cargo build --release
 
-# Development: Run API in dev mode (proxies to React dev server)
+# Development: Run API in dev mode (proxies to frontend dev server)
 dev-api:
     cd promise_tracker/api && cargo run -- --dev
 

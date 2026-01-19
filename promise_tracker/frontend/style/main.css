@@ -1,0 +1,154 @@
+/* Promise Tracker Frontend Styles */
+
+body {
+    padding-top: 1rem;
+}
+
+/* Contract Card Styles */
+.contract-card-even.card,
+.contract-card-even .card-body {
+    background-color: #f8f9fa !important;
+}
+
+.contract-card-odd.card,
+.contract-card-odd .card-body {
+    background-color: #e9ecef !important;
+}
+
+.contract-card-expanded {
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        max-height: 0;
+    }
+    to {
+        opacity: 1;
+        max-height: 1000px;
+    }
+}
+
+.contract-card-even .card-body,
+.contract-card-odd .card-body {
+    transition: padding 0.3s ease-out;
+}
+
+/* Drag handle styles */
+.drag-handle {
+    color: #6c757d;
+    transition: color 0.2s ease;
+}
+
+.drag-handle:hover {
+    color: #495057;
+    cursor: grab;
+}
+
+.drag-handle:active {
+    cursor: grabbing;
+    color: #212529;
+}
+
+/* Dragging state */
+.card[style*="opacity: 0.5"] {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    transform: scale(1.02);
+}
+
+/* Ensure card content doesn't overlap with drag handle */
+.contract-card-even.card,
+.contract-card-odd.card {
+    position: relative;
+    margin-bottom: 0.5rem;
+}
+
+/* Promise Network Graph Styles */
+.promise-network-container {
+    width: 100%;
+    min-height: 400px;
+    overflow: hidden;
+    position: relative;
+}
+
+.promise-network-container canvas {
+    display: block;
+}
+
+/* Ensure the graph canvas container takes full width */
+.promise-network-container > div[id^="graph-container-"] {
+    width: 100%;
+    height: 400px;
+    min-height: 300px;
+}
+
+/* Legend styles */
+.promise-network-legend {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+    font-size: 0.85em;
+}
+
+.promise-network-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.promise-network-legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 2px;
+    display: inline-block;
+}
+
+.promise-network-legend-color.circle {
+    border-radius: 50%;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .promise-network-container > div[id^="graph-container-"] {
+        height: 300px;
+        min-height: 250px;
+    }
+
+    .promise-network-legend {
+        font-size: 0.75em;
+        gap: 0.5rem;
+    }
+}
+
+/* Contract Text Styles */
+.contract-text-card {
+    text-align: left;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.contract-text-list {
+    list-style-type: disc;
+    padding-left: 20px;
+}
+
+.contract-text-list li {
+    text-align: left;
+}
+
+.contract-text-option {
+    color: green;
+    font-weight: bold;
+}
+
+.contract-text-possible {
+    color: red;
+    font-weight: bold;
+}
+
+.contract-text-error {
+    color: blue;
+    font-weight: bold;
+}

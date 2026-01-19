@@ -36,6 +36,21 @@ impl Resolution {
         self.satisfying_offers.len() > 0
     }
 
+    /// Returns the behavior name
+    pub fn get_behavior_name(&self) -> &str {
+        &self.behavior_name
+    }
+
+    /// Returns a reference to the satisfying offers
+    pub fn get_satisfying_offers(&self) -> &[Offer] {
+        &self.satisfying_offers
+    }
+
+    /// Returns a reference to the unsatisfying offers
+    pub fn get_unsatisfying_offers(&self) -> &[Offer] {
+        &self.unsatisfying_offers
+    }
+
     // resolve strings is of the format
     // behavior |-> offerer ...
     // offer is of the format
@@ -323,6 +338,16 @@ impl Offer {
             agent_name: String::from(agent_name),
             resolved_conditions,
         }
+    }
+
+    /// Returns the agent name
+    pub fn get_agent_name(&self) -> &str {
+        &self.agent_name
+    }
+
+    /// Returns a reference to the resolved conditions
+    pub fn get_resolved_conditions(&self) -> &[Resolution] {
+        &self.resolved_conditions
     }
 
     pub fn to_strings_compressed(&self, use_color: bool) -> Vec<String> {
