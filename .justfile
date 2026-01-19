@@ -1,38 +1,24 @@
-mod rust "promise_tracker/"
 
-# Build frontend and backend into single binary
-# build: build-frontend build-backend
+# API server targets
+[working-directory: './api']
+build-backend:
+    cargo build --release
 
-# Build React frontend for production (legacy)
-build-frontend:
-    npm run build
+[working-directory: './api']
+run-dev:
+    cargo run -- --dev
 
-# Build Leptos frontend for production
+# Leptos frontend targets
+[working-directory: './frontend']
 build-leptos:
-    just rust build-leptos
+    trunk build --release
 
-# Development: Run Leptos frontend with hot reload (serves on port 3000)
+[working-directory: './frontend']
 dev-leptos:
-    just rust dev-leptos
+    trunk serve
 
-# # Build Rust backend with embedded frontend
-# build-backend: build-frontend
-#     cd promise_tracker/api && cargo build --release
-
-# Development: Run API in dev mode (proxies to frontend dev server)
-dev-api:
-    cd promise_tracker/api && cargo run -- --dev
-
-# Clean build artifacts
-clean:
-    rm -rf build
-    cd promise_tracker && cargo clean
-
-# Legacy targets (keep for compatibility)
-start-clean:
-    just rust build-wasm
-    just rust sync-wptpkg
-    npm start
-
-run-server:
-    npm start
+# Legacy WASM targets (for old React frontend)
+[working-directory: './wpt']
+build-wasm:
+    cargo build --release --target wasm32-unknown-unknown
+    wasm-pack build --target web --weak-refs

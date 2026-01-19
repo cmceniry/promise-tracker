@@ -4,8 +4,9 @@ This is a poor attempt to visualize contracts that can come about from promise t
 It's definitely a WiP.
 
 
+To get it up and running, start two shells and execute:
 ```
-just run-server
-# OR
-# dagger call run-server --src=.:react --wasm-src=./promise_tracker
+just run-dev
+# AND
+just dev-leptos
 ```
