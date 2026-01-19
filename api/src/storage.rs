@@ -159,11 +159,6 @@ impl Storage {
         contracts
     }
 
-    /// Check if a contract exists
-    pub fn has_contract(&self, contract_id: &str) -> bool {
-        self.contracts.contains_key(contract_id)
-    }
-
     /// Load a contract by its ID (relative path)
     pub fn load_contract(&self, contract_id: &str) -> Result<String> {
         let absolute_path = self
@@ -208,8 +203,4 @@ impl Storage {
         Ok(())
     }
 
-    /// Get the base directory path
-    pub fn base_dir(&self) -> &Path {
-        &self.base_dir
-    }
 }
