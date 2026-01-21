@@ -91,6 +91,7 @@ pub fn ContractBrowser(
     let (error, set_error) = signal::<Option<String>>(None);
     let (downloading_contracts, set_downloading_contracts) =
         signal::<HashSet<String>>(HashSet::new());
+    let (selected_contracts, set_selected_contracts) = signal::<HashSet<String>>(HashSet::new());
 
     // Ref for focusing the modal
     let modal_ref = NodeRef::<leptos::html::Div>::new();
@@ -108,6 +109,7 @@ pub fn ContractBrowser(
             set_loaded_children.set(HashMap::new());
             set_loading_paths.set(HashSet::new());
             set_downloading_contracts.set(HashSet::new());
+            set_selected_contracts.set(HashSet::new());
             set_error.set(None);
 
             // Load root directory
@@ -139,6 +141,7 @@ pub fn ContractBrowser(
         set_loading_paths.set(HashSet::new());
         set_root_entries.set(Vec::new());
         set_downloading_contracts.set(HashSet::new());
+        set_selected_contracts.set(HashSet::new());
         set_error.set(None);
         on_hide.run(());
     };
@@ -186,7 +189,7 @@ pub fn ContractBrowser(
     };
 
     // Download a contract
-    let download_contract = move |path: String, name: String| {
+    let download_contract = move |path: String, _name: String| {
         // Check if already downloading or downloaded
         if downloading_contracts.get().contains(&path) || downloaded_paths.get().contains(&path) {
             return;
@@ -227,6 +230,62 @@ pub fn ContractBrowser(
         set_error.set(None);
     };
 
+    // Handle adding selected contracts
+    let handle_add_selected = move |_| {
+        let contracts_to_download: Vec<String> = selected_contracts
+            .get()
+            .into_iter()
+            .filter(|path| {
+                !downloaded_paths.get().contains(path) &&
+                !downloading_contracts.get().contains(path)
+            })
+            .collect();
+
+        if contracts_to_download.is_empty() {
+            return;
+        }
+
+        // Mark all as downloading
+        set_downloading_contracts.update(|paths| {
+            paths.extend(contracts_to_download.iter().cloned());
+        });
+
+        // Clear selections
+        set_selected_contracts.set(HashSet::new());
+
+        // Download each contract in parallel
+        let on_select = on_select_contract.clone();
+        for contract_path in contracts_to_download {
+            let path_clone = contract_path.clone();
+            let on_select_clone = on_select.clone();
+
+            wasm_bindgen_futures::spawn_local(async move {
+                match fetch_contract(&path_clone).await {
+                    Ok(content) => {
+                        on_select_clone.run((
+                            path_clone.clone(),
+                            path_clone.clone(),
+                            content
+                        ));
+                    }
+                    Err(e) => {
+                        set_error.update(|err| {
+                            let msg = format!("{}: {}", path_clone, e);
+                            *err = Some(match err.take() {
+                                Some(prev) => format!("{}; {}", prev, msg),
+                                None => msg,
+                            });
+                        });
+                    }
+                }
+
+                set_downloading_contracts.update(|paths| {
+                    paths.remove(&path_clone);
+                });
+            });
+        }
+    };
+
     // Handle escape key to close modal
     let handle_keydown = {
         let on_hide = on_hide.clone();
@@ -238,6 +297,7 @@ pub fn ContractBrowser(
                 set_loading_paths.set(HashSet::new());
                 set_root_entries.set(Vec::new());
                 set_downloading_contracts.set(HashSet::new());
+                set_selected_contracts.set(HashSet::new());
                 set_error.set(None);
                 on_hide.run(());
             }
@@ -315,6 +375,8 @@ pub fn ContractBrowser(
                                                             on_download_contract=download_contract.clone()
                                                             downloaded_paths=downloaded_paths
                                                             downloading_contracts=downloading_contracts
+                                                            selected_contracts=selected_contracts
+                                                            set_selected_contracts=set_selected_contracts
                                                         />
                                                     }
                                                 }
@@ -326,6 +388,22 @@ pub fn ContractBrowser(
                         </Show>
                     </div>
                     <div class="modal-footer">
+                        <button
+                            type="button"
+                            class="btn btn-primary"
+                            disabled=move || selected_contracts.get().is_empty() ||
+                                            !downloading_contracts.get().is_empty()
+                            on:click=handle_add_selected
+                        >
+                            {move || {
+                                let count = selected_contracts.get().len();
+                                if count > 0 {
+                                    format!("Add Selected ({})", count)
+                                } else {
+                                    "Add Selected".to_string()
+                                }
+                            }}
+                        </button>
                         <button
                             type="button"
                             class="btn btn-secondary"
@@ -357,6 +435,8 @@ fn TreeNode(
     on_download_contract: impl Fn(String, String) + Clone + Send + Sync + 'static,
     downloaded_paths: Signal<HashSet<String>>,
     downloading_contracts: ReadSignal<HashSet<String>>,
+    selected_contracts: ReadSignal<HashSet<String>>,
+    set_selected_contracts: WriteSignal<HashSet<String>>,
 ) -> impl IntoView {
     let is_directory = entry.entry_type == "directory";
     let entry_name = entry.name.clone();
@@ -387,17 +467,20 @@ fn TreeNode(
         }
     };
 
-    let handle_add_click = {
+    let handle_checkbox_toggle = {
         let p = path.clone();
-        let n = entry_name.clone();
         move |ev: web_sys::MouseEvent| {
-            ev.stop_propagation();
-            // Re-check disabled state in the handler
-            let is_disabled =
-                downloaded_paths.get().contains(&p) || downloading_contracts.get().contains(&p);
-            if !is_disabled {
-                stored_download.get_value()(p.clone(), n.clone());
-            }
+            ev.stop_propagation(); // Prevent directory expansion
+            let contract_path = p.clone();
+            set_selected_contracts.update(|selected| {
+                if selected.contains(&contract_path) {
+                    selected.remove(&contract_path);
+                } else {
+                    if !downloaded_paths.get().contains(&contract_path) {
+                        selected.insert(contract_path);
+                    }
+                }
+            });
         }
     };
 
@@ -439,31 +522,17 @@ fn TreeNode(
                 {entry_name.clone()}
             </span>
 
-            // Download button for contracts
+            // Checkbox for contracts
             {if !is_directory {
                 view! {
-                    <button
-                        class="btn btn-link btn-sm"
-                        style:padding="0.25rem"
-                        style:color=move || if is_downloaded() || is_downloading() { "#ccc" } else { "#007bff" }
-                        style:cursor=move || if is_downloaded() || is_downloading() { "not-allowed" } else { "pointer" }
-                        style:display="flex"
-                        style:align-items="center"
-                        style:justify-content="center"
+                    <input
+                        type="checkbox"
+                        class="form-check-input"
+                        style:cursor="pointer"
+                        checked=move || selected_contracts.get().contains(&stored_path.get_value())
                         disabled=move || is_downloaded() || is_downloading()
-                        title=move || {
-                            if is_downloaded() {
-                                "Already downloaded"
-                            } else if is_downloading() {
-                                "Downloading..."
-                            } else {
-                                "Download contract"
-                            }
-                        }
-                        on:click=handle_add_click
-                    >
-                        "+"
-                    </button>
+                        on:click=handle_checkbox_toggle
+                    />
                 }.into_any()
             } else {
                 view! { <></> }.into_any()
@@ -528,6 +597,8 @@ fn TreeNode(
                                             on_download_contract=download.clone()
                                             downloaded_paths=downloaded_paths
                                             downloading_contracts=downloading_contracts
+                                            selected_contracts=selected_contracts
+                                            set_selected_contracts=set_selected_contracts
                                         />
                                     }
                                 }

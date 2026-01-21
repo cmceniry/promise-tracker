@@ -219,7 +219,7 @@ pub fn ContractCarder(
                 contract.server_path = Some(contract_id);
                 contract.err = err;
                 set_contracts.update(|c| c.push(contract));
-                set_show_browser_modal.set(false);
+                // Modal will stay open - user can close it manually
             },
         )
     };
