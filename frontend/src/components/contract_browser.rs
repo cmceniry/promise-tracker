@@ -199,12 +199,12 @@ pub fn ContractBrowser(
         set_error.set(None);
 
         let path_clone = path.clone();
-        let name_clone = name.clone();
         let on_select = on_select_contract.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match fetch_contract(&path_clone).await {
                 Ok(content) => {
-                    on_select.run((path_clone.clone(), name_clone, content));
+                    // Use full path as filename to match subsequent server calls
+                    on_select.run((path_clone.clone(), path_clone.clone(), content));
                 }
                 Err(e) => {
                     set_error.update(|err| {
