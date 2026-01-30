@@ -1,4 +1,6 @@
 use crate::models::Contract;
+use promise_tracker::components::Item;
+use serde::Deserialize;
 
 /// Validates a contract filename according to the rules:
 /// - Must only contain lowercase a-z, digits 0-9, forward slash (/)
@@ -94,27 +96,31 @@ pub fn generate_unique_random_filename(
     )
 }
 
-/// Validates a contract's YAML content using serde_yaml
+/// Validates a contract's YAML content against the contract schema
 /// Returns an error message if invalid, empty string if valid
 pub fn validate_contract_content(content: &str) -> String {
     if content.trim().is_empty() {
         return String::new(); // Empty content is valid (new contract)
     }
 
-    // Parse all YAML documents
-    match serde_yaml::Deserializer::from_str(content)
-        .into_iter()
-        .enumerate()
-        .try_for_each(|(idx, doc)| {
-            let value: Result<serde_yaml::Value, _> = serde::Deserialize::deserialize(doc);
-            match value {
-                Ok(_) => Ok(()),
-                Err(e) => Err(format!("YAMLSyntaxError: Document {}: {}", idx, e)),
+    let mut item_count = 0;
+
+    for (idx, document) in serde_yaml::Deserializer::from_str(content).enumerate() {
+        match Item::deserialize(document) {
+            Ok(_item) => {
+                item_count += 1;
             }
-        }) {
-        Ok(()) => String::new(),
-        Err(e) => e,
+            Err(e) => {
+                return format!("Document {}: {}", idx + 1, e);
+            }
+        }
     }
+
+    if item_count == 0 {
+        return "Contract must contain at least one Agent or SuperAgent".to_string();
+    }
+
+    String::new()
 }
 
 #[cfg(test)]
@@ -138,5 +144,29 @@ mod tests {
         assert!(validate_filename("Test.yaml").is_some()); // uppercase
         assert!(validate_filename("test-file.yaml").is_some()); // hyphen
         assert!(validate_filename(".yaml").is_some()); // no name
+    }
+
+    #[test]
+    fn test_validate_contract_content_valid_agent() {
+        let content = "kind: Agent\nname: test";
+        assert!(validate_contract_content(content).is_empty());
+    }
+
+    #[test]
+    fn test_validate_contract_content_invalid_kind() {
+        let content = "kind: InvalidType\nname: test";
+        assert!(!validate_contract_content(content).is_empty());
+    }
+
+    #[test]
+    fn test_validate_contract_content_unknown_field() {
+        let content = "kind: Agent\nname: test\nunknownField: value";
+        assert!(!validate_contract_content(content).is_empty());
+    }
+
+    #[test]
+    fn test_validate_contract_content_missing_name() {
+        let content = "kind: Agent";
+        assert!(!validate_contract_content(content).is_empty());
     }
 }
