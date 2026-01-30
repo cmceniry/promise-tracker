@@ -59,6 +59,9 @@ pub fn ContractGrapher(
     // Active tab state
     let (active_view, set_active_view) = signal("overview".to_string());
 
+    // Zoomed simulation state (None = show all, Some(sim) = show only that sim)
+    let (zoomed_sim, set_zoomed_sim) = signal::<Option<String>>(None);
+
     // Selected component and behavior for detailed view
     let (d_component, set_d_component) = signal("---".to_string());
     let (d_behavior, set_d_behavior) = signal("---".to_string());
@@ -191,6 +194,29 @@ pub fn ContractGrapher(
         Signal::derive(move || sim_trackers.get().get(&sim_owned).cloned())
     };
 
+    // Compute visible simulations based on zoom state
+    let visible_simulations = move || -> Vec<String> {
+        match zoomed_sim.get() {
+            Some(sim) => vec![sim],
+            None => simulations.get(),
+        }
+    };
+
+    // Effect to clear zoom if the zoomed simulation is removed
+    Effect::new(move |_| {
+        let current_sims = simulations.get();
+        if let Some(sim) = zoomed_sim.get() {
+            if !current_sims.contains(&sim) {
+                set_zoomed_sim.set(None);
+            }
+        }
+    });
+
+    // Zoom callback for SimulationControls
+    let on_zoom = Callback::new(move |sim: Option<String>| {
+        set_zoomed_sim.set(sim);
+    });
+
     view! {
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
@@ -198,6 +224,8 @@ pub fn ContractGrapher(
             // Simulation controls
             <SimulationControls
                 simulations=simulations
+                zoomed_sim=zoomed_sim
+                on_zoom=on_zoom
                 on_add=on_add_simulation
                 on_remove=on_remove_simulation
             />
@@ -245,8 +273,7 @@ pub fn ContractGrapher(
                         </div>
                         <div style="display: flex; gap: 1rem; margin-top: 1rem;">
                             {move || {
-                                simulations
-                                    .get()
+                                visible_simulations()
                                     .iter()
                                     .map(|sim| {
                                     let sim_id = format!("network-{}", sim);
@@ -331,8 +358,7 @@ pub fn ContractGrapher(
                         // Simulation panels
                         <div style="display: flex; gap: 1rem; margin-top: 1rem;">
                             {move || {
-                                simulations
-                                    .get()
+                                visible_simulations()
                                     .iter()
                                     .map(|sim| {
                                     let tracker_signal = get_sim_tracker(sim);

@@ -4,6 +4,8 @@ use leptos::prelude::*;
 #[component]
 pub fn SimulationControls(
     simulations: ReadSignal<Vec<String>>,
+    zoomed_sim: ReadSignal<Option<String>>,
+    on_zoom: Callback<Option<String>>,
     on_add: Callback<()>,
     on_remove: Callback<()>,
 ) -> impl IntoView {
@@ -26,10 +28,25 @@ pub fn SimulationControls(
                             .get()
                             .into_iter()
                             .map(|sim| {
+                                let sim_click = sim.clone();
+                                let sim_class = sim.clone();
                                 view! {
                                     <span
-                                        class="badge bg-secondary"
-                                        style="font-size: 0.9em;"
+                                        class=move || {
+                                            if zoomed_sim.get().as_ref() == Some(&sim_class) {
+                                                "badge bg-primary"
+                                            } else {
+                                                "badge bg-secondary"
+                                            }
+                                        }
+                                        style="font-size: 0.9em; cursor: pointer;"
+                                        on:click=move |_| {
+                                            if zoomed_sim.get().as_ref() == Some(&sim_click) {
+                                                on_zoom.run(None);
+                                            } else {
+                                                on_zoom.run(Some(sim_click.clone()));
+                                            }
+                                        }
                                     >
                                         {sim}
                                     </span>
