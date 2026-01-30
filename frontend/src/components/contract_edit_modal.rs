@@ -118,9 +118,6 @@ pub fn ContractEditModal(
     #[prop(into)] on_hide: Callback<()>,
     #[prop(into)] on_save: Callback<Contract>,
     #[prop(into)] on_push: Callback<Contract>,
-    #[prop(into)] simulations: Signal<Vec<String>>,
-    #[prop(into)] contract_sims: Signal<HashSet<String>>,
-    #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     diff_status: DiffStatus,
 ) -> impl IntoView {
     let _ = diff_status; // Initial diff status passed from parent (we compute our own)
@@ -142,6 +139,7 @@ pub fn ContractEditModal(
     let (local_diff_status, set_local_diff_status) = signal(DiffStatus::default());
     let (server_text, set_server_text) = signal::<Option<String>>(None);
     let (show_diff, set_show_diff) = signal(false);
+    let (show_error, set_show_error) = signal(false);
 
     // Push state
     let (is_pushing, set_is_pushing) = signal(false);
@@ -172,6 +170,7 @@ pub fn ContractEditModal(
                     set_local_diff_status.set(DiffStatus::default());
                     set_server_text.set(None);
                     set_show_diff.set(false);
+                    set_show_error.set(false);
                     set_is_pushing.set(false);
 
                     // Cancel any pending debounce
@@ -364,7 +363,7 @@ pub fn ContractEditModal(
             filename,
             content,
             err: String::new(),
-            sims: contract_sims.get(),
+            sims: HashSet::new(),
             server_path: original_server_path.get(),
         };
 
@@ -406,7 +405,7 @@ pub fn ContractEditModal(
             filename: filename.clone(),
             content: content.clone(),
             err: String::new(),
-            sims: contract_sims.get(),
+            sims: HashSet::new(),
             server_path: server_path.clone(),
         };
         on_save.run(edited);
@@ -486,9 +485,6 @@ pub fn ContractEditModal(
     let is_visible = move || show.get();
     let current_diff_status = move || local_diff_status.get();
 
-    // Get the current contract ID for sim toggles
-    let id_for_sim = contract_id.clone();
-
     // Handle keydown for keyboard shortcuts
     let handle_keydown = {
         let handle_save = handle_save.clone();
@@ -522,7 +518,9 @@ pub fn ContractEditModal(
                     <div
                         class="modal-header"
                         style=move || {
-                            if current_diff_status().is_different {
+                            if validation_error.get().is_some() || filename_error.get().is_some() {
+                                "border-top: 3px solid #dc3545; border-left: 3px solid #dc3545; border-right: 3px solid #dc3545; border-bottom: 2px solid #dc3545; background-color: rgba(220, 53, 69, 0.1);"
+                            } else if current_diff_status().is_different {
                                 "border-top: 3px solid #ffc107; border-left: 3px solid #ffc107; border-right: 3px solid #ffc107; border-bottom: 2px solid #ffc107; background-color: rgba(255, 193, 7, 0.1);"
                             } else {
                                 ""
@@ -531,13 +529,22 @@ pub fn ContractEditModal(
                     >
                         <h5 class="modal-title" style="display: flex; align-items: center; gap: 0.5rem;">
                             "Edit Contract"
-                            // Loading spinner
+                            // Loading spinner or status badges
                             {move || {
                                 if current_diff_status().is_loading {
                                     view! {
                                         <div class="spinner-border spinner-border-sm text-secondary" role="status">
                                             <span class="visually-hidden">"Loading..."</span>
                                         </div>
+                                    }.into_any()
+                                } else if validation_error.get().is_some() || filename_error.get().is_some() {
+                                    view! {
+                                        <span class="badge bg-danger d-flex align-items-center gap-1">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                                <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+                                            </svg>
+                                            "Invalid"
+                                        </span>
                                     }.into_any()
                                 } else if current_diff_status().is_different {
                                     view! {
@@ -565,80 +572,103 @@ pub fn ContractEditModal(
                         class="modal-body"
                         style=move || {
                             let base = "max-height: 70vh; overflow-y: auto;";
-                            if current_diff_status().is_different {
+                            if validation_error.get().is_some() || filename_error.get().is_some() {
+                                format!("{} border-left: 3px solid #dc3545; border-right: 3px solid #dc3545; background-color: rgba(220, 53, 69, 0.05);", base)
+                            } else if current_diff_status().is_different {
                                 format!("{} border-left: 3px solid #ffc107; border-right: 3px solid #ffc107; background-color: rgba(255, 193, 7, 0.05);", base)
                             } else {
                                 base.to_string()
                             }
                         }
                     >
-                        // Filename display
-                        <h5 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
-                            {move || {
-                                let fname = edited_filename.get();
-                                if fname.is_empty() { "untitled-contract.yaml".to_string() } else { fname }
-                            }}
-                            {move || {
-                                if validation_error.get().is_some() {
-                                    view! { <span style="color: red;">"⚠"</span> }.into_any()
-                                } else {
-                                    view! { <span></span> }.into_any()
+                        // Editable filename as title
+                        <div style="margin-bottom: 1rem;">
+                            <input
+                                type="text"
+                                class=move || if filename_error.get().is_some() { "form-control is-invalid" } else { "form-control" }
+                                style="font-size: 1.25rem; font-weight: 500; border: 1px solid transparent; padding: 0.25rem 0.5rem;"
+                                placeholder="untitled-contract.yaml"
+                                prop:value=move || edited_filename.get()
+                                on:input=handle_filename_change
+                            />
+                            {move || filename_error.get().map(|e| view! { <div class="invalid-feedback" style="display: block;">{e}</div> })}
+                        </div>
+
+                        // Diff status - always visible, collapsible
+                        <div style="margin-bottom: 1rem;">
+                            <button
+                                type="button"
+                                class=move || {
+                                    if current_diff_status().is_loading {
+                                        "btn btn-outline-secondary w-100"
+                                    } else if current_diff_status().is_different {
+                                        "btn btn-outline-warning w-100"
+                                    } else {
+                                        "btn btn-outline-success w-100"
+                                    }
                                 }
-                            }}
-                        </h5>
-
-                        // Diff toggle button and collapsible diff view
-                        {move || {
-                            if current_diff_status().is_different {
-                                view! {
-                                    <div style="margin-bottom: 1rem;">
-                                        <button
-                                            type="button"
-                                            class="btn btn-outline-warning w-100"
-                                            style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 1rem;"
-                                            on:click=move |_| set_show_diff.update(|v| *v = !*v)
-                                        >
-                                            <span style="display: flex; align-items: center; gap: 0.5rem;">
-                                                {move || if show_diff.get() {
-                                                    view! {
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                                                            <path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
-                                                        </svg>
-                                                    }.into_any()
-                                                } else {
-                                                    view! {
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                                                            <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
-                                                        </svg>
-                                                    }.into_any()
-                                                }}
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
-                                                    <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
-                                                </svg>
-                                                "Show diff with server version"
-                                            </span>
-                                        </button>
-
-                                        // Collapsible diff view
-                                        <Show when=move || show_diff.get()>
-                                            <div style="margin-top: 1rem;">
-                                                {move || {
-                                                    if let Some(diff) = diff_result() {
-                                                        view! {
-                                                            <DiffView diff=diff />
-                                                        }.into_any()
-                                                    } else {
-                                                        view! { <span></span> }.into_any()
-                                                    }
-                                                }}
+                                style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 1rem;"
+                                disabled=move || !current_diff_status().is_different
+                                on:click=move |_| set_show_diff.update(|v| *v = !*v)
+                            >
+                                <span style="display: flex; align-items: center; gap: 0.5rem;">
+                                    {move || if current_diff_status().is_different && show_diff.get() {
+                                        view! {
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                                <path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
+                                            </svg>
+                                        }.into_any()
+                                    } else if current_diff_status().is_different {
+                                        view! {
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                                <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
+                                            </svg>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                                <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425a.247.247 0 0 1 .02-.022Z"/>
+                                            </svg>
+                                        }.into_any()
+                                    }}
+                                    {move || {
+                                        if current_diff_status().is_loading {
+                                            "Checking server version..."
+                                        } else if current_diff_status().is_different {
+                                            "Differs from server version"
+                                        } else {
+                                            "In sync with server"
+                                        }
+                                    }}
+                                </span>
+                                {move || {
+                                    if current_diff_status().is_loading {
+                                        view! {
+                                            <div class="spinner-border spinner-border-sm" role="status">
+                                                <span class="visually-hidden">"Loading..."</span>
                                             </div>
-                                        </Show>
-                                    </div>
-                                }.into_any()
-                            } else {
-                                view! { <span></span> }.into_any()
-                            }
-                        }}
+                                        }.into_any()
+                                    } else {
+                                        view! { <span></span> }.into_any()
+                                    }
+                                }}
+                            </button>
+
+                            // Collapsible diff view
+                            <Show when=move || show_diff.get() && current_diff_status().is_different>
+                                <div style="margin-top: 1rem;">
+                                    {move || {
+                                        if let Some(diff) = diff_result() {
+                                            view! {
+                                                <DiffView diff=diff />
+                                            }.into_any()
+                                        } else {
+                                            view! { <span></span> }.into_any()
+                                        }
+                                    }}
+                                </div>
+                            </Show>
+                        </div>
 
                         // Push error alert
                         {move || {
@@ -653,68 +683,67 @@ pub fn ContractEditModal(
                             }
                         }}
 
-                        // Simulation toggle buttons
-                        {
-                            move || {
-                                let sims = simulations.get();
-                                if !sims.is_empty() {
-                                    view! {
-                                        <div style="margin-bottom: 1rem; display: flex; gap: 0.25rem;">
-                                            {sims.iter().map(|sim| {
-                                                let sim_clone = sim.clone();
-                                                let sim_for_check = sim.clone();
-                                                let on_toggle = on_toggle_sim.clone();
-                                                let id_signal = id_for_sim.clone();
-
-                                                view! {
-                                                    <button
-                                                        type="button"
-                                                        class=move || format!("btn btn-sm {}", if contract_sims.get().contains(&sim_for_check) { "btn-success" } else { "btn-danger" })
-                                                        on:click=move |_| {
-                                                            on_toggle.run((id_signal.get(), sim_clone.clone()));
-                                                        }
-                                                    >
-                                                        {sim.clone()}
-                                                    </button>
-                                                }
-                                            }).collect_view()}
-                                        </div>
-                                    }.into_any()
-                                } else {
-                                    view! { <span></span> }.into_any()
-                                }
-                            }
-                        }
-
                         // Form fields
                         <div>
-                            // Filename input
-                            <div class="mb-3">
-                                <label class="form-label">"Filename"</label>
-                                <input
-                                    type="text"
+                            // Validation status - always visible, collapsible
+                            <div style="margin-bottom: 1rem;">
+                                <button
+                                    type="button"
                                     class=move || {
-                                        if filename_error.get().is_some() {
-                                            "form-control is-invalid"
+                                        if validation_error.get().is_some() {
+                                            "btn btn-outline-danger w-100"
                                         } else {
-                                            "form-control"
+                                            "btn btn-outline-success w-100"
                                         }
                                     }
-                                    placeholder="Enter filename"
-                                    prop:value=move || edited_filename.get()
-                                    on:input=handle_filename_change
-                                />
-                                {move || {
-                                    if let Some(error) = filename_error.get() {
-                                        view! {
-                                            <div class="invalid-feedback" style="display: block;">
-                                                {error}
-                                            </div>
-                                        }.into_any()
-                                    } else {
-                                        view! { <span></span> }.into_any()
-                                    }
-                                }}
+                                    style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 1rem; text-align: left;"
+                                    disabled=move || validation_error.get().is_none()
+                                    on:click=move |_| set_show_error.update(|v| *v = !*v)
+                                >
+                                    <span style="display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1;">
+                                        {move || if validation_error.get().is_some() && show_error.get() {
+                                            view! {
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="flex-shrink: 0;">
+                                                    <path fill-rule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
+                                                </svg>
+                                            }.into_any()
+                                        } else if validation_error.get().is_some() {
+                                            view! {
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="flex-shrink: 0;">
+                                                    <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
+                                                </svg>
+                                            }.into_any()
+                                        } else {
+                                            view! {
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="flex-shrink: 0;">
+                                                    <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425a.247.247 0 0 1 .02-.022Z"/>
+                                                </svg>
+                                            }.into_any()
+                                        }}
+                                        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                            {move || {
+                                                if let Some(error) = validation_error.get() {
+                                                    // Show first line or truncated error
+                                                    let first_line = error.lines().next().unwrap_or(&error);
+                                                    if first_line.len() > 60 {
+                                                        format!("{}...", &first_line[..57])
+                                                    } else {
+                                                        first_line.to_string()
+                                                    }
+                                                } else {
+                                                    "Valid YAML".to_string()
+                                                }
+                                            }}
+                                        </span>
+                                    </span>
+                                </button>
+
+                                // Collapsible full error view
+                                <Show when=move || show_error.get() && validation_error.get().is_some()>
+                                    <div class="alert alert-danger" style="margin-top: 0.5rem; margin-bottom: 0; white-space: pre-wrap; font-family: monospace; font-size: 0.9em;">
+                                        {move || validation_error.get().unwrap_or_default()}
+                                    </div>
+                                </Show>
                             </div>
 
                             // Content textarea
@@ -729,19 +758,6 @@ pub fn ContractEditModal(
                                     on:input=handle_content_change
                                 ></textarea>
                             </div>
-
-                            // Validation error
-                            {move || {
-                                if let Some(error) = validation_error.get() {
-                                    view! {
-                                        <div class="alert alert-danger">
-                                            {error}
-                                        </div>
-                                    }.into_any()
-                                } else {
-                                    view! { <span></span> }.into_any()
-                                }
-                            }}
                         </div>
                     </div>
 
@@ -750,7 +766,9 @@ pub fn ContractEditModal(
                         class="modal-footer"
                         style=move || {
                             let base = "display: flex; justify-content: space-between; align-items: center;";
-                            if current_diff_status().is_different {
+                            if validation_error.get().is_some() || filename_error.get().is_some() {
+                                format!("{} border-bottom: 3px solid #dc3545; border-left: 3px solid #dc3545; border-right: 3px solid #dc3545; background-color: rgba(220, 53, 69, 0.05);", base)
+                            } else if current_diff_status().is_different {
                                 format!("{} border-bottom: 3px solid #ffc107; border-left: 3px solid #ffc107; border-right: 3px solid #ffc107; background-color: rgba(255, 193, 7, 0.05);", base)
                             } else {
                                 base.to_string()
@@ -795,6 +813,7 @@ pub fn ContractEditModal(
                             <button
                                 type="button"
                                 class="btn btn-primary"
+                                disabled=move || validation_error.get().is_some() || filename_error.get().is_some()
                                 on:click=handle_save
                             >
                                 "Close"

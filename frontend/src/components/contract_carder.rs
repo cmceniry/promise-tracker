@@ -274,20 +274,6 @@ pub fn ContractCarder(
             .collect::<HashSet<String>>()
     });
 
-    // Get editing contract's sims (as a Memo for reactive tracking)
-    let editing_sims = Memo::new(move |_| {
-        editing_contract
-            .get()
-            .and_then(|ec| {
-                contracts
-                    .get()
-                    .iter()
-                    .find(|c| c.id == ec.id)
-                    .map(|c| c.sims.clone())
-            })
-            .unwrap_or_default()
-    });
-
     view! {
         <div style="height: 100vh; overflow-y: auto;">
             // Contract cards list - iterate in panel_order to maintain drag order
@@ -470,9 +456,6 @@ pub fn ContractCarder(
                 on_hide=close_edit_modal
                 on_save=save_contract
                 on_push=push_contract
-                simulations=simulations
-                contract_sims=editing_sims
-                on_toggle_sim=toggle_sim
                 diff_status=DiffStatus::default()
             />
         </div>
