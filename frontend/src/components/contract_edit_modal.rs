@@ -118,7 +118,7 @@ pub fn ContractEditModal(
     #[prop(into)] on_hide: Callback<()>,
     #[prop(into)] on_save: Callback<Contract>,
     #[prop(into)] on_push: Callback<Contract>,
-    simulations: Vec<String>,
+    #[prop(into)] simulations: Signal<Vec<String>>,
     #[prop(into)] contract_sims: Signal<HashSet<String>>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     diff_status: DiffStatus,
@@ -655,32 +655,34 @@ pub fn ContractEditModal(
 
                         // Simulation toggle buttons
                         {
-                            let sims = simulations.clone();
-                            if !sims.is_empty() {
-                                view! {
-                                    <div style="margin-bottom: 1rem; display: flex; gap: 0.25rem;">
-                                        {sims.iter().map(|sim| {
-                                            let sim_clone = sim.clone();
-                                            let sim_for_check = sim.clone();
-                                            let on_toggle = on_toggle_sim.clone();
-                                            let id_signal = id_for_sim.clone();
+                            move || {
+                                let sims = simulations.get();
+                                if !sims.is_empty() {
+                                    view! {
+                                        <div style="margin-bottom: 1rem; display: flex; gap: 0.25rem;">
+                                            {sims.iter().map(|sim| {
+                                                let sim_clone = sim.clone();
+                                                let sim_for_check = sim.clone();
+                                                let on_toggle = on_toggle_sim.clone();
+                                                let id_signal = id_for_sim.clone();
 
-                                            view! {
-                                                <button
-                                                    type="button"
-                                                    class=move || format!("btn btn-sm {}", if contract_sims.get().contains(&sim_for_check) { "btn-success" } else { "btn-danger" })
-                                                    on:click=move |_| {
-                                                        on_toggle.run((id_signal.get(), sim_clone.clone()));
-                                                    }
-                                                >
-                                                    {sim.clone()}
-                                                </button>
-                                            }
-                                        }).collect_view()}
-                                    </div>
-                                }.into_any()
-                            } else {
-                                view! { <span></span> }.into_any()
+                                                view! {
+                                                    <button
+                                                        type="button"
+                                                        class=move || format!("btn btn-sm {}", if contract_sims.get().contains(&sim_for_check) { "btn-success" } else { "btn-danger" })
+                                                        on:click=move |_| {
+                                                            on_toggle.run((id_signal.get(), sim_clone.clone()));
+                                                        }
+                                                    >
+                                                        {sim.clone()}
+                                                    </button>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <span></span> }.into_any()
+                                }
                             }
                         }
 

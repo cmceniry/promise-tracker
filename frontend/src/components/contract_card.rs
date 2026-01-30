@@ -90,7 +90,7 @@ pub fn ContractCard(
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     #[prop(into)] on_edit: Callback<String>,
-    simulations: Vec<String>,
+    #[prop(into)] simulations: Signal<Vec<String>>,
     card_class_name: String,
     diff_status: DiffStatus,
 ) -> impl IntoView {
@@ -273,7 +273,7 @@ pub fn ContractCard(
                 <div style="margin-bottom: 0.5rem; margin-left: 32px; display: flex; align-items: center; justify-content: space-between;">
                     // Simulation toggle buttons
                     <div style="display: flex; gap: 0.25rem;">
-                        {simulations.iter().map(|sim| {
+                        {move || simulations.get().iter().map(|sim| {
                             let sim_clone = sim.clone();
                             let sim_for_class = sim.clone();
                             let contract_id_clone = contract_id.clone();

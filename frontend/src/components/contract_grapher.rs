@@ -13,6 +13,7 @@ use crate::models::Contract;
 use super::contract_graph::ContractGraph;
 use super::contract_text::ContractText;
 use super::promise_network_graph::PromiseNetworkGraph;
+use super::simulation_controls::SimulationControls;
 
 /// Build a Tracker from contract contents
 fn build_tracker_from_contracts(contracts: &[Contract], filter_sims: Option<&str>) -> Tracker {
@@ -51,7 +52,9 @@ fn build_tracker_from_contracts(contracts: &[Contract], filter_sims: Option<&str
 #[component]
 pub fn ContractGrapher(
     contracts: ReadSignal<Vec<Contract>>,
-    simulations: Vec<String>,
+    simulations: ReadSignal<Vec<String>>,
+    on_add_simulation: Callback<()>,
+    on_remove_simulation: Callback<()>,
 ) -> impl IntoView {
     // Active tab state
     let (active_view, set_active_view) = signal("overview".to_string());
@@ -67,16 +70,11 @@ pub fn ContractGrapher(
     // Store the debounce timeout handle
     let debounce_handle: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
 
-    // Clone simulations for the effect
-    let simulations_for_effect = simulations.clone();
-    let simulations_for_overview = simulations.clone();
-    let simulations_for_detailed = simulations.clone();
-
-    // Debounced effect to rebuild trackers when contracts change
+    // Debounced effect to rebuild trackers when contracts or simulations change
     let debounce_handle_clone = debounce_handle.clone();
     Effect::new(move |_| {
         let current_contracts = contracts.get();
-        let sims = simulations_for_effect.clone();
+        let sims = simulations.get();
 
         // Cancel any existing timeout
         if let Some(handle) = debounce_handle_clone.borrow_mut().take() {
@@ -197,6 +195,13 @@ pub fn ContractGrapher(
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
 
+            // Simulation controls
+            <SimulationControls
+                simulations=simulations
+                on_add=on_add_simulation
+                on_remove=on_remove_simulation
+            />
+
             // Bootstrap Nav Tabs
             <ul class="nav nav-tabs mb-3">
                 <li class="nav-item">
@@ -239,9 +244,11 @@ pub fn ContractGrapher(
                             </p>
                         </div>
                         <div style="display: flex; gap: 1rem; margin-top: 1rem;">
-                            {simulations_for_overview
-                                .iter()
-                                .map(|sim| {
+                            {move || {
+                                simulations
+                                    .get()
+                                    .iter()
+                                    .map(|sim| {
                                     let sim_id = format!("network-{}", sim);
                                     let tracker_signal = get_sim_tracker(sim);
                                     let sim_display = sim.clone();
@@ -256,7 +263,8 @@ pub fn ContractGrapher(
                                         </div>
                                     }
                                 })
-                                .collect::<Vec<_>>()}
+                                .collect::<Vec<_>>()
+                            }}
                         </div>
                     </div>
                 </Show>
@@ -322,9 +330,11 @@ pub fn ContractGrapher(
 
                         // Simulation panels
                         <div style="display: flex; gap: 1rem; margin-top: 1rem;">
-                            {simulations_for_detailed
-                                .iter()
-                                .map(|sim| {
+                            {move || {
+                                simulations
+                                    .get()
+                                    .iter()
+                                    .map(|sim| {
                                     let tracker_signal = get_sim_tracker(sim);
                                     let sim_display = sim.clone();
                                     // Local tab state for each simulation's text/sequence tabs
@@ -385,7 +395,8 @@ pub fn ContractGrapher(
                                         </div>
                                     }
                                 })
-                                .collect::<Vec<_>>()}
+                                .collect::<Vec<_>>()
+                            }}
                         </div>
                     </div>
                 </Show>

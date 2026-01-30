@@ -15,7 +15,7 @@ use crate::utils::{generate_unique_random_filename, validate_contract_content, v
 pub fn ContractCarder(
     contracts: ReadSignal<Vec<Contract>>,
     set_contracts: WriteSignal<Vec<Contract>>,
-    simulations: Vec<String>,
+    simulations: ReadSignal<Vec<String>>,
 ) -> impl IntoView {
     // Modal visibility signals
     let (show_upload_modal, set_show_upload_modal) = signal(false);
@@ -92,19 +92,12 @@ pub fn ContractCarder(
     // Provide drag reorder context (single column)
     let [column_ref]: [NodeRef<leptos::html::Div>; 1] = provide_drag_reorder([panel_order]);
 
-    // Clone simulations for closures
-    let simulations_for_blank = simulations.clone();
-    let simulations_for_upload = simulations.clone();
-    let simulations_for_api = simulations.clone();
-    let simulations_for_cards = simulations.clone();
-    let simulations_for_edit = simulations.clone();
-
     // Add a blank contract
     let add_blank_contract = move |_| {
         let current = contracts.get();
         let filename = generate_unique_random_filename(&current, 100);
-        let new_contract =
-            Contract::with_default_sims(filename, String::new(), &simulations_for_blank);
+        let sims = simulations.get();
+        let new_contract = Contract::with_default_sims(filename, String::new(), &sims);
         set_contracts.update(|c| c.push(new_contract));
     };
 
@@ -146,7 +139,6 @@ pub fn ContractCarder(
     });
 
     // Handle file selection and upload
-    let simulations_for_file_change = simulations_for_upload.clone();
     let handle_file_change = move |ev: Event| {
         let target = ev.target().unwrap();
         let input: HtmlInputElement = target.unchecked_into();
@@ -184,7 +176,7 @@ pub fn ContractCarder(
                 let reader = FileReader::new().unwrap();
                 let reader_clone = reader.clone();
                 let filename_clone = filename.clone();
-                let sims = simulations_for_file_change.clone();
+                let sims = simulations.get();
 
                 let onload = Closure::wrap(Box::new(move |_: Event| {
                     if let Ok(result) = reader_clone.result() {
@@ -210,19 +202,17 @@ pub fn ContractCarder(
     };
 
     // Handle contract loaded from API browser
-    let handle_api_load = {
-        let sims = simulations_for_api.clone();
-        Callback::new(
-            move |(contract_id, filename, content): (String, String, String)| {
-                let err = validate_contract_content(&content);
-                let mut contract = Contract::with_default_sims(filename.clone(), content, &sims);
-                contract.server_path = Some(contract_id);
-                contract.err = err;
-                set_contracts.update(|c| c.push(contract));
-                // Modal will stay open - user can close it manually
-            },
-        )
-    };
+    let handle_api_load = Callback::new(
+        move |(contract_id, filename, content): (String, String, String)| {
+            let sims = simulations.get();
+            let err = validate_contract_content(&content);
+            let mut contract = Contract::with_default_sims(filename.clone(), content, &sims);
+            contract.server_path = Some(contract_id);
+            contract.err = err;
+            set_contracts.update(|c| c.push(contract));
+            // Modal will stay open - user can close it manually
+        },
+    );
 
     // Delete a contract
     let delete_contract = Callback::new(move |contract_id: String| {
@@ -345,7 +335,7 @@ pub fn ContractCarder(
                                 on_delete=delete_contract
                                 on_toggle_sim=toggle_sim
                                 on_edit=open_edit
-                                simulations=simulations_for_cards.clone()
+                                simulations=simulations
                             />
                         }
                     }
@@ -447,7 +437,7 @@ pub fn ContractCarder(
                 on_hide=close_edit_modal
                 on_save=save_contract
                 on_push=push_contract
-                simulations=simulations_for_edit.clone()
+                simulations=simulations
                 contract_sims=editing_sims
                 on_toggle_sim=toggle_sim
                 diff_status=DiffStatus::default()
@@ -465,7 +455,7 @@ fn DraggableContractCard(
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     #[prop(into)] on_edit: Callback<String>,
-    simulations: Vec<String>,
+    #[prop(into)] simulations: Signal<Vec<String>>,
 ) -> impl IntoView {
     let drag = use_drag_reorder(contract.id.clone());
 
