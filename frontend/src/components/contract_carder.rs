@@ -316,21 +316,54 @@ pub fn ContractCarder(
                             "contract-card-odd"
                         };
 
-                        // Create a reactive signal for this contract's sims
-                        let contract_id_for_sims = contract.id.clone();
+                        // Create reactive signals for this contract's properties
+                        let contract_id_for_reactive = contract.id.clone();
                         let contract_sims_signal = Memo::new(move |_| {
                             contracts
                                 .get()
                                 .iter()
-                                .find(|c| c.id == contract_id_for_sims)
+                                .find(|c| c.id == contract_id_for_reactive)
                                 .map(|c| c.sims.clone())
+                                .unwrap_or_default()
+                        });
+
+                        let contract_id_for_filename = contract.id.clone();
+                        let contract_filename_signal = Memo::new(move |_| {
+                            contracts
+                                .get()
+                                .iter()
+                                .find(|c| c.id == contract_id_for_filename)
+                                .map(|c| c.filename.clone())
+                                .unwrap_or_default()
+                        });
+
+                        let contract_id_for_content = contract.id.clone();
+                        let contract_content_signal = Memo::new(move |_| {
+                            contracts
+                                .get()
+                                .iter()
+                                .find(|c| c.id == contract_id_for_content)
+                                .map(|c| c.content.clone())
+                                .unwrap_or_default()
+                        });
+
+                        let contract_id_for_error = contract.id.clone();
+                        let contract_error_signal = Memo::new(move |_| {
+                            contracts
+                                .get()
+                                .iter()
+                                .find(|c| c.id == contract_id_for_error)
+                                .map(|c| c.err.clone())
                                 .unwrap_or_default()
                         });
 
                         view! {
                             <DraggableContractCard
-                                contract=contract
+                                contract_id=contract.id.clone()
                                 card_class=card_class.to_string()
+                                contract_filename=contract_filename_signal
+                                contract_content=contract_content_signal
+                                contract_error=contract_error_signal
                                 contract_sims=contract_sims_signal
                                 on_delete=delete_contract
                                 on_toggle_sim=toggle_sim
@@ -449,15 +482,18 @@ pub fn ContractCarder(
 /// Wrapper component for a draggable contract card using leptos_drag_reorder
 #[component]
 fn DraggableContractCard(
-    contract: Contract,
+    contract_id: String,
     card_class: String,
+    #[prop(into)] contract_filename: Signal<String>,
+    #[prop(into)] contract_content: Signal<String>,
+    #[prop(into)] contract_error: Signal<String>,
     #[prop(into)] contract_sims: Signal<HashSet<String>>,
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     #[prop(into)] on_edit: Callback<String>,
     #[prop(into)] simulations: Signal<Vec<String>>,
 ) -> impl IntoView {
-    let drag = use_drag_reorder(contract.id.clone());
+    let drag = use_drag_reorder(contract_id.clone());
 
     // Compute border style based on hover position
     let border_style = move || match drag.hover_position.get() {
@@ -480,10 +516,10 @@ fn DraggableContractCard(
             style=border_style
         >
             <ContractCard
-                contract_id=contract.id.clone()
-                contract_filename=contract.filename.clone()
-                contract_content=contract.content.clone()
-                contract_error=contract.err.clone()
+                contract_id=contract_id
+                contract_filename=contract_filename
+                contract_content=contract_content
+                contract_error=contract_error
                 contract_sims=contract_sims
                 on_delete=on_delete
                 on_toggle_sim=on_toggle_sim

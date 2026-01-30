@@ -83,9 +83,9 @@ fn revoke_download_url(url: &str) {
 #[component]
 pub fn ContractCard(
     contract_id: String,
-    contract_filename: String,
-    contract_content: String,
-    contract_error: String,
+    #[prop(into)] contract_filename: Signal<String>,
+    #[prop(into)] contract_content: Signal<String>,
+    #[prop(into)] contract_error: Signal<String>,
     #[prop(into)] contract_sims: Signal<HashSet<String>>,
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
@@ -94,18 +94,19 @@ pub fn ContractCard(
     card_class_name: String,
     diff_status: DiffStatus,
 ) -> impl IntoView {
-    // Extract agents and superagents from the contract content
-    let content_for_extract = contract_content.clone();
-    let (agents, superagents) = extract_agents_and_superagents(&content_for_extract);
+    // Extract agents and superagents reactively
+    let agents_and_superagents = Memo::new(move |_| {
+        extract_agents_and_superagents(&contract_content.get())
+    });
+    let agents = Memo::new(move |_| agents_and_superagents.get().0);
+    let superagents = Memo::new(move |_| agents_and_superagents.get().1);
 
-    // Create download URL - stored as a static value since it doesn't change
-    let content_for_download = contract_content.clone();
-    let download_url = create_download_url(&content_for_download);
+    // Create download URL reactively
+    let download_url = Memo::new(move |_| create_download_url(&contract_content.get()));
 
     // Clean up URL when component unmounts
-    let cleanup_url = download_url.clone();
     on_cleanup(move || {
-        if let Some(url) = cleanup_url {
+        if let Some(url) = download_url.get() {
             revoke_download_url(&url);
         }
     });
@@ -117,7 +118,6 @@ pub fn ContractCard(
     let id_for_delete = contract_id.clone();
     let id_for_edit = contract_id.clone();
     let id_for_dragstart = contract_id.clone();
-    let filename_for_download = contract_filename.clone();
 
     // Handle card click for editing
     let handle_card_click = move |ev: MouseEvent| {
@@ -162,8 +162,6 @@ pub fn ContractCard(
         ""
     };
 
-    let has_error = !contract_error.is_empty();
-
     view! {
         <div
             class=format!("card mb-2 {}", card_class_name)
@@ -192,10 +190,13 @@ pub fn ContractCard(
                 // Filename and diff status
                 <div style="margin-bottom: 0.5rem; margin-left: 32px; display: flex; align-items: center; gap: 0.5rem;">
                     <strong>
-                        {if contract_filename.is_empty() {
-                            "untitled-contract.yaml".to_string()
-                        } else {
-                            contract_filename.clone()
+                        {move || {
+                            let filename = contract_filename.get();
+                            if filename.is_empty() {
+                                "untitled-contract.yaml".to_string()
+                            } else {
+                                filename
+                            }
                         }}
                     </strong>
 
@@ -220,53 +221,61 @@ pub fn ContractCard(
                     }}
 
                     // Validation status badge
-                    {if has_error {
-                        view! {
-                            <span class="badge bg-danger" title=contract_error.clone()>"Error"</span>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <span class="badge bg-success">"Valid"</span>
-                        }.into_any()
+                    {move || {
+                        let error = contract_error.get();
+                        if !error.is_empty() {
+                            view! {
+                                <span class="badge bg-danger" title=error>"Error"</span>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <span class="badge bg-success">"Valid"</span>
+                            }.into_any()
+                        }
                     }}
                 </div>
 
                 // Agents and Superagents badges
-                {if !agents.is_empty() || !superagents.is_empty() {
-                    view! {
-                        <div style="margin-bottom: 0.5rem; margin-left: 32px; font-size: 0.9em;">
-                            {if !agents.is_empty() {
-                                view! {
-                                    <div style="margin-bottom: 0.25rem;">
-                                        <strong>"Agents: "</strong>
-                                        {agents.iter().map(|agent| {
-                                            view! {
-                                                <span class="badge bg-primary me-1">{agent.clone()}</span>
-                                            }
-                                        }).collect_view()}
-                                    </div>
-                                }.into_any()
-                            } else {
-                                view! { <span></span> }.into_any()
-                            }}
-                            {if !superagents.is_empty() {
-                                view! {
-                                    <div>
-                                        <strong>"Superagents: "</strong>
-                                        {superagents.iter().map(|superagent| {
-                                            view! {
-                                                <span class="badge bg-info me-1">{superagent.clone()}</span>
-                                            }
-                                        }).collect_view()}
-                                    </div>
-                                }.into_any()
-                            } else {
-                                view! { <span></span> }.into_any()
-                            }}
-                        </div>
-                    }.into_any()
-                } else {
-                    view! { <span></span> }.into_any()
+                {move || {
+                    let agents_list = agents.get();
+                    let superagents_list = superagents.get();
+
+                    if !agents_list.is_empty() || !superagents_list.is_empty() {
+                        view! {
+                            <div style="margin-bottom: 0.5rem; margin-left: 32px; font-size: 0.9em;">
+                                {if !agents_list.is_empty() {
+                                    view! {
+                                        <div style="margin-bottom: 0.25rem;">
+                                            <strong>"Agents: "</strong>
+                                            {agents_list.iter().map(|agent| {
+                                                view! {
+                                                    <span class="badge bg-primary me-1">{agent.clone()}</span>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <span></span> }.into_any()
+                                }}
+                                {if !superagents_list.is_empty() {
+                                    view! {
+                                        <div>
+                                            <strong>"Superagents: "</strong>
+                                            {superagents_list.iter().map(|superagent| {
+                                                view! {
+                                                    <span class="badge bg-info me-1">{superagent.clone()}</span>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <span></span> }.into_any()
+                                }}
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <span></span> }.into_any()
+                    }
                 }}
 
                 // Simulation buttons and action buttons
@@ -297,11 +306,12 @@ pub fn ContractCard(
                     // Action buttons (download and delete)
                     <div style="display: flex; gap: 0.25rem;">
                         // Download button
-                        {
-                            if let Some(url) = download_url.clone() {
+                        {move || {
+                            if let Some(url) = download_url.get() {
+                                let filename = contract_filename.get();
                                 view! {
                                     <a
-                                        download=filename_for_download.clone()
+                                        download=filename
                                         href=url
                                         on:click=move |ev: MouseEvent| {
                                             ev.stop_propagation();
@@ -325,7 +335,7 @@ pub fn ContractCard(
                                     </button>
                                 }.into_any()
                             }
-                        }
+                        }}
 
                         // Delete button
                         <button
@@ -343,14 +353,17 @@ pub fn ContractCard(
                 </div>
 
                 // Error message
-                {if has_error {
-                    view! {
-                        <div class="alert alert-danger py-1 px-2 mb-0" style="margin-left: 32px; font-size: 0.85em;">
-                            {contract_error.clone()}
-                        </div>
-                    }.into_any()
-                } else {
-                    view! { <span></span> }.into_any()
+                {move || {
+                    let error = contract_error.get();
+                    if !error.is_empty() {
+                        view! {
+                            <div class="alert alert-danger py-1 px-2 mb-0" style="margin-left: 32px; font-size: 0.85em;">
+                                {error}
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <span></span> }.into_any()
+                    }
                 }}
             </div>
         </div>
