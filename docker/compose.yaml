@@ -1,0 +1,13 @@
+services:
+  promise-tracker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - contracts:/data/contracts
+    restart: unless-stopped
+
+volumes:
+  contracts:
