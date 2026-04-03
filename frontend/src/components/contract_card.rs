@@ -90,9 +90,10 @@ pub fn ContractCard(
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     #[prop(into)] on_edit: Callback<String>,
+    #[prop(into)] on_push: Callback<String>,
     #[prop(into)] simulations: Signal<Vec<String>>,
     card_class_name: String,
-    diff_status: DiffStatus,
+    #[prop(into)] diff_status: Signal<DiffStatus>,
 ) -> impl IntoView {
     // Extract agents and superagents reactively
     let agents_and_superagents = Memo::new(move |_| {
@@ -117,6 +118,7 @@ pub fn ContractCard(
     // Clone IDs for closures
     let id_for_delete = contract_id.clone();
     let id_for_edit = contract_id.clone();
+    let id_for_push = contract_id.clone();
     let id_for_dragstart = contract_id.clone();
 
     // Handle card click for editing
@@ -155,19 +157,12 @@ pub fn ContractCard(
         set_is_dragging.set(false);
     };
 
-    // Determine card border style based on diff status
-    let card_border_style = if diff_status.is_different {
-        "border: 3px solid #ffc107; background-color: rgba(255, 193, 7, 0.1);"
-    } else {
-        ""
-    };
-
     view! {
         <div
             class=format!("card mb-2 {}", card_class_name)
             style=move || format!(
                 "cursor: pointer; position: relative; {}{}",
-                card_border_style,
+                if diff_status.get().is_different { "border: 3px solid #ffc107; background-color: rgba(255, 193, 7, 0.1);" } else { "" },
                 if is_dragging.get() { "opacity: 0.5;" } else { "" }
             )
             draggable="true"
@@ -201,23 +196,26 @@ pub fn ContractCard(
                     </strong>
 
                     // Loading spinner for diff check
-                    {if diff_status.is_loading {
-                        view! {
-                            <div class="spinner-border spinner-border-sm text-secondary" role="status">
-                                <span class="visually-hidden">"Loading..."</span>
-                            </div>
-                        }.into_any()
-                    } else if diff_status.is_different {
-                        view! {
-                            <span class="badge bg-warning d-flex align-items-center gap-1">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
-                                    <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
-                                </svg>
-                                "Diff"
-                            </span>
-                        }.into_any()
-                    } else {
-                        view! { <span></span> }.into_any()
+                    {move || {
+                        let ds = diff_status.get();
+                        if ds.is_loading {
+                            view! {
+                                <div class="spinner-border spinner-border-sm text-secondary" role="status">
+                                    <span class="visually-hidden">"Loading..."</span>
+                                </div>
+                            }.into_any()
+                        } else if ds.is_different {
+                            view! {
+                                <span class="badge bg-warning d-flex align-items-center gap-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                        <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+                                    </svg>
+                                    "Diff"
+                                </span>
+                            }.into_any()
+                        } else {
+                            view! { <span></span> }.into_any()
+                        }
                     }}
 
                     // Validation status badge
@@ -304,7 +302,36 @@ pub fn ContractCard(
                     </div>
 
                     // Action buttons (download and delete)
-                    <div style="display: flex; gap: 0.25rem;">
+                    <div style="display: flex; gap: 0.25rem; align-items: center;">
+                        // Push to server button (shown when local differs from server)
+                        {
+                            let id_for_push_inner = id_for_push.clone();
+                            move || {
+                                let id_push = id_for_push_inner.clone();
+                                if diff_status.get().is_different {
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="btn btn-sm btn-warning"
+                                            on:click=move |ev: MouseEvent| {
+                                                ev.stop_propagation();
+                                                on_push.run(id_push.clone());
+                                            }
+                                            aria-label="Push to server"
+                                            title="Push to server"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                                <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+                                                <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
+                                            </svg>
+                                        </button>
+                                    }.into_any()
+                                } else {
+                                    view! { <span></span> }.into_any()
+                                }
+                            }
+                        }
+
                         // Download button
                         {move || {
                             if let Some(url) = download_url.get() {

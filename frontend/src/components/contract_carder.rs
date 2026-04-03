@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_drag_reorder::{provide_drag_reorder, use_drag_reorder, HoverPosition};
 use oco_ref::Oco;
 use std::collections::HashSet;
@@ -8,7 +9,11 @@ use web_sys::{Event, FileReader, HtmlElement, HtmlInputElement, KeyboardEvent};
 
 use crate::components::{ContractBrowser, ContractCard, ContractEditModal, DiffStatus};
 use crate::models::Contract;
-use crate::utils::{generate_unique_random_filename, validate_contract_content, validate_filename};
+use crate::utils::{
+    check_filename_diff, compare_contracts, fetch_server_contract,
+    generate_unique_random_filename, push_contract_to_server, validate_contract_content,
+    validate_filename,
+};
 
 /// Container managing multiple contract cards with drag-and-drop.
 #[component]
@@ -254,13 +259,22 @@ pub fn ContractCarder(
         });
     });
 
-    // Push contract to server (stub for now)
+    // Push contract to server (callback from edit modal)
     let push_contract = Callback::new(move |pushed: Contract| {
         set_contracts.update(|c| {
             if let Some(contract) = c.iter_mut().find(|contract| contract.id == pushed.id) {
                 contract.filename = pushed.filename;
                 contract.content = pushed.content;
                 contract.server_path = pushed.server_path;
+            }
+        });
+    });
+
+    // Update server_path after a successful push from the card
+    let update_server_path = Callback::new(move |(contract_id, new_server_path): (String, String)| {
+        set_contracts.update(|c| {
+            if let Some(contract) = c.iter_mut().find(|contract| contract.id == contract_id) {
+                contract.server_path = Some(new_server_path);
             }
         });
     });
@@ -343,6 +357,15 @@ pub fn ContractCarder(
                                 .unwrap_or_default()
                         });
 
+                        let contract_id_for_server_path = contract.id.clone();
+                        let contract_server_path_signal = Memo::new(move |_| {
+                            contracts
+                                .get()
+                                .iter()
+                                .find(|c| c.id == contract_id_for_server_path)
+                                .and_then(|c| c.server_path.clone())
+                        });
+
                         view! {
                             <DraggableContractCard
                                 contract_id=contract.id.clone()
@@ -351,9 +374,11 @@ pub fn ContractCarder(
                                 contract_content=contract_content_signal
                                 contract_error=contract_error_signal
                                 contract_sims=contract_sims_signal
+                                contract_server_path=contract_server_path_signal
                                 on_delete=delete_contract
                                 on_toggle_sim=toggle_sim
                                 on_edit=open_edit
+                                on_push_complete=update_server_path
                                 simulations=simulations
                             />
                         }
@@ -471,9 +496,11 @@ fn DraggableContractCard(
     #[prop(into)] contract_content: Signal<String>,
     #[prop(into)] contract_error: Signal<String>,
     #[prop(into)] contract_sims: Signal<HashSet<String>>,
+    #[prop(into)] contract_server_path: Signal<Option<String>>,
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     #[prop(into)] on_edit: Callback<String>,
+    #[prop(into)] on_push_complete: Callback<(String, String)>,
     #[prop(into)] simulations: Signal<Vec<String>>,
 ) -> impl IntoView {
     let drag = use_drag_reorder(contract_id.clone());
@@ -488,6 +515,103 @@ fn DraggableContractCard(
     // Enable dragging by default
     Effect::new(move |_| {
         (drag.set_draggable)(true);
+    });
+
+    // Reactive diff status: fetch from server and compare
+    let (diff_status, set_diff_status) = signal(DiffStatus::default());
+
+    Effect::new(move |_| {
+        let server_path = contract_server_path.get();
+        let filename = contract_filename.get();
+        let content = contract_content.get();
+
+        let path_to_check = server_path.as_deref().unwrap_or(&filename);
+        if path_to_check.trim().is_empty() {
+            return;
+        }
+
+        let path_owned = path_to_check.to_string();
+
+        set_diff_status.set(DiffStatus {
+            is_different: false,
+            is_loading: true,
+            error: None,
+        });
+
+        spawn_local(async move {
+            match fetch_server_contract(&path_owned).await {
+                Ok(Some(fetched_text)) => {
+                    let content_differs = compare_contracts(&content, &fetched_text);
+                    let filename_differs =
+                        check_filename_diff(&filename, server_path.as_deref());
+                    set_diff_status.set(DiffStatus {
+                        is_different: content_differs || filename_differs,
+                        is_loading: false,
+                        error: None,
+                    });
+                }
+                Ok(None) => {
+                    // Contract not found on server
+                    set_diff_status.set(DiffStatus {
+                        is_different: true,
+                        is_loading: false,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    set_diff_status.set(DiffStatus {
+                        is_different: false,
+                        is_loading: false,
+                        error: Some(e),
+                    });
+                }
+            }
+        });
+    });
+
+    // Handle push: do the async push here so we can update diff_status directly
+    let card_id_for_push = contract_id.clone();
+    let handle_card_push = Callback::new(move |_contract_id: String| {
+        let filename = contract_filename.get_untracked();
+        let content = contract_content.get_untracked();
+        let server_path = contract_server_path.get_untracked();
+        let id = card_id_for_push.clone();
+
+        let push_path = server_path
+            .as_deref()
+            .unwrap_or(&filename)
+            .to_string();
+
+        set_diff_status.set(DiffStatus {
+            is_different: false,
+            is_loading: true,
+            error: None,
+        });
+
+        spawn_local(async move {
+            match push_contract_to_server(&push_path, &content).await {
+                Ok(()) => {
+                    let new_server_path = server_path.unwrap_or_else(|| filename.clone());
+                    on_push_complete.run((id, new_server_path));
+                    set_diff_status.set(DiffStatus {
+                        is_different: false,
+                        is_loading: false,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    set_diff_status.set(DiffStatus {
+                        is_different: true,
+                        is_loading: false,
+                        error: Some(e.clone()),
+                    });
+                    web_sys::window()
+                        .unwrap()
+                        .alert_with_message(&format!("Push failed: {}", e))
+                        .ok();
+                }
+            }
+        });
     });
 
     view! {
@@ -507,9 +631,10 @@ fn DraggableContractCard(
                 on_delete=on_delete
                 on_toggle_sim=on_toggle_sim
                 on_edit=on_edit
+                on_push=handle_card_push
                 simulations=simulations
                 card_class_name=card_class
-                diff_status=DiffStatus::default()
+                diff_status=diff_status
             />
         </div>
     }
