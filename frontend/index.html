@@ -10,6 +10,10 @@
     <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
     <!-- Mermaid for sequence diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <!-- Cytoscape.js + dagre for edge-as-promise graph (order matters: cytoscape, dagre, then the adapter) -->
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
 </head>
 <body>
     <div id="app"></div>
@@ -427,6 +431,362 @@
         window.update_force_graph = function(containerId, nodes, links) {
             // For simplicity, just recreate the graph
             window.create_force_graph(containerId, nodes, links);
+        };
+    })();
+    </script>
+    <!-- Promise graph (Cytoscape + dagre) functions (inlined to avoid file loading issues) -->
+    <script>
+    (function() {
+        // containerId -> { cy, resizeObserver, expandedPairs, rawNodes, rawEdges, lastWidth }
+        const activeGraphs = new Map();
+        // containerId -> { signature, positions, zoom, pan, expandedPairs }
+        // Survives destroy/create so tab switches keep the user's viewport.
+        const savedStates = new Map();
+        // More than this many parallel edges between one (source, target) pair
+        // collapse into a single bundled edge until expanded.
+        const BUNDLE_THRESHOLD = 3;
+        const PAIR_SEP = '\u0000';
+
+        const LAYOUT = {
+            name: 'dagre',
+            rankDir: 'LR',
+            nodeSep: 30,
+            edgeSep: 15,
+            rankSep: 140,
+            fit: true,
+            padding: 30,
+            animate: false,
+        };
+
+        // Status is never color-only: unsatisfied edges are dashed, conditions
+        // use a diamond arrowhead, ghost nodes have dashed borders.
+        const STYLE = [
+            { selector: 'node', style: {
+                'shape': 'round-rectangle',
+                'background-color': '#1976D2',
+                'label': 'data(label)',
+                'color': '#fff',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'width': 'label',
+                'height': 'label',
+                'padding': '8px',
+                'font-size': '11px',
+            }},
+            { selector: 'node.ghost', style: {
+                'background-opacity': 0,
+                'border-width': 2,
+                'border-style': 'dashed',
+                'border-color': '#C62828',
+                'color': '#C62828',
+            }},
+            { selector: 'edge', style: {
+                'curve-style': 'bezier',
+                'control-point-step-size': 32,
+                'target-arrow-shape': 'triangle',
+                'arrow-scale': 1.2,
+                'label': 'data(label)',
+                'font-size': '9px',
+                'text-rotation': 'autorotate',
+                'text-background-color': '#fff',
+                'text-background-opacity': 0.85,
+                'text-background-padding': '2px',
+                'width': 2,
+            }},
+            { selector: 'edge.satisfied', style: {
+                'line-color': '#2E7D32',
+                'target-arrow-color': '#2E7D32',
+                'line-style': 'solid',
+            }},
+            { selector: 'edge.unsatisfied', style: {
+                'line-color': '#C62828',
+                'target-arrow-color': '#C62828',
+                'line-style': 'dashed',
+                'line-dash-pattern': [6, 3],
+            }},
+            { selector: 'edge.condition', style: {
+                'target-arrow-shape': 'diamond',
+            }},
+            { selector: 'edge.bundled', style: {
+                'width': 4,
+                'font-weight': 'bold',
+                'text-background-opacity': 1,
+            }},
+            { selector: 'edge:loop', style: {
+                'loop-direction': '-45deg',
+                'loop-sweep': '60deg',
+            }},
+            { selector: '.dimmed', style: { 'opacity': 0.15 }},
+            { selector: 'node.highlighted', style: {
+                'border-width': 3,
+                'border-color': '#FF8F00',
+                'z-index': 10,
+            }},
+            { selector: 'edge.highlighted', style: { 'width': 3, 'z-index': 10 }},
+        ];
+
+        function ensureDagre() {
+            if (typeof cytoscape !== 'undefined' && typeof cytoscapeDagre !== 'undefined') {
+                try { cytoscape.use(cytoscapeDagre); } catch (e) { /* already registered */ }
+            }
+        }
+
+        function pairKeyOf(e) {
+            return e.source + PAIR_SEP + e.target;
+        }
+
+        // Topology signature: saved positions are only reused when the graph
+        // shape is unchanged. Satisfaction is deliberately excluded so a
+        // status flip recolors edges without discarding the user's layout.
+        function signatureOf(nodes, edges) {
+            const n = nodes.map(x => x.id).sort().join(PAIR_SEP);
+            const e = edges.map(x => x.source + '>' + x.target + ':' + x.behavior + ':' + x.kind)
+                .sort().join(PAIR_SEP);
+            return n + '#' + e;
+        }
+
+        // Capture viewport, node positions, and expanded bundles so the next
+        // create for this container (e.g. after a tab switch) can restore them.
+        function saveState(containerId) {
+            const g = activeGraphs.get(containerId);
+            if (!g) return;
+            const positions = {};
+            g.cy.nodes().forEach(n => {
+                const p = n.position();
+                positions[n.id()] = { x: p.x, y: p.y };
+            });
+            savedStates.set(containerId, {
+                signature: signatureOf(g.rawNodes, g.rawEdges),
+                positions: positions,
+                zoom: g.cy.zoom(),
+                pan: { x: g.cy.pan().x, y: g.cy.pan().y },
+                expandedPairs: new Set(g.expandedPairs),
+            });
+        }
+
+        // Wrap flat Rust records into cytoscape elements, bundling parallel
+        // edges beyond the threshold unless the pair has been expanded.
+        function buildElements(nodes, edges, expandedPairs) {
+            const els = nodes.map(n => ({
+                data: { id: n.id, label: n.label },
+                classes: n.kind === 'missing' ? 'ghost' : 'agent',
+            }));
+            const groups = new Map();
+            edges.forEach(e => {
+                const k = pairKeyOf(e);
+                if (!groups.has(k)) groups.set(k, []);
+                groups.get(k).push(e);
+            });
+            groups.forEach((group, k) => {
+                if (group.length > BUNDLE_THRESHOLD && !expandedPairs.has(k)) {
+                    const unsat = group.filter(e => !e.satisfied).length;
+                    els.push({
+                        data: {
+                            id: 'bundle:' + k,
+                            source: group[0].source,
+                            target: group[0].target,
+                            label: group.length + ' promises' + (unsat ? ' (' + unsat + '✗)' : ''),
+                            bundled: true,
+                            pairKey: k,
+                        },
+                        // aggregate status = worst
+                        classes: 'bundled ' + (unsat ? 'unsatisfied' : 'satisfied'),
+                    });
+                } else {
+                    group.forEach((e, i) => els.push({
+                        data: {
+                            // cytoscape silently drops duplicate ids; make them unique
+                            id: 'p:' + k + ':' + e.behavior + ':' + e.kind + ':' + i,
+                            source: e.source,
+                            target: e.target,
+                            label: e.behavior,
+                            behavior: e.behavior,
+                            kind: e.kind,
+                            satisfied: e.satisfied,
+                            pairKey: k,
+                        },
+                        classes: (e.satisfied ? 'satisfied' : 'unsatisfied')
+                            + (e.kind === 'condition' ? ' condition' : ''),
+                    }));
+                }
+            });
+            return els;
+        }
+
+        // Re-derive elements from the raw data. Bundling only changes edges,
+        // so preservePositions keeps node positions and the viewport instead
+        // of re-running dagre and refitting.
+        function rebuild(containerId, preservePositions) {
+            const g = activeGraphs.get(containerId);
+            if (!g) return;
+            if (preservePositions) {
+                const positions = {};
+                g.cy.nodes().forEach(n => {
+                    const p = n.position();
+                    positions[n.id()] = { x: p.x, y: p.y };
+                });
+                const zoom = g.cy.zoom();
+                const pan = { x: g.cy.pan().x, y: g.cy.pan().y };
+                g.cy.elements().remove();
+                g.cy.add(buildElements(g.rawNodes, g.rawEdges, g.expandedPairs));
+                g.cy.layout({ name: 'preset', positions: n => positions[n.id()], fit: false }).run();
+                g.cy.zoom(zoom);
+                g.cy.pan(pan);
+            } else {
+                g.cy.elements().remove();
+                g.cy.add(buildElements(g.rawNodes, g.rawEdges, g.expandedPairs));
+                g.cy.layout(LAYOUT).run();
+            }
+        }
+
+        function expandPair(containerId, pairKey) {
+            const g = activeGraphs.get(containerId);
+            if (!g || g.expandedPairs.has(pairKey)) return;
+            g.expandedPairs.add(pairKey);
+            rebuild(containerId, true);
+        }
+
+        // Background tap: clear highlighting and collapse any expanded bundles.
+        function resetView(containerId) {
+            const g = activeGraphs.get(containerId);
+            if (!g) return;
+            g.cy.elements().removeClass('dimmed highlighted');
+            if (g.expandedPairs.size > 0) {
+                g.expandedPairs.clear();
+                rebuild(containerId, true);
+            }
+        }
+
+        window.create_promise_graph = function(containerId, nodes, edges) {
+            ensureDagre();
+            const container = document.getElementById(containerId);
+            if (!container) {
+                return;
+            }
+            window.destroy_promise_graph(containerId);
+
+            // Restore the previous viewport when the topology is unchanged.
+            const saved = savedStates.get(containerId);
+            const restorable = saved && saved.signature === signatureOf(nodes, edges);
+            const expandedPairs = restorable ? new Set(saved.expandedPairs) : new Set();
+            const cy = cytoscape({
+                container: container,
+                elements: buildElements(nodes, edges, expandedPairs),
+                style: STYLE,
+                layout: restorable
+                    ? { name: 'preset', positions: n => saved.positions[n.id()], fit: false }
+                    : LAYOUT,
+                wheelSensitivity: 0.2,
+            });
+            if (restorable) {
+                cy.zoom(saved.zoom);
+                cy.pan(saved.pan);
+            }
+
+            cy.on('tap', 'node', evt => {
+                const n = evt.target;
+                const closure = n.closedNeighborhood().union(n.successors()).union(n.predecessors());
+                cy.elements().addClass('dimmed').removeClass('highlighted');
+                closure.removeClass('dimmed').addClass('highlighted');
+            });
+            cy.on('tap', 'edge', evt => {
+                const d = evt.target.data();
+                if (d.bundled) {
+                    expandPair(containerId, d.pairKey);
+                    return;
+                }
+                // Only want edges to real agents navigate to the Detailed view.
+                if (d.kind === 'want' && !d.target.startsWith('missing:')) {
+                    window.dispatchEvent(new CustomEvent('pt-edge-select', {
+                        detail: { containerId: containerId, component: d.source, behavior: d.behavior },
+                    }));
+                }
+            });
+            cy.on('tap', evt => {
+                if (evt.target === cy) {
+                    resetView(containerId);
+                }
+            });
+
+            // The per-simulation flex panels change width when simulations are
+            // added/removed/zoomed; refit only on real width changes so we
+            // don't fight the user's pan/zoom.
+            const resizeObserver = new ResizeObserver(() => {
+                const g = activeGraphs.get(containerId);
+                if (!g) return;
+                const w = container.getBoundingClientRect().width;
+                if (Math.abs(w - g.lastWidth) > 10) {
+                    g.lastWidth = w;
+                    cy.resize();
+                    cy.fit(undefined, 30);
+                }
+            });
+            resizeObserver.observe(container);
+
+            activeGraphs.set(containerId, {
+                cy: cy,
+                resizeObserver: resizeObserver,
+                expandedPairs: expandedPairs,
+                rawNodes: nodes,
+                rawEdges: edges,
+                lastWidth: container.getBoundingClientRect().width,
+            });
+        };
+
+        window.destroy_promise_graph = function(containerId) {
+            const g = activeGraphs.get(containerId);
+            if (g) {
+                saveState(containerId);
+                if (g.resizeObserver) {
+                    g.resizeObserver.disconnect();
+                }
+                if (g.cy) {
+                    g.cy.destroy();
+                }
+                activeGraphs.delete(containerId);
+            }
+        };
+
+        // Full reset: discard the saved viewport, collapse bundles, clear
+        // highlighting, and re-run the layout with fit.
+        window.reset_promise_graph = function(containerId) {
+            savedStates.delete(containerId);
+            const g = activeGraphs.get(containerId);
+            if (!g) return;
+            g.expandedPairs.clear();
+            g.cy.elements().removeClass('dimmed highlighted');
+            rebuild(containerId, false);
+        };
+
+        // Highlight and zoom to a want edge (used by the status strip).
+        window.focus_promise_graph = function(containerId, agent, behavior) {
+            const g = activeGraphs.get(containerId);
+            if (!g) return;
+
+            // Expand any bundle hiding the target edge.
+            let changed = false;
+            g.rawEdges
+                .filter(e => e.source === agent && e.behavior === behavior && e.kind === 'want')
+                .forEach(e => {
+                    const k = pairKeyOf(e);
+                    if (!g.expandedPairs.has(k)
+                        && g.rawEdges.filter(x => pairKeyOf(x) === k).length > BUNDLE_THRESHOLD) {
+                        g.expandedPairs.add(k);
+                        changed = true;
+                    }
+                });
+            if (changed) rebuild(containerId, true);
+
+            const cy = g.cy;
+            const sel = cy.edges().filter(e =>
+                e.data('kind') === 'want'
+                && e.data('behavior') === behavior
+                && e.data('source') === agent);
+            if (sel.empty()) return;
+            cy.elements().addClass('dimmed').removeClass('highlighted');
+            const focusEles = sel.union(sel.connectedNodes());
+            focusEles.removeClass('dimmed').addClass('highlighted');
+            cy.animate({ fit: { eles: focusEles, padding: 60 }, duration: 300 });
         };
     })();
     </script>

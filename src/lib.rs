@@ -1,6 +1,7 @@
 pub mod components;
 pub mod diagram;
 pub mod network_diagram;
+pub mod promise_graph;
 
 use components::Agent;
 use components::Item;

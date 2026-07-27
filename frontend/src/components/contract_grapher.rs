@@ -12,7 +12,7 @@ use crate::models::Contract;
 // Import real components
 use super::contract_graph::ContractGraph;
 use super::contract_text::ContractText;
-use super::promise_network_graph::PromiseNetworkGraph;
+use super::promise_graph_view::PromiseGraphView;
 use super::simulation_controls::SimulationControls;
 
 /// Build a Tracker from contract contents
@@ -217,6 +217,24 @@ pub fn ContractGrapher(
         set_zoomed_sim.set(sim);
     });
 
+    // Edge tap in the overview graph jumps to the Detailed view with the
+    // component and behavior preselected. A per-sim edge may not exist in the
+    // main tracker that drives the dropdowns, so validate before navigating.
+    let on_edge_select = Callback::new(move |(component, behavior): (String, String)| {
+        let valid = main_tracker
+            .get_untracked()
+            .map(|t| {
+                t.has_agent(component.clone())
+                    && t.get_agent_wants(component.clone()).contains(&behavior)
+            })
+            .unwrap_or(false);
+        if valid {
+            set_d_component.set(component);
+            set_d_behavior.set(behavior);
+            set_active_view.set("detailed".to_string());
+        }
+    });
+
     view! {
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
@@ -286,7 +304,11 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
-                                            <PromiseNetworkGraph tracker=tracker_signal sim_id=sim_id />
+                                            <PromiseGraphView
+                                                tracker=tracker_signal
+                                                sim_id=sim_id
+                                                on_edge_select=on_edge_select
+                                            />
                                         </div>
                                     }
                                 })
