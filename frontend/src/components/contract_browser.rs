@@ -446,14 +446,28 @@ fn TreeNode(
     // Store path for reactive lookups
     let stored_path = StoredValue::new(path.clone());
 
-    // Create reactive derived signals using stored path
-    let is_expanded = move || expanded_paths.get().contains(&stored_path.get_value());
-    let is_loading = move || loading_paths.get().contains(&stored_path.get_value());
-    let is_downloaded = move || downloaded_paths.get().contains(&stored_path.get_value());
+    // Create reactive derived signals using stored path.
+    //
+    // try_get_value everywhere: collapsing an ancestor directory disposes this
+    // row via the ancestor's <Show>, but the same expanded_paths write that
+    // collapsed it can still deliver one final notification to this row's
+    // closures. get_value() on the disposed StoredValue would panic and wedge
+    // the whole reactive runtime.
+    let is_expanded = move || {
+        let paths = expanded_paths.get();
+        stored_path.try_get_value().is_some_and(|p| paths.contains(&p))
+    };
+    let is_loading = move || {
+        let paths = loading_paths.get();
+        stored_path.try_get_value().is_some_and(|p| paths.contains(&p))
+    };
+    let is_downloaded = move || {
+        let paths = downloaded_paths.get();
+        stored_path.try_get_value().is_some_and(|p| paths.contains(&p))
+    };
     let is_downloading = move || {
-        downloading_contracts
-            .get()
-            .contains(&stored_path.get_value())
+        let paths = downloading_contracts.get();
+        stored_path.try_get_value().is_some_and(|p| paths.contains(&p))
     };
 
     // Store callbacks for reuse
@@ -463,7 +477,9 @@ fn TreeNode(
     let handle_directory_click = {
         let p = path.clone();
         move |_| {
-            stored_toggle.get_value()(p.clone());
+            if let Some(toggle) = stored_toggle.try_get_value() {
+                toggle(p.clone());
+            }
         }
     };
 
@@ -529,7 +545,10 @@ fn TreeNode(
                         type="checkbox"
                         class="form-check-input"
                         style:cursor="pointer"
-                        checked=move || selected_contracts.get().contains(&stored_path.get_value())
+                        checked=move || {
+                            let selected = selected_contracts.get();
+                            stored_path.try_get_value().is_some_and(|p| selected.contains(&p))
+                        }
                         disabled=move || is_downloaded() || is_downloading()
                         on:click=handle_checkbox_toggle
                     />
@@ -547,11 +566,16 @@ fn TreeNode(
         // Children (for expanded directories)
         <Show when=move || is_directory && is_expanded() && !is_loading()>
             {move || {
-                let cp = stored_path.get_value();
-                let children = loaded_children.get()
-                    .get(&cp)
-                    .cloned()
-                    .unwrap_or_default();
+                let children_map = loaded_children.get();
+                let (Some(cp), Some(toggle), Some(download)) = (
+                    stored_path.try_get_value(),
+                    stored_toggle.try_get_value(),
+                    stored_download.try_get_value(),
+                ) else {
+                    // Row already disposed; render nothing while it unmounts.
+                    return view! { <></> }.into_any();
+                };
+                let children = children_map.get(&cp).cloned().unwrap_or_default();
 
                 if children.is_empty() {
                     view! {
@@ -565,17 +589,15 @@ fn TreeNode(
                         </li>
                     }.into_any()
                 } else {
-                    let toggle = stored_toggle.get_value();
-                    let download = stored_download.get_value();
                     let parent_path = cp.clone();
 
                     view! {
                         <For
                             each=move || {
-                                let pp = stored_path.get_value();
-                                loaded_children.get()
-                                    .get(&pp)
-                                    .cloned()
+                                let children_map = loaded_children.get();
+                                stored_path
+                                    .try_get_value()
+                                    .and_then(|pp| children_map.get(&pp).cloned())
                                     .unwrap_or_default()
                             }
                             key=|entry| entry.name.clone()
