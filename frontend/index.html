@@ -458,6 +458,15 @@
             animate: false,
         };
 
+        // Sizing nodes to their label: `width: 'label'` is deprecated, so
+        // measure the text ourselves with the same font the style declares.
+        const NODE_FONT = '11px Helvetica Neue, Helvetica, sans-serif';
+        const measureCtx = document.createElement('canvas').getContext('2d');
+        const nodeLabelWidth = n => {
+            measureCtx.font = NODE_FONT;
+            return Math.ceil(measureCtx.measureText(n.data('label') || '').width) + 4;
+        };
+
         // Status is never color-only: unsatisfied edges are dashed, conditions
         // use a diamond arrowhead, ghost nodes have dashed borders.
         const STYLE = [
@@ -468,8 +477,8 @@
                 'color': '#fff',
                 'text-valign': 'center',
                 'text-halign': 'center',
-                'width': 'label',
-                'height': 'label',
+                'width': nodeLabelWidth,
+                'height': 14,
                 'padding': '8px',
                 'font-size': '11px',
             }},
@@ -676,7 +685,6 @@
                 layout: restorable
                     ? { name: 'preset', positions: n => saved.positions[n.id()], fit: false }
                     : LAYOUT,
-                wheelSensitivity: 0.2,
             });
             if (restorable) {
                 cy.zoom(saved.zoom);

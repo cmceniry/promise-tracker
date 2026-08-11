@@ -99,9 +99,9 @@ pub fn ContractCarder(
 
     // Add a blank contract
     let add_blank_contract = move |_| {
-        let current = contracts.get();
+        let current = contracts.get_untracked();
         let filename = generate_unique_random_filename(&current, 100);
-        let sims = simulations.get();
+        let sims = simulations.get_untracked();
         let new_contract = Contract::with_default_sims(filename, String::new(), &sims);
         set_contracts.update(|c| c.push(new_contract));
     };
@@ -165,7 +165,7 @@ pub fn ContractCarder(
                 }
 
                 // Check for duplicate filename
-                let current = contracts.get();
+                let current = contracts.get_untracked();
                 if current.iter().any(|c| c.filename == filename) {
                     web_sys::window()
                         .unwrap()
@@ -181,7 +181,7 @@ pub fn ContractCarder(
                 let reader = FileReader::new().unwrap();
                 let reader_clone = reader.clone();
                 let filename_clone = filename.clone();
-                let sims = simulations.get();
+                let sims = simulations.get_untracked();
 
                 let onload = Closure::wrap(Box::new(move |_: Event| {
                     if let Ok(result) = reader_clone.result() {
@@ -209,7 +209,7 @@ pub fn ContractCarder(
     // Handle contract loaded from API browser
     let handle_api_load = Callback::new(
         move |(contract_id, filename, content): (String, String, String)| {
-            let sims = simulations.get();
+            let sims = simulations.get_untracked();
             let err = validate_contract_content(&content);
             let mut contract = Contract::with_default_sims(filename.clone(), content, &sims);
             contract.server_path = Some(contract_id);
@@ -235,7 +235,7 @@ pub fn ContractCarder(
 
     // Open edit modal for a contract
     let open_edit = Callback::new(move |contract_id: String| {
-        let current = contracts.get();
+        let current = contracts.get_untracked();
         if let Some(contract) = current.iter().find(|c| c.id == contract_id) {
             set_editing_contract.set(Some(contract.clone()));
             set_show_edit_modal.set(true);
