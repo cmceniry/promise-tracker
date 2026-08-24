@@ -1,7 +1,6 @@
 use clap::Parser;
 use promise_tracker::Tracker;
 use std::collections::HashSet;
-use std::process;
 
 #[derive(Parser)]
 pub struct Parameters {
@@ -16,14 +15,14 @@ pub struct Parameters {
 
 pub fn command(parameters: &Parameters) {
     let mut tracker = Tracker::new();
-    let todo = cli::ManifestList::new(&parameters.files).unwrap();
+    let todo = match cli::ManifestList::new(&parameters.files) {
+        Ok(todo) => todo,
+        Err(e) => cli::abort(e),
+    };
     for file in todo.files {
         match cli::process_file(&file, &mut tracker) {
             Ok(_) => {}
-            Err(e) => {
-                println!("Error processing {}: {}", file, e);
-                process::exit(1);
-            }
+            Err(e) => cli::abort(e),
         }
     }
     let mut wants = HashSet::new();

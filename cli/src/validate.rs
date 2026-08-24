@@ -1,5 +1,4 @@
 use clap::Parser;
-use std::process;
 
 #[derive(Parser)]
 pub struct Parameters {
@@ -9,7 +8,10 @@ pub struct Parameters {
 }
 
 pub fn command(parameters: &Parameters) {
-    let todo = cli::ManifestList::new(&parameters.files).unwrap();
+    let todo = match cli::ManifestList::new(&parameters.files) {
+        Ok(todo) => todo,
+        Err(e) => cli::abort(e),
+    };
     for file in todo.files {
         match cli::check_file(&file) {
             Ok(items) => {
@@ -17,10 +19,7 @@ pub fn command(parameters: &Parameters) {
                     println!("Found: {}", item.get_name());
                 }
             }
-            Err(e) => {
-                println!("Error in {}: {}", file, e);
-                process::exit(1);
-            }
+            Err(e) => cli::abort(e),
         }
     }
 }
