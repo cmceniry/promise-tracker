@@ -60,6 +60,20 @@ impl PromiseGraphData {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+
+    /// Drop the promises an agent makes to itself, where the wanter and the
+    /// provider are the same agent.
+    ///
+    /// Nodes and `unsatisfied` are deliberately left alone. Conditions are
+    /// emitted as edges *from* the provider, so whatever a hidden self promise
+    /// depended on from other agents survives on its own; and an agent whose
+    /// only link was to itself stays on the canvas rather than disappearing,
+    /// which also keeps this filter from touching agents that were already
+    /// isolated before it ran.
+    pub fn without_self_promises(mut self) -> PromiseGraphData {
+        self.edges.retain(|e| e.source != e.target);
+        self
+    }
 }
 
 /// Prefix for ghost node ids. An agent literally named "missing:x" would
@@ -171,13 +185,15 @@ impl PromiseGraphBuilder {
             edges: self
                 .edges
                 .into_iter()
-                .map(|((source, target, behavior, kind), satisfied)| PromiseEdge {
-                    source,
-                    target,
-                    behavior,
-                    kind,
-                    satisfied,
-                })
+                .map(
+                    |((source, target, behavior, kind), satisfied)| PromiseEdge {
+                        source,
+                        target,
+                        behavior,
+                        kind,
+                        satisfied,
+                    },
+                )
                 .collect(),
             unsatisfied: self.unsatisfied.into_iter().collect(),
         }
@@ -200,7 +216,10 @@ pub fn promise_graph(tracker: &Tracker) -> PromiseGraphData {
     for agent_name in tracker.get_working_agent_names() {
         builder.add_agent_node(agent_name);
 
-        let mut wants: Vec<String> = tracker.get_agent_wants(agent_name.clone()).into_iter().collect();
+        let mut wants: Vec<String> = tracker
+            .get_agent_wants(agent_name.clone())
+            .into_iter()
+            .collect();
         wants.sort();
 
         for want in wants {
@@ -419,12 +438,10 @@ mod tests {
         // Two wanters both want b1 and bshared; both behaviors are provided
         // by p conditional on the same sub-behavior c.
         tracker.add_agent(
-            Agent::build("a1")
-                .with_wants(vec![Behavior::build("b1"), Behavior::build("bshared")]),
+            Agent::build("a1").with_wants(vec![Behavior::build("b1"), Behavior::build("bshared")]),
         );
         tracker.add_agent(
-            Agent::build("a2")
-                .with_wants(vec![Behavior::build("b1"), Behavior::build("bshared")]),
+            Agent::build("a2").with_wants(vec![Behavior::build("b1"), Behavior::build("bshared")]),
         );
         tracker.add_agent(Agent::build("p").with_provides(vec![
             Behavior::build("b1").with_conditions(vec!["c".to_string()]),
@@ -471,6 +488,165 @@ mod tests {
             vec![&edge("a1", "p", "b1", PromiseKind::Want, true)]
         );
         assert!(graph.unsatisfied.is_empty());
+    }
+
+    #[test]
+    fn test_self_promise_edge() {
+        let mut tracker = Tracker::new();
+        // a1 both wants and provides b1, so it answers its own want.
+        tracker.add_agent(
+            Agent::build("a1")
+                .with_wants(vec![Behavior::build("b1")])
+                .with_provides(vec![Behavior::build("b1")]),
+        );
+        tracker.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b1")]));
+
+        let graph = promise_graph(&tracker);
+
+        assert_eq!(
+            graph.edges,
+            vec![
+                edge("a1", "a1", "b1", PromiseKind::Want, true),
+                edge("a1", "a2", "b1", PromiseKind::Want, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_without_self_promises_drops_self_edge() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(
+            Agent::build("a1")
+                .with_wants(vec![Behavior::build("b1")])
+                .with_provides(vec![Behavior::build("b1")]),
+        );
+        tracker.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b1")]));
+
+        let graph = promise_graph(&tracker).without_self_promises();
+
+        assert_eq!(
+            graph.edges,
+            vec![edge("a1", "a2", "b1", PromiseKind::Want, true)]
+        );
+        // The agent itself is still on the canvas.
+        assert_eq!(node_ids(&graph), vec!["a1", "a2"]);
+    }
+
+    #[test]
+    fn test_without_self_promises_keeps_downstream_conditions() {
+        let mut tracker = Tracker::new();
+        // a1 answers its own want, but only if a2 provides b2. Hiding the
+        // self promise must not hide what it depends on from a2.
+        tracker.add_agent(
+            Agent::build("a1")
+                .with_wants(vec![Behavior::build("b1")])
+                .with_provides(vec![
+                    Behavior::build("b1").with_conditions(vec!["b2".to_string()])
+                ]),
+        );
+        tracker.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+
+        let graph = promise_graph(&tracker).without_self_promises();
+
+        assert_eq!(
+            graph.edges,
+            vec![edge("a1", "a2", "b2", PromiseKind::Condition, true)]
+        );
+    }
+
+    #[test]
+    fn test_without_self_promises_keeps_ghosts_and_unsatisfied() {
+        let mut tracker = Tracker::new();
+        // The only offer is a1's own, and its condition is unmet.
+        tracker.add_agent(
+            Agent::build("a1")
+                .with_wants(vec![Behavior::build("b1")])
+                .with_provides(vec![
+                    Behavior::build("b1").with_conditions(vec!["b2".to_string()])
+                ]),
+        );
+
+        let graph = promise_graph(&tracker).without_self_promises();
+
+        assert_eq!(node_ids(&graph), vec!["a1", "missing:b2"]);
+        assert_eq!(
+            graph.edges,
+            vec![edge(
+                "a1",
+                "missing:b2",
+                "b2",
+                PromiseKind::Condition,
+                false
+            )]
+        );
+        assert_eq!(
+            graph.unsatisfied,
+            vec![UnsatisfiedWant {
+                agent: "a1".to_string(),
+                behavior: "b1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_without_self_promises_drops_self_conditions() {
+        let mut tracker = Tracker::new();
+        // p meets its own condition: that is a self promise of kind Condition.
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("p").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["c".to_string()]),
+            Behavior::build("c"),
+        ]));
+
+        let graph = promise_graph(&tracker);
+        assert!(graph
+            .edges
+            .contains(&edge("p", "p", "c", PromiseKind::Condition, true)));
+
+        let graph = graph.without_self_promises();
+        assert_eq!(
+            graph.edges,
+            vec![edge("a1", "p", "b1", PromiseKind::Want, true)]
+        );
+    }
+
+    #[test]
+    fn test_without_self_promises_is_a_noop_without_them() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b2")]));
+
+        let graph = promise_graph(&tracker);
+
+        // Equality here is what keeps the frontend memo from firing, and the
+        // graph from re-laying out, when the toggle can change nothing.
+        assert_eq!(graph.clone().without_self_promises(), graph);
+    }
+
+    #[test]
+    fn test_without_self_promises_superagent() {
+        let mut tracker = Tracker::new();
+        // Flattening puts the wanter and the provider inside one agent.
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b1")]));
+        tracker.add_superagent(
+            SuperAgent::new("sa1".to_string())
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+
+        let graph = promise_graph(&tracker);
+        assert_eq!(
+            graph.edges,
+            vec![edge("sa1", "sa1", "b1", PromiseKind::Want, true)]
+        );
+
+        let graph = graph.without_self_promises();
+        assert!(graph.edges.is_empty());
+        assert_eq!(node_ids(&graph), vec!["sa1"]);
     }
 
     #[test]

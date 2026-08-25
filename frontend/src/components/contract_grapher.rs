@@ -12,6 +12,7 @@ use crate::models::Contract;
 // Import real components
 use super::contract_graph::ContractGraph;
 use super::contract_text::ContractText;
+use super::display_options::DisplayOptions;
 use super::promise_graph_view::PromiseGraphView;
 use super::simulation_controls::SimulationControls;
 
@@ -61,6 +62,12 @@ pub fn ContractGrapher(
 
     // Zoomed simulation state (None = show all, Some(sim) = show only that sim)
     let (zoomed_sim, set_zoomed_sim) = signal::<Option<String>>(None);
+
+    // Display options, applied to every view and every simulation panel.
+    // Read these only inside the child components: reading one in the per-sim
+    // closures below would rebuild every panel on a toggle, resetting each
+    // one's inner tab and tearing down its graph.
+    let (show_self_promises, set_show_self_promises) = signal(true);
 
     // Selected component and behavior for detailed view
     let (d_component, set_d_component) = signal("---".to_string());
@@ -217,6 +224,11 @@ pub fn ContractGrapher(
         set_zoomed_sim.set(sim);
     });
 
+    // Display option callbacks
+    let on_toggle_self_promises = Callback::new(move |_: ()| {
+        set_show_self_promises.update(|v| *v = !*v);
+    });
+
     // Edge tap in the overview graph jumps to the Detailed view with the
     // component and behavior preselected. A per-sim edge may not exist in the
     // main tracker that drives the dropdowns, so validate before navigating.
@@ -246,6 +258,12 @@ pub fn ContractGrapher(
                 on_zoom=on_zoom
                 on_add=on_add_simulation
                 on_remove=on_remove_simulation
+            />
+
+            // Display option toggles, applying to every view below
+            <DisplayOptions
+                show_self_promises=show_self_promises
+                on_toggle_self_promises=on_toggle_self_promises
             />
 
             // Bootstrap Nav Tabs
@@ -307,6 +325,7 @@ pub fn ContractGrapher(
                                             <PromiseGraphView
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
+                                                show_self_promises=show_self_promises
                                                 on_edge_select=on_edge_select
                                             />
                                         </div>
@@ -431,6 +450,7 @@ pub fn ContractGrapher(
                                                     tracker=tracker_signal
                                                     selected_component=d_component
                                                     selected_behavior=d_behavior
+                                                    show_self_promises=show_self_promises
                                                 />
                                             </Show>
                                             <Show when=move || inner_tab.get() == "sequence">
@@ -438,6 +458,7 @@ pub fn ContractGrapher(
                                                     tracker=tracker_signal
                                                     selected_component=d_component
                                                     selected_behavior=d_behavior
+                                                    show_self_promises=show_self_promises
                                                 />
                                             </Show>
                                         </div>

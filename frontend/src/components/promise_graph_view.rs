@@ -70,6 +70,7 @@ fn PromiseGraphLegend() -> impl IntoView {
 pub fn PromiseGraphView(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     sim_id: String,
+    #[prop(into)] show_self_promises: Signal<bool>,
     #[prop(optional)] on_edge_select: Option<Callback<(String, String)>>,
 ) -> impl IntoView {
     // Generate a unique container ID for this instance
@@ -80,12 +81,21 @@ pub fn PromiseGraphView(
     let container_id_for_strip = container_id.clone();
     let container_id_for_reset = container_id.clone();
 
-    // PartialEq on PromiseGraphData makes this memo gate re-renders
+    // The tree walk is the expensive half and does not depend on the display
+    // options, so it stays in its own memo.
+    let full_graph =
+        Memo::new(move |_| tracker.get().map(|t| promise_graph(&t)).unwrap_or_default());
+
+    // PartialEq on PromiseGraphData makes this memo gate re-renders: filtering
+    // a graph that has no self promises returns an equal value, so panels
+    // without any are never told to re-render and keep their layout.
     let graph_data = Memo::new(move |_| {
-        tracker
-            .get()
-            .map(|t| promise_graph(&t))
-            .unwrap_or_default()
+        let data = full_graph.get();
+        if show_self_promises.get() {
+            data
+        } else {
+            data.without_self_promises()
+        }
     });
 
     // Determine the current state for conditional rendering

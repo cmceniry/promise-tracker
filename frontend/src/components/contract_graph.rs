@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use promise_tracker::diagram::diagram;
+use promise_tracker::diagram::{diagram_with, DiagramOptions};
 use promise_tracker::Tracker;
 use wasm_bindgen::prelude::*;
 
@@ -139,6 +139,7 @@ pub fn ContractGraph(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     selected_component: ReadSignal<String>,
     selected_behavior: ReadSignal<String>,
+    #[prop(into)] show_self_promises: Signal<bool>,
 ) -> impl IntoView {
     // Generate the diagram DSL reactively
     let diagram_source = Memo::new(move |_| {
@@ -177,7 +178,14 @@ pub fn ContractGraph(
 
         // Generate the actual diagram
         let resolution = pt.resolve(&behavior);
-        diagram(&component, &behavior, &resolution)
+        diagram_with(
+            &component,
+            &behavior,
+            &resolution,
+            DiagramOptions {
+                show_self_promises: show_self_promises.get(),
+            },
+        )
     });
 
     let source_signal = Signal::derive(move || diagram_source.get());
