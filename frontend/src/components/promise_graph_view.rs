@@ -4,10 +4,14 @@
 //! behavior. Unresolvable behaviors appear as dashed "missing" ghost nodes.
 
 use leptos::prelude::*;
-use promise_tracker::promise_graph::promise_graph;
+use promise_tracker::promise_graph::{promise_graph, UnsatisfiedWant};
 use promise_tracker::Tracker;
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use web_sys::CustomEvent;
+
+use super::view_frame::ViewFrame;
+use crate::utils::{generated_at, slugify};
 
 // JS interop for the cytoscape glue in index.html
 #[wasm_bindgen]
@@ -23,9 +27,25 @@ extern "C" {
 
     #[wasm_bindgen(js_name = reset_promise_graph)]
     fn js_reset_promise_graph(container_id: &str);
+
+    #[wasm_bindgen(js_name = export_promise_graph)]
+    fn js_export_promise_graph(container_id: &str, meta: JsValue) -> JsValue;
+
+    #[wasm_bindgen(js_name = refit_promise_graph)]
+    fn js_refit_promise_graph(container_id: &str);
 }
 
 /// Legend for the promise graph
+/// What the exported page shows above the graph. The unsatisfied list is
+/// passed rather than re-derived in JS: it comes from `resolution.is_satisfied()`
+/// per want, which is not the same as filtering edges by `satisfied`.
+#[derive(Serialize)]
+struct GraphExportMeta {
+    title: String,
+    subtitle: String,
+    unsatisfied: Vec<UnsatisfiedWant>,
+}
+
 #[component]
 fn PromiseGraphLegend() -> impl IntoView {
     view! {
@@ -71,6 +91,8 @@ pub fn PromiseGraphView(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     sim_id: String,
     #[prop(into)] show_self_promises: Signal<bool>,
+    /// Which simulation this panel belongs to, for the export's header
+    sim_label: String,
     #[prop(optional)] on_edge_select: Option<Callback<(String, String)>>,
 ) -> impl IntoView {
     // Generate a unique container ID for this instance
@@ -80,6 +102,8 @@ pub fn PromiseGraphView(
     let container_id_for_cleanup = container_id.clone();
     let container_id_for_strip = container_id.clone();
     let container_id_for_reset = container_id.clone();
+    let container_id_for_export = container_id.clone();
+    let container_id_for_refit = container_id.clone();
 
     // The tree walk is the expensive half and does not depend on the display
     // options, so it stays in its own memo.
@@ -163,7 +187,65 @@ pub fn PromiseGraphView(
         js_destroy_promise_graph(&container_id_for_cleanup);
     });
 
+    let sim_for_title = sim_label.clone();
+    let sim_for_file = sim_label.clone();
+    let frame_title = Signal::derive(move || format!("Overview - Simulation {}", sim_for_title));
+    let frame_subtitle = Signal::derive(move || {
+        let self_state = if show_self_promises.get() {
+            "self-fulfilling promises shown"
+        } else {
+            "self-fulfilling promises hidden"
+        };
+        format!("{} - generated {}", self_state, generated_at())
+    });
+    let frame_filename =
+        Signal::derive(move || format!("promise-tracker-overview-{}", slugify(&sim_for_file)));
+
+    // The page is assembled in the JS glue, where the graph runtime it has to
+    // carry a copy of is in scope.
+    let export = Callback::new(move |_: ()| {
+        let meta = GraphExportMeta {
+            title: frame_title.get_untracked(),
+            subtitle: frame_subtitle.get_untracked(),
+            unsatisfied: graph_data.get_untracked().unsatisfied,
+        };
+        let meta = serde_wasm_bindgen::to_value(&meta).ok()?;
+        js_export_promise_graph(&container_id_for_export, meta)
+            .as_string()
+            .filter(|html| !html.is_empty())
+    });
+
+    // Cytoscape measures its container, so it has to be told once the frame has
+    // resized it. The observer in the glue catches this too; going through both
+    // keeps the graph from showing one unfitted frame on the way.
+    let on_maximized = Callback::new(move |_: bool| {
+        let id = container_id_for_refit.clone();
+        let _ = request_animation_frame(move || {
+            let _ = request_animation_frame(move || js_refit_promise_graph(&id));
+        });
+    });
+
     view! {
+        <ViewFrame
+            title=frame_title
+            subtitle=frame_subtitle
+            filename=frame_filename
+            export=export
+            on_maximized=on_maximized
+            toolbar=move || {
+                let id = container_id_for_reset.clone();
+                view! {
+                    <button
+                        class="btn btn-sm btn-outline-secondary"
+                        style="flex-shrink: 0;"
+                        title="Re-run the layout and fit the graph to the panel"
+                        on:click=move |_| js_reset_promise_graph(&id)
+                    >
+                        "Reset view"
+                    </button>
+                }
+            }
+        >
         <div class="promise-network-container card-body">
             <Show when=move || state.get() == "loading">
                 <div style="padding: 2rem; text-align: center; color: #666;">"Loading..."</div>
@@ -182,20 +264,7 @@ pub fn PromiseGraphView(
             </Show>
 
             <Show when=move || state.get() == "ready">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;">
-                    <PromiseGraphLegend />
-                    <button
-                        class="btn btn-sm btn-outline-secondary"
-                        style="flex-shrink: 0;"
-                        title="Re-run the layout and fit the graph to the panel"
-                        on:click={
-                            let id = container_id_for_reset.clone();
-                            move |_| js_reset_promise_graph(&id)
-                        }
-                    >
-                        "Reset view"
-                    </button>
-                </div>
+                <PromiseGraphLegend />
                 {
                     let strip_id = container_id_for_strip.clone();
                     move || {
@@ -236,12 +305,10 @@ pub fn PromiseGraphView(
                         }
                     }
                 }
-                <div
-                    id=container_id_for_view.clone()
-                    style="width: 100%; height: 480px; min-height: 300px;"
-                ></div>
+                <div id=container_id_for_view.clone() class="promise-graph-canvas"></div>
             </Show>
         </div>
+        </ViewFrame>
     }
 }
 

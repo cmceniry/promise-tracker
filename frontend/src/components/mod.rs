@@ -9,6 +9,7 @@ mod display_options;
 mod promise_graph_view;
 mod promise_network_graph;
 mod simulation_controls;
+mod view_frame;
 
 pub use contract_browser::ContractBrowser;
 pub use contract_card::{ContractCard, DiffStatus};
@@ -29,3 +30,5 @@ pub(crate) use promise_graph_view::PromiseGraphView;
 pub(crate) use promise_network_graph::PromiseNetworkGraph;
 #[allow(unused_imports)]
 pub(crate) use simulation_controls::SimulationControls;
+#[allow(unused_imports)]
+pub(crate) use view_frame::ViewFrame;

@@ -315,6 +315,7 @@ pub fn ContractGrapher(
                                     let sim_id = format!("network-{}", sim);
                                     let tracker_signal = get_sim_tracker(sim);
                                     let sim_display = sim.clone();
+                                    let sim_for_graph = sim.clone();
                                     view! {
                                         <div
                                             style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
@@ -326,6 +327,7 @@ pub fn ContractGrapher(
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
                                                 show_self_promises=show_self_promises
+                                                sim_label=sim_for_graph.clone()
                                                 on_edge_select=on_edge_select
                                             />
                                         </div>
@@ -404,6 +406,8 @@ pub fn ContractGrapher(
                                     .map(|sim| {
                                     let tracker_signal = get_sim_tracker(sim);
                                     let sim_display = sim.clone();
+                                    let sim_for_text = sim.clone();
+                                    let sim_for_sequence = sim.clone();
                                     // Local tab state for each simulation's text/sequence tabs
                                     let (inner_tab, set_inner_tab) = signal("text".to_string());
                                     view! {
@@ -451,6 +455,7 @@ pub fn ContractGrapher(
                                                     selected_component=d_component
                                                     selected_behavior=d_behavior
                                                     show_self_promises=show_self_promises
+                                                    sim_label=sim_for_text.clone()
                                                 />
                                             </Show>
                                             <Show when=move || inner_tab.get() == "sequence">
@@ -459,6 +464,7 @@ pub fn ContractGrapher(
                                                     selected_component=d_component
                                                     selected_behavior=d_behavior
                                                     show_self_promises=show_self_promises
+                                                    sim_label=sim_for_sequence.clone()
                                                 />
                                             </Show>
                                         </div>

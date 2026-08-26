@@ -152,3 +152,65 @@ body {
     color: blue;
     font-weight: bold;
 }
+
+/* View Frame Styles */
+.view-frame-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.view-frame-title {
+    font-weight: bold;
+    font-size: 0.9em;
+    color: #495057;
+}
+
+.view-frame-subtitle {
+    font-size: 0.8em;
+    color: #666;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.view-frame-actions {
+    display: flex;
+    gap: 0.25rem;
+    flex-shrink: 0;
+}
+
+/*
+ * Full-page zoom. Fixed rather than absolute so it escapes both the
+ * overflow: hidden on .promise-network-container and the scrolling columns in
+ * app.rs; below Bootstrap's .modal-backdrop (1050) so an open contract modal
+ * still wins. Declared after .promise-network-container on purpose - equal
+ * specificity, so source order settles the overflow.
+ */
+.view-maximized {
+    position: fixed;
+    inset: 0;
+    z-index: 1040;
+    overflow: auto;
+    background: #fff;
+    padding: 0.75rem;
+}
+
+/* The canvas height lives here, not inline, so maximizing can override it */
+.promise-graph-canvas {
+    width: 100%;
+    height: 480px;
+    min-height: 300px;
+}
+
+.view-maximized .promise-graph-canvas {
+    height: calc(100vh - 140px);
+}
+
+.view-maximized .contract-text-card,
+.view-maximized .mermaid-container {
+    max-height: calc(100vh - 120px);
+    overflow: auto;
+}

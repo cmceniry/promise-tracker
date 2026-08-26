@@ -2,6 +2,9 @@ use leptos::prelude::*;
 use promise_tracker::resolve::{Offer, Resolution};
 use promise_tracker::Tracker;
 
+use super::view_frame::ViewFrame;
+use crate::utils::{escape_html, generated_at, html_document, slugify};
+
 /// One line of the resolution tree, with whatever hangs under it.
 ///
 /// The shape is worked out as plain data first so that what the view shows can
@@ -185,6 +188,41 @@ fn contract_rows(component: &str, resolution: &Resolution, show_self: bool) -> V
     )]
 }
 
+/// The same tree `render_row` builds, as standalone markup.
+///
+/// Kept beside `render_row`: a case added to one belongs in the other. Labels
+/// are escaped here because nothing else will - the live view gets that from
+/// Leptos, a string built by hand does not.
+fn rows_to_html(rows: &[Row]) -> String {
+    fn walk(rows: &[Row], out: &mut String) {
+        out.push_str("<ul class=\"contract-text-list\">");
+        for row in rows {
+            out.push_str("<li class=\"");
+            out.push_str(row.class);
+            out.push_str("\">");
+            out.push_str(&escape_html(&row.label));
+            if !row.children.is_empty() {
+                walk(&row.children, out);
+            }
+            out.push_str("</li>");
+        }
+        out.push_str("</ul>");
+    }
+
+    let mut out = String::new();
+    walk(rows, &mut out);
+    out
+}
+
+/// A standalone page for one resolution tree. No scripts, no network.
+fn text_export_html(title: &str, subtitle: &str, rows: &[Row]) -> String {
+    let body = format!(
+        "<div class=\"card\"><div class=\"card-body contract-text-card\">{}</div></div>",
+        rows_to_html(rows)
+    );
+    html_document(title, subtitle, "", &body)
+}
+
 /// Renders one row and its children as nested list items.
 fn render_row(row: Row) -> AnyView {
     let Row {
@@ -218,7 +256,64 @@ pub fn ContractText(
     selected_component: ReadSignal<String>,
     selected_behavior: ReadSignal<String>,
     #[prop(into)] show_self_promises: Signal<bool>,
+    /// Which simulation this panel belongs to, for the export's header
+    sim_label: String,
 ) -> impl IntoView {
+    let sim_for_title = sim_label.clone();
+    let sim_for_file = sim_label.clone();
+
+    // The rows the export needs are the rows the view is showing, so both go
+    // through `contract_rows` with the same arguments.
+    let export_rows = move || -> Option<Vec<Row>> {
+        let pt = tracker.get_untracked()?;
+        let component = selected_component.get_untracked();
+        let behavior = selected_behavior.get_untracked();
+        if component == "---" || behavior == "---" || !pt.has_behavior(behavior.clone()) {
+            return None;
+        }
+        let rows = contract_rows(
+            &component,
+            &pt.resolve(&behavior),
+            show_self_promises.get_untracked(),
+        );
+        if rows.is_empty() {
+            None
+        } else {
+            Some(rows)
+        }
+    };
+
+    let frame_title = Signal::derive(move || format!("Text View - Simulation {}", sim_for_title));
+    let frame_subtitle = Signal::derive(move || {
+        let focus = format!(
+            "{} -> {}",
+            selected_component.get(),
+            selected_behavior.get()
+        );
+        let self_state = if show_self_promises.get() {
+            "self-fulfilling promises shown"
+        } else {
+            "self-fulfilling promises hidden"
+        };
+        format!("{} - {} - generated {}", focus, self_state, generated_at())
+    });
+    let frame_filename = Signal::derive(move || {
+        format!(
+            "promise-tracker-text-{}-{}-{}",
+            slugify(&sim_for_file),
+            slugify(&selected_component.get()),
+            slugify(&selected_behavior.get())
+        )
+    });
+    let export = Callback::new(move |_: ()| {
+        export_rows().map(|rows| {
+            text_export_html(
+                &frame_title.get_untracked(),
+                &frame_subtitle.get_untracked(),
+                &rows,
+            )
+        })
+    });
     let content = move || {
         let tracker_opt = tracker.get();
         let component = selected_component.get();
@@ -299,7 +394,16 @@ pub fn ContractText(
         .into_any()
     };
 
-    view! { <div class="contract-text">{content}</div> }
+    view! {
+        <ViewFrame
+            title=frame_title
+            subtitle=frame_subtitle
+            filename=frame_filename
+            export=export
+        >
+            <div class="contract-text">{content}</div>
+        </ViewFrame>
+    }
 }
 
 #[cfg(test)]
@@ -441,6 +545,69 @@ mod tests {
         let rows = contract_rows("s", &tracker.resolve("x"), false);
 
         assert_eq!(outline(&rows), "s --> x\n    OPTION: other\n");
+    }
+
+    #[test]
+    fn export_markup_matches_the_row_tree() {
+        let tracker = self_condition_tracker();
+        let rows = contract_rows("b", &tracker.resolve("pa"), false);
+
+        assert_eq!(
+            rows_to_html(&rows),
+            concat!(
+                "<ul class=\"contract-text-list\">",
+                "<li class=\"contract-text-option\">b --&gt; pa",
+                "<ul class=\"contract-text-list\">",
+                "<li class=\"contract-text-option\">OPTION: a",
+                "<ul class=\"contract-text-list\">",
+                "<li class=\"contract-text-option\">pc",
+                "<ul class=\"contract-text-list\">",
+                "<li class=\"contract-text-option\">OPTION: c</li>",
+                "</ul></li></ul></li></ul></li></ul>",
+            )
+        );
+    }
+
+    #[test]
+    fn export_escapes_names_from_the_contract() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("b").with_wants(vec![Behavior::build("pa")]));
+        tracker.add_agent(Agent::build("a<b> & \"c\"").with_provides(vec![Behavior::build("pa")]));
+
+        let rows = contract_rows("b", &tracker.resolve("pa"), true);
+        let html = rows_to_html(&rows);
+
+        assert!(
+            html.contains("OPTION: a&lt;b&gt; &amp; &quot;c&quot;"),
+            "{}",
+            html
+        );
+        assert!(!html.contains("<b>"), "{}", html);
+    }
+
+    #[test]
+    fn export_page_is_offline_and_points_nowhere() {
+        let tracker = self_condition_tracker();
+        let rows = contract_rows("b", &tracker.resolve("pa"), true);
+        let page = text_export_html("Text View - Simulation A", "b -> pa", &rows);
+
+        assert!(page.starts_with("<!DOCTYPE html>"));
+        assert!(page.contains("OPTION: a"));
+        // Nothing that needs the network, and no route back to the app
+        for probe in [
+            "<script",
+            "<link",
+            "localStorage",
+            "fetch(",
+            "/api/",
+            "/contracts/",
+            ".wasm",
+            "localhost",
+            "127.0.0.1",
+            "pt-edge-select",
+        ] {
+            assert!(!page.contains(probe), "export contains {}", probe);
+        }
     }
 
     #[test]
