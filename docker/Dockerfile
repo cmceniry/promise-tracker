@@ -44,4 +44,5 @@ COPY samples/ /data/samples/
 EXPOSE 8080
 
 ENTRYPOINT ["promise-tracker-api"]
-CMD ["--base-dir", "/data/contracts", "--port", "8080"]
+# 0.0.0.0 is required inside the container: isolation comes from the port publish
+CMD ["--base-dir", "/data/contracts", "--port", "8080", "--host", "0.0.0.0"]

@@ -22,8 +22,8 @@ struct Cli {
     #[arg(long, default_value = "8080")]
     port: u16,
 
-    /// Host to bind to
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Host to bind to (use 0.0.0.0 to listen on all interfaces)
+    #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
     /// Enable dev mode (proxy frontend requests to Trunk dev server)
