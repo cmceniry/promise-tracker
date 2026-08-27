@@ -483,28 +483,37 @@ fn TreeNode(
         }
     };
 
-    let handle_checkbox_toggle = {
-        let p = path.clone();
-        move |ev: web_sys::MouseEvent| {
-            ev.stop_propagation(); // Prevent directory expansion
-            let contract_path = p.clone();
-            set_selected_contracts.update(|selected| {
-                if selected.contains(&contract_path) {
-                    selected.remove(&contract_path);
-                } else {
-                    if !downloaded_paths.get().contains(&contract_path) {
-                        selected.insert(contract_path);
-                    }
-                }
-            });
+    // Selection toggle shared by the checkbox and the row click, so clicking
+    // anywhere on a contract row behaves like clicking the box itself.
+    let toggle_selection = move || {
+        if is_downloaded() || is_downloading() {
+            return;
         }
+        let Some(contract_path) = stored_path.try_get_value() else {
+            return;
+        };
+        set_selected_contracts.update(|selected| {
+            if !selected.remove(&contract_path) {
+                selected.insert(contract_path);
+            }
+        });
     };
+
+    let handle_checkbox_toggle = move |ev: web_sys::MouseEvent| {
+        // Without this the row handler fires too and cancels the toggle out.
+        ev.stop_propagation();
+        toggle_selection();
+    };
+
+    // Directories always respond to a click; contracts stop responding once
+    // they are downloaded or in flight, matching the disabled checkbox.
+    let is_row_interactive = move || is_directory || !(is_downloaded() || is_downloading());
 
     view! {
         <li
             class="list-group-item"
-            class:list-group-item-action=is_directory
-            style:cursor=move || if is_directory { "pointer" } else { "default" }
+            class:list-group-item-action=is_row_interactive
+            style:cursor=move || if is_row_interactive() { "pointer" } else { "default" }
             style:display="flex"
             style:align-items="center"
             style:gap="0.5rem"
@@ -513,6 +522,8 @@ fn TreeNode(
             on:click=move |_| {
                 if is_directory {
                     handle_directory_click(());
+                } else {
+                    toggle_selection();
                 }
             }
         >
