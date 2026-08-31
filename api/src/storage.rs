@@ -25,6 +25,14 @@ pub struct Storage {
     contracts: HashMap<String, PathBuf>, // relative_path -> absolute_path
 }
 
+/// True when the entry's own name starts with a dot (`.git`, `.notes.yaml`).
+/// Hidden entries are never treated as contracts or browsable directories.
+fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+}
+
 impl Storage {
     /// Create a new Storage instance with the given base directory
     pub fn new(base_dir: impl AsRef<Path>) -> Result<Self> {
@@ -62,6 +70,10 @@ impl Storage {
         for entry in entries {
             let entry = entry.context("Failed to read directory entry")?;
             let path = entry.path();
+
+            if is_hidden(&path) {
+                continue;
+            }
 
             if path.is_dir() {
                 self.scan_directory_recursive(&path, base_dir)?;
@@ -112,6 +124,11 @@ impl Storage {
         for entry in dir_entries {
             let entry = entry.context("Failed to read directory entry")?;
             let path = entry.path();
+
+            if is_hidden(&path) {
+                continue;
+            }
+
             let metadata = entry.metadata().context("Failed to read entry metadata")?;
 
             // Get relative path from base_dir
@@ -183,6 +200,17 @@ impl Storage {
                     "Path traversal not allowed: '..' is not permitted in contract paths"
                 );
             }
+
+            // Writing a dot-file or dot-directory would create something the
+            // scanner and listings deliberately ignore.
+            if let std::path::Component::Normal(name) = component {
+                if name.to_str().is_some_and(|n| n.starts_with('.')) {
+                    anyhow::bail!(
+                        "Hidden paths not allowed: '{}' starts with '.'",
+                        name.to_string_lossy()
+                    );
+                }
+            }
         }
 
         let target_path = self.base_dir.join(contract_id);
@@ -203,4 +231,99 @@ impl Storage {
         Ok(())
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Scratch directory that removes itself when the test ends.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let unique = format!(
+                "promise-tracker-storage-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            TempDir(path)
+        }
+
+        fn write(&self, relative: &str, content: &str) {
+            let target = self.0.join(relative);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dir");
+            }
+            std::fs::write(target, content).expect("write file");
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn scan_skips_hidden_files_and_directories() {
+        let dir = TempDir::new();
+        dir.write("visible.yaml", "kind: Agent\n");
+        dir.write("nested/also_visible.yaml", "kind: Agent\n");
+        dir.write(".hidden.yaml", "kind: Agent\n");
+        dir.write(".hiddendir/inside.yaml", "kind: Agent\n");
+        dir.write("nested/.hidden_too.yaml", "kind: Agent\n");
+
+        let storage = Storage::new(&dir.0).expect("storage");
+
+        assert_eq!(
+            storage.list_contracts(),
+            vec![
+                "nested/also_visible.yaml".to_string(),
+                "visible.yaml".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_directory_omits_hidden_entries() {
+        let dir = TempDir::new();
+        dir.write("visible.yaml", "kind: Agent\n");
+        dir.write(".hidden.yaml", "kind: Agent\n");
+        dir.write("plain/keep.yaml", "kind: Agent\n");
+        dir.write(".hiddendir/inside.yaml", "kind: Agent\n");
+
+        let storage = Storage::new(&dir.0).expect("storage");
+        let names: Vec<String> = storage
+            .list_directory(None)
+            .expect("listing")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+
+        assert_eq!(names, vec!["plain".to_string(), "visible.yaml".to_string()]);
+    }
+
+    #[test]
+    fn save_contract_rejects_hidden_paths() {
+        let dir = TempDir::new();
+        let mut storage = Storage::new(&dir.0).expect("storage");
+
+        assert!(storage.save_contract(".hidden.yaml", "kind: Agent\n").is_err());
+        assert!(storage
+            .save_contract(".hiddendir/inside.yaml", "kind: Agent\n")
+            .is_err());
+        assert!(storage
+            .save_contract("nested/.hidden.yaml", "kind: Agent\n")
+            .is_err());
+        assert!(storage.save_contract("nested/ok.yaml", "kind: Agent\n").is_ok());
+
+        // A rejected write must not leave the directory behind either.
+        assert!(!dir.0.join(".hiddendir").exists());
+    }
 }

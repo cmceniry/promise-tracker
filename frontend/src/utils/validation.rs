@@ -6,6 +6,7 @@ use serde::Deserialize;
 /// - Must only contain lowercase a-z, digits 0-9, forward slash (/)
 /// - Must end with ".yaml"
 /// - Cannot start with "/"
+/// - No path segment may start with "." (no dot-files or dot-directories)
 /// - Cannot be empty
 ///
 /// Returns Some(error_message) if invalid, None if valid
@@ -19,6 +20,17 @@ pub fn validate_filename(filename: &str) -> Option<String> {
     // Cannot start with "/"
     if trimmed.starts_with('/') {
         return Some("Filename cannot start with \"/\"".to_string());
+    }
+
+    // No segment may be hidden - the server skips dot-files and dot-directories,
+    // so such a contract would vanish from listings the moment it was written.
+    for segment in trimmed.split('/') {
+        if segment.starts_with('.') {
+            return Some(format!(
+                "Path segment \"{}\" cannot start with \".\". Dot-files and dot-directories are not allowed.",
+                segment
+            ));
+        }
     }
 
     // Must end with ".yaml"
@@ -144,6 +156,14 @@ mod tests {
         assert!(validate_filename("Test.yaml").is_some()); // uppercase
         assert!(validate_filename("test-file.yaml").is_some()); // hyphen
         assert!(validate_filename(".yaml").is_some()); // no name
+    }
+
+    #[test]
+    fn test_validate_filename_rejects_dot_paths() {
+        assert!(validate_filename(".hidden.yaml").is_some());
+        assert!(validate_filename(".config/test.yaml").is_some());
+        assert!(validate_filename("dir/.hidden.yaml").is_some());
+        assert!(validate_filename("a/.b/c.yaml").is_some());
     }
 
     #[test]
