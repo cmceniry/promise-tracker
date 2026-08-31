@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 /// Type of directory entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,42 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with('.'))
 }
 
+/// Where `path` really lives, or `None` when it does not resolve (a broken
+/// symlink) or resolves outside the base directory.
+///
+/// `base_dir` must already be canonical, which `Storage::new` guarantees.
+fn resolve_within(path: &Path, base_dir: &Path) -> Option<PathBuf> {
+    let canonical = path.canonicalize().ok()?;
+    canonical.starts_with(base_dir).then_some(canonical)
+}
+
+/// Canonical path of every directory passed through on the way to `relative`,
+/// starting at the base directory and ending at `relative` itself.
+///
+/// Symlinks make a directory reachable in more than one shape - `sub/loop -> ..`,
+/// or a pair of sibling directories linking to each other - so a loop is a path
+/// whose target already appears earlier in this chain.
+fn canonical_chain(base_dir: &Path, relative: Option<&str>) -> Vec<PathBuf> {
+    let mut chain = vec![base_dir.to_path_buf()];
+    let Some(relative) = relative else {
+        return chain;
+    };
+
+    let mut current = base_dir.to_path_buf();
+    for segment in relative.split('/').filter(|segment| !segment.is_empty()) {
+        current.push(segment);
+        match current.canonicalize() {
+            Ok(canonical) => {
+                chain.push(canonical.clone());
+                current = canonical;
+            }
+            Err(_) => break,
+        }
+    }
+
+    chain
+}
+
 impl Storage {
     /// Create a new Storage instance with the given base directory
     pub fn new(base_dir: impl AsRef<Path>) -> Result<Self> {
@@ -58,12 +95,31 @@ impl Storage {
     pub fn scan_directory(&mut self) -> Result<()> {
         self.contracts.clear();
         let base_dir = self.base_dir.clone();
-        self.scan_directory_recursive(&base_dir, &base_dir)?;
+        let mut visiting = HashSet::from([base_dir.clone()]);
+        self.scan_directory_recursive(&base_dir, &base_dir, &mut visiting)?;
         Ok(())
     }
 
     /// Recursively scan a directory for YAML files
-    fn scan_directory_recursive(&mut self, current_dir: &Path, base_dir: &Path) -> Result<()> {
+    ///
+    /// `visiting` holds the canonical path of every directory on the way down
+    /// to `current_dir`. A symlink resolving to one of those closes a loop and
+    /// is skipped; a symlink to a directory elsewhere in the tree is not a loop
+    /// and is scanned under its own name, so listings and loads agree on it.
+    fn scan_directory_recursive(
+        &mut self,
+        current_dir: &Path,
+        base_dir: &Path,
+        visiting: &mut HashSet<PathBuf>,
+    ) -> Result<()> {
+        // Backstop for a chain of symlinked diamonds, which multiplies paths
+        // without ever repeating one on the way down.
+        const MAX_DEPTH: usize = 64;
+        if visiting.len() > MAX_DEPTH {
+            warn!("Skipping directory nested deeper than {}: {:?}", MAX_DEPTH, current_dir);
+            return Ok(());
+        }
+
         let entries = std::fs::read_dir(current_dir)
             .with_context(|| format!("Failed to read directory: {:?}", current_dir))?;
 
@@ -75,8 +131,25 @@ impl Storage {
                 continue;
             }
 
+            let Some(canonical) = resolve_within(&path, base_dir) else {
+                // Only symlinks can fail to resolve or land outside the base
+                // directory, and either case is worth saying out loud once.
+                if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    warn!(
+                        "Skipping symlink that is broken or points outside the base directory: {:?}",
+                        path
+                    );
+                }
+                continue;
+            };
+
             if path.is_dir() {
-                self.scan_directory_recursive(&path, base_dir)?;
+                if !visiting.insert(canonical.clone()) {
+                    warn!("Skipping symlink that loops back on itself: {:?}", path);
+                    continue;
+                }
+                self.scan_directory_recursive(&path, base_dir, visiting)?;
+                visiting.remove(&canonical);
             } else if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "yaml" || ext == "yml" {
@@ -117,6 +190,21 @@ impl Storage {
             anyhow::bail!("Path is not a directory: {:?}", canonical_target);
         }
 
+        // Everything walked through to get here. A client following listings
+        // must never be handed an entry that leads back into this chain.
+        let chain = canonical_chain(
+            &self.base_dir,
+            dir_path.map(|path| {
+                urlencoding::decode(path)
+                    .map(|decoded| decoded.to_string())
+                    .unwrap_or_else(|_| path.to_string())
+            }).as_deref(),
+        );
+
+        if chain[..chain.len().saturating_sub(1)].contains(&canonical_target) {
+            anyhow::bail!("Symlink loop detected at: {:?}", canonical_target);
+        }
+
         let mut entries = Vec::new();
         let dir_entries = std::fs::read_dir(&canonical_target)
             .with_context(|| format!("Failed to read directory: {:?}", canonical_target))?;
@@ -129,7 +217,20 @@ impl Storage {
                 continue;
             }
 
-            let metadata = entry.metadata().context("Failed to read entry metadata")?;
+            // Resolve rather than lstat, so a symlinked contract or directory
+            // is listed exactly as the scanner registers it. Broken links and
+            // links out of the tree drop out here.
+            let Some(canonical) = resolve_within(&path, &self.base_dir) else {
+                continue;
+            };
+
+            // A link back into the chain closes a loop. Leaving it out beats
+            // offering a directory that errors the moment it is opened.
+            if chain.contains(&canonical) {
+                continue;
+            }
+
+            let metadata = std::fs::metadata(&path).context("Failed to read entry metadata")?;
 
             // Get relative path from base_dir
             let relative_path = path
@@ -307,6 +408,138 @@ mod tests {
             .collect();
 
         assert_eq!(names, vec!["plain".to_string(), "visible.yaml".to_string()]);
+    }
+
+    #[cfg(unix)]
+    fn symlink(original: impl AsRef<Path>, link: impl AsRef<Path>) {
+        std::os::unix::fs::symlink(original, link).expect("create symlink");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinks_are_scanned_and_listed_alike() {
+        let dir = TempDir::new();
+        dir.write("real/inside.yaml", "kind: Agent\n");
+        dir.write("plain.yaml", "kind: Agent\n");
+        symlink("real", dir.0.join("linkdir"));
+        symlink("plain.yaml", dir.0.join("linkfile.yaml"));
+
+        let storage = Storage::new(&dir.0).expect("storage");
+
+        // The scanner reaches contracts through both links...
+        assert_eq!(
+            storage.list_contracts(),
+            vec![
+                "linkdir/inside.yaml".to_string(),
+                "linkfile.yaml".to_string(),
+                "plain.yaml".to_string(),
+                "real/inside.yaml".to_string(),
+            ]
+        );
+
+        // ...and the listing shows the same links, rather than hiding entries
+        // that are nonetheless loadable.
+        let names: Vec<String> = storage
+            .list_directory(None)
+            .expect("listing")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "linkdir".to_string(),
+                "linkfile.yaml".to_string(),
+                "plain.yaml".to_string(),
+                "real".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_loop_is_walked_once_and_refused_by_listings() {
+        let dir = TempDir::new();
+        dir.write("sub/x.yaml", "kind: Agent\n");
+        symlink("..", dir.0.join("sub/loop"));
+
+        let storage = Storage::new(&dir.0).expect("storage");
+
+        // Without the visited set this registers the same file once per level
+        // the platform is willing to resolve.
+        assert_eq!(storage.list_contracts(), vec!["sub/x.yaml".to_string()]);
+
+        // The loop entry is left out of the listing, so a client walking the
+        // tree is never offered the way back in...
+        let names: Vec<String> = storage
+            .list_directory(Some("sub"))
+            .expect("listing")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, vec!["x.yaml".to_string()]);
+
+        // ...and asking for it directly is refused too.
+        assert!(storage.list_directory(Some("sub/loop")).is_err());
+        assert!(storage.list_directory(Some("sub/loop/sub")).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mutually_linked_directories_terminate() {
+        // Neither link points at an ancestor of itself, so only tracking the
+        // descent path catches this: a/to_b/to_a/to_b/... is walkable forever.
+        let dir = TempDir::new();
+        dir.write("a/x.yaml", "kind: Agent\n");
+        dir.write("b/y.yaml", "kind: Agent\n");
+        symlink(dir.0.join("b"), dir.0.join("a/to_b"));
+        symlink(dir.0.join("a"), dir.0.join("b/to_a"));
+
+        let storage = Storage::new(&dir.0).expect("storage");
+
+        assert_eq!(
+            storage.list_contracts(),
+            vec![
+                "a/to_b/y.yaml".to_string(),
+                "a/x.yaml".to_string(),
+                "b/to_a/x.yaml".to_string(),
+                "b/y.yaml".to_string(),
+            ]
+        );
+
+        // The second hop back is where the loop closes, so it is neither
+        // listed nor reachable.
+        let names: Vec<String> = storage
+            .list_directory(Some("a/to_b"))
+            .expect("listing")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, vec!["y.yaml".to_string()]);
+        assert!(storage.list_directory(Some("a/to_b/to_a")).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinks_out_of_the_tree_and_broken_links_are_skipped() {
+        let dir = TempDir::new();
+        dir.write("base/ok.yaml", "kind: Agent\n");
+        dir.write("outside/secret.yaml", "kind: Agent\n");
+        symlink(dir.0.join("outside/secret.yaml"), dir.0.join("base/escape.yaml"));
+        symlink(dir.0.join("outside"), dir.0.join("base/escapedir"));
+        symlink("nowhere.yaml", dir.0.join("base/broken.yaml"));
+
+        let storage = Storage::new(dir.0.join("base")).expect("storage");
+
+        assert_eq!(storage.list_contracts(), vec!["ok.yaml".to_string()]);
+
+        let names: Vec<String> = storage
+            .list_directory(None)
+            .expect("listing")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, vec!["ok.yaml".to_string()]);
     }
 
     #[test]
