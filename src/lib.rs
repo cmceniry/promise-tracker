@@ -100,22 +100,19 @@ impl Tracker {
 
         // Collectives first, flattened: an instance built on one needs it
         // whole before it can copy it.
+        let collective_names: Vec<String> = self
+            .available_superagents
+            .iter()
+            .map(|sa| sa.get_name().clone())
+            .collect();
         let mut collectives: HashMap<String, Agent> = HashMap::new();
-        for sa in &self.available_superagents {
-            let contained_agents_names = sa.get_agent_names();
-            let mut stub_agent = Agent::new(sa.get_name().clone());
-            self.available_agents
-                .iter()
-                .filter(|a| contained_agents_names.contains(a.get_name()))
-                .for_each(|a| {
-                    stub_agent.merge(a);
-                });
-            // reduce its behaviors to those that are not internally handled
-            stub_agent.reduce();
-            collectives
-                .entry(stub_agent.get_name().clone())
-                .or_insert_with(|| Agent::new(sa.get_name().clone()))
-                .merge(&stub_agent);
+        for name in collective_names {
+            if collectives.contains_key(&name) {
+                continue;
+            }
+            if let Some(agent) = self.flatten_collective(&name, &mut HashSet::new()) {
+                collectives.insert(name, agent);
+            }
         }
 
         let mut new_working_agents: HashMap<String, Vec<Agent>> = HashMap::new();
@@ -152,6 +149,54 @@ impl Tracker {
         self.working_agents = new_working_agents;
     }
 
+    /// One collective folded into a single agent, its members merged in and
+    /// its internally-met conditions reduced away.
+    ///
+    /// A member that names another collective is folded in whole first, so a
+    /// collective built from collectives promises everything its nesting
+    /// reaches. `visiting` carries the collectives already being folded on the
+    /// way down: one that comes back around to itself contributes nothing the
+    /// second time through rather than descending forever.
+    ///
+    /// Returns `None` when nothing declares a collective by that name.
+    fn flatten_collective(&self, name: &str, visiting: &mut HashSet<String>) -> Option<Agent> {
+        let members: Vec<String> = self
+            .available_superagents
+            .iter()
+            .filter(|sa| sa.get_name() == name)
+            .flat_map(|sa| sa.get_agent_names())
+            .collect();
+        if !self
+            .available_superagents
+            .iter()
+            .any(|sa| sa.get_name() == name)
+        {
+            return None;
+        }
+        if !visiting.insert(name.to_string()) {
+            return Some(Agent::new(name.to_string()));
+        }
+
+        let mut stub = Agent::new(name.to_string());
+        for member in members {
+            // A collective member first, matching how an unqualified instance
+            // base is looked up; a plain agent otherwise.
+            match self.flatten_collective(&member, visiting) {
+                Some(inner) => stub.merge(&inner),
+                None => self
+                    .available_agents
+                    .iter()
+                    .filter(|a| a.get_name() == &member)
+                    .for_each(|a| stub.merge(a)),
+            }
+        }
+        // reduce its behaviors to those that are not internally handled
+        stub.reduce();
+
+        visiting.remove(name);
+        Some(stub)
+    }
+
     /// What an instance is built from.
     ///
     /// A base that names nothing yields an empty agent, so the instance still
@@ -160,21 +205,7 @@ impl Tracker {
     fn find_base(&self, instance: &Instance) -> Agent {
         let base = instance.get_base();
         let name = base.name();
-        let collective = || {
-            self.available_superagents
-                .iter()
-                .find(|sa| sa.get_name() == name)
-                .map(|sa| {
-                    let contained = sa.get_agent_names();
-                    let mut stub = Agent::new(name.clone());
-                    self.available_agents
-                        .iter()
-                        .filter(|a| contained.contains(a.get_name()))
-                        .for_each(|a| stub.merge(a));
-                    stub.reduce();
-                    stub
-                })
-        };
+        let collective = || self.flatten_collective(name, &mut HashSet::new());
         let plain = || {
             self.available_agents
                 .iter()
@@ -843,6 +874,163 @@ mod tests {
                     vec![Resolution::new("b4").add_satisfying_offer(Offer::new("a4"))],
                 )),
         )
+    }
+
+    /// A collective built from another collective promises what the nesting
+    /// reaches: sa2's members are sa1 (a1 + a2) and a3, so the chain
+    /// w <- wa1 <- wa2 closes inside sa2.
+    #[test]
+    fn test_nested_superagent_resolve() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w1").with_wants(vec![Behavior::build("w")]));
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("w").with_conditions(vec![String::from("wa1")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("wa1").with_conditions(vec![String::from("wa2")]),
+        ]));
+        t.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("wa2")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("sa1")
+                .with_agent("a3"),
+        );
+
+        // Only the outermost collective stands as a working agent: its members,
+        // sa1 among them, are templates.
+        let mut working = t.get_working_agent_names();
+        working.sort();
+        assert_eq!(working, vec!["sa2", "w1"]);
+
+        assert_eq!(
+            t.resolve("w"),
+            Resolution::new("w").add_satisfying_offer(Offer::new("sa2"))
+        );
+    }
+
+    /// The same nesting, with every document arriving before what it names.
+    /// Each add rebuilds from scratch, so the order documents load in does not
+    /// change what the collectives come out as.
+    #[test]
+    fn test_nested_superagent_built_in_any_order() {
+        let mut t = Tracker::new();
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("sa1")
+                .with_agent("a3"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        t.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("wa2")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("wa1").with_conditions(vec![String::from("wa2")]),
+        ]));
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("w").with_conditions(vec![String::from("wa1")]),
+        ]));
+        t.add_agent(Agent::build("w1").with_wants(vec![Behavior::build("w")]));
+
+        assert_eq!(
+            t.resolve("w"),
+            Resolution::new("w").add_satisfying_offer(Offer::new("sa2"))
+        );
+    }
+
+    /// Nesting three deep, with the condition met a level out from where it is
+    /// named: sa1 leaves wa2 open, sa2 leaves wa3 open, and sa3 closes it.
+    #[test]
+    fn test_nested_superagent_three_deep() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("w").with_conditions(vec![String::from("wa1")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("wa1").with_conditions(vec![String::from("wa2")]),
+        ]));
+        t.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("wa2").with_conditions(vec![String::from("wa3")]),
+        ]));
+        t.add_agent(Agent::build("a4").with_provides(vec![Behavior::build("wa3")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("sa1")
+                .with_agent("a3"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa3"))
+                .with_agent("sa2")
+                .with_agent("a4"),
+        );
+
+        assert_eq!(t.get_working_agent_names(), vec!["sa3"]);
+        assert_eq!(
+            t.resolve("w"),
+            Resolution::new("w").add_satisfying_offer(Offer::new("sa3"))
+        );
+    }
+
+    /// A collective whose nesting comes back around to itself still builds:
+    /// the second pass through contributes nothing rather than descending
+    /// forever.
+    #[test]
+    fn test_nested_superagent_cycle_terminates() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("w").with_conditions(vec![String::from("wa1")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("wa1")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("sa2"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("a2")
+                .with_agent("sa1"),
+        );
+
+        // Each names the other, so both are templates and neither stands as a
+        // working agent; what matters here is that the rebuild terminates.
+        assert!(t.get_working_agent_names().is_empty());
+        assert_eq!(t.resolve("w"), Resolution::new("w"));
+    }
+
+    /// A copy of a nested collective carries the whole nesting, not just the
+    /// members named directly.
+    #[test]
+    fn test_instance_of_a_nested_superagent() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("w").with_conditions(vec![String::from("wa1")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("wa1")]));
+        t.add_agent(Agent::build("a3").with_wants(vec![Behavior::build("w")]));
+        t.add_superagent(SuperAgent::new(String::from("sa1")).with_agent("a1"));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("sa1")
+                .with_agent("a2"),
+        );
+        t.add_instance(Instance::new("i1", "SuperAgent/sa2"));
+
+        assert_eq!(
+            t.resolve("w"),
+            Resolution::new("w").add_satisfying_offer(Offer::new("i1"))
+        );
     }
 
     #[test]
