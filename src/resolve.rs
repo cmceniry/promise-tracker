@@ -1,7 +1,7 @@
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resolution {
     behavior_name: String,
     satisfying_offers: Vec<Offer>,
@@ -319,7 +319,7 @@ mod tests_resolution {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Offer {
     agent_name: String,
     resolved_conditions: Vec<Resolution>,

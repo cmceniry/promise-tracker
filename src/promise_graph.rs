@@ -670,4 +670,85 @@ mod tests {
             vec![edge("w", "sa1", "b1", PromiseKind::Want, true)]
         );
     }
+
+    #[test]
+    fn test_parameterized_promises_do_not_merge() {
+        let mut tracker = Tracker::new();
+        // One host promising execution to whoever asks, on terms naming the
+        // asker. Only p1's binary is installed.
+        tracker.add_agent(Agent::build("host").with_provides(vec![
+            Behavior::build("process-execution/{{process}}")
+                .with_conditions(vec!["binary-installed/{{process}}".to_string()]),
+        ]));
+        tracker.add_agent(
+            Agent::build("p1").with_wants(vec![Behavior::build("process-execution/p1")]),
+        );
+        tracker.add_agent(
+            Agent::build("p2").with_wants(vec![Behavior::build("process-execution/p2")]),
+        );
+        tracker.add_agent(
+            Agent::build("pkg").with_provides(vec![Behavior::build("binary-installed/p1")]),
+        );
+
+        let graph = promise_graph(&tracker);
+
+        // The host's two obligations are separate edges with separate verdicts.
+        // Before names could carry a value they were one edge, drawn green
+        // whenever *either* binary was installed.
+        assert_eq!(
+            graph.edges,
+            vec![
+                edge(
+                    "host",
+                    "missing:binary-installed/p2",
+                    "binary-installed/p2",
+                    PromiseKind::Condition,
+                    false
+                ),
+                edge(
+                    "host",
+                    "pkg",
+                    "binary-installed/p1",
+                    PromiseKind::Condition,
+                    true
+                ),
+                edge(
+                    "p1",
+                    "host",
+                    "process-execution/p1",
+                    PromiseKind::Want,
+                    true
+                ),
+                edge(
+                    "p2",
+                    "host",
+                    "process-execution/p2",
+                    PromiseKind::Want,
+                    false
+                ),
+            ]
+        );
+        assert_eq!(
+            graph.unsatisfied,
+            vec![UnsatisfiedWant {
+                agent: "p2".to_string(),
+                behavior: "process-execution/p2".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_a_pattern_nobody_wants_draws_nothing() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(
+            Agent::build("host").with_provides(vec![Behavior::build("run/{{process}}")]),
+        );
+
+        let graph = promise_graph(&tracker);
+
+        // A promise with no promisee has no edge. The host is still on the
+        // canvas; what it offers belongs to the offered view.
+        assert_eq!(node_ids(&graph), vec!["host"]);
+        assert!(graph.edges.is_empty());
+    }
 }

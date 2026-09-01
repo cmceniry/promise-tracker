@@ -1,7 +1,8 @@
 use crate::components::behavior::Behavior;
+use crate::components::pattern::{Bindings, Pattern};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -163,18 +164,18 @@ impl Agent {
         ret
     }
 
-    pub fn get_provides(&self, behavior_name: &str) -> Option<HashSet<Behavior>> {
-        let mut ret = HashSet::new();
-        for b in self.provides.iter() {
-            if b.get_name() == behavior_name {
-                ret.insert(b.clone());
-            }
-        }
-        if ret.len() > 0 {
-            Some(ret)
-        } else {
-            None
-        }
+    pub fn get_matching_provides(&self, goal: &str) -> Vec<(Behavior, Bindings)> {
+        self.provides
+            .iter()
+            .filter_map(|b| b.match_goal(goal).map(|bindings| (b.clone(), bindings)))
+            .collect()
+    }
+
+    pub fn get_provide_patterns(&self) -> Vec<&Behavior> {
+        self.provides
+            .iter()
+            .filter(|b| !b.get_name_pattern().is_ground())
+            .collect()
     }
 
     pub fn get_all_provides(&self) -> HashSet<Behavior> {
@@ -214,49 +215,85 @@ impl Agent {
         }
     }
 
-    // for each condition that is internally provided, replace it with the conditions required to internally provide it
     pub fn reduce(&mut self) {
-        let internal_provides: HashSet<String> =
-            self.provides.iter().map(|p| p.get_name().clone()).collect();
-        let mut todo_provides = self.provides.clone();
-        let mut reduced_provides = vec![];
-        while todo_provides.len() > 0 {
-            let p = todo_provides.remove(0);
-            if p.is_unconditional() || p.has_none_of_these_conditions(&internal_provides) {
-                reduced_provides.push(p);
-                continue;
-            }
-            // Otherwise, one or more conditions need to be expanded
-            // If a condition is provided internally by multiple options, technically should expand each of them.
-            // Right now, just expand the first one.
-            let mut new_conditions: HashSet<String> = HashSet::new();
-            for c in p.get_conditions() {
-                // If this condition is not provided internally, just pass it through as is
-                if !internal_provides.contains(&c) {
-                    new_conditions.insert(c.clone());
-                    continue;
-                }
-                for ro in self.provides.iter().filter(|x| x.get_name() == &c).take(1) {
-                    new_conditions.extend(ro.get_conditions());
-                }
-            }
-            todo_provides.push(Behavior::new_with_conditions(
-                p.get_name().clone(),
-                new_conditions.iter().map(|x| x.clone()).collect(),
-            ));
-        }
-        reduced_provides.sort();
-        self.provides = reduced_provides;
+        let originals = self.provides.clone();
+        let mut reduced: Vec<Behavior> = originals
+            .iter()
+            .map(|b| reduce_one(b, &originals))
+            .collect();
+        reduced.sort();
+        self.provides = reduced;
     }
 
-    /// A copy of this agent under an instance name. Instances share the
-    /// collective's behaviors verbatim; nothing distinguishes one instance's
-    /// promises from another's.
     pub fn make_instance(&self, instance_name: &String) -> Agent {
         Agent::new(instance_name.clone())
             .with_provides(self.provides.clone())
             .with_wants(self.wants.clone())
     }
+}
+
+/// How many condition expansions one promise may go through before reduction
+/// gives up and passes the rest through untouched. A parameterized condition
+/// can name something longer than itself, so expansion is not guaranteed to
+/// settle on its own.
+const MAX_REDUCE_STEPS: usize = 1_000;
+
+/// One promise with its internally-met conditions replaced by their own
+/// external conditions, transitively.
+fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
+    // Conditions already dealt with. Seeding it with the promise's own name
+    // drops a self-referential condition instead of looping on it.
+    let mut seen: HashSet<String> = HashSet::from([behavior.get_name().clone()]);
+    let mut queue: Vec<Pattern> = behavior.get_condition_patterns().to_vec();
+    let mut external: BTreeSet<Pattern> = BTreeSet::new();
+    let mut steps = 0;
+
+    while let Some(condition) = queue.pop() {
+        steps += 1;
+        if steps > MAX_REDUCE_STEPS {
+            external.insert(condition);
+            external.extend(queue.drain(..));
+            break;
+        }
+        if !seen.insert(condition.source().clone()) {
+            continue;
+        }
+        match internally_met(&condition, provides) {
+            Some(inner) => queue.extend(inner),
+            None => {
+                external.insert(condition);
+            }
+        }
+    }
+
+    behavior
+        .clone()
+        .with_condition_patterns(external.into_iter().collect())
+}
+
+/// If one of `provides` already covers `condition`, what that promise depends
+/// on in turn, with the condition's own values substituted through.
+///
+/// Only ground conditions are expanded. A parameterized condition would have to
+/// be matched against a parameterized provider — two open sides, the general
+/// unification this design avoids — so it passes through as external.
+fn internally_met(condition: &Pattern, provides: &[Behavior]) -> Option<Vec<Pattern>> {
+    if !condition.is_ground() {
+        return None;
+    }
+    // Where several promises could cover it, the first declared wins.
+    for candidate in provides {
+        if let Some(bindings) = candidate.match_goal(condition.source()) {
+            return Some(
+                candidate
+                    .get_condition_patterns()
+                    .iter()
+                    .map(|c| c.substitute(&bindings))
+                    .collect(),
+            );
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -619,5 +656,72 @@ provides:
                 )])
                 .with_wants(vec![Behavior::new(String::from("w1"))])
         );
+    }
+
+    #[test]
+    fn test_reduce_leaves_parameterized_conditions() {
+        let mut a: Agent = serde_yaml::from_str(
+            "name: sa
+provides:
+  - name: outer
+    conditions:
+      - inner/{{v}}
+  - name: inner/{{v}}
+",
+        )
+        .unwrap();
+        a.reduce();
+        // `inner/{{v}}` is not ground, so it survives even though the agent
+        // looks like it provides it: expanding would need matching an open
+        // pattern against an open pattern.
+        assert_eq!(
+            a.provides,
+            vec![
+                Behavior::build("inner/{{v}}"),
+                Behavior::build("outer").with_conditions(vec![String::from("inner/{{v}}")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reduce_expands_a_ground_condition_through_a_pattern() {
+        let mut a: Agent = serde_yaml::from_str(
+            "name: sa
+provides:
+  - name: outer
+    conditions:
+      - inner/p1
+  - name: inner/{{v}}
+    conditions:
+      - external/{{v}}
+",
+        )
+        .unwrap();
+        a.reduce();
+        // The ground condition binds v = p1, and what `inner` needs in turn
+        // comes out carrying that value.
+        assert_eq!(
+            a.provides,
+            vec![
+                Behavior::build("inner/{{v}}")
+                    .with_conditions(vec![String::from("external/{{v}}")]),
+                Behavior::build("outer").with_conditions(vec![String::from("external/p1")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reduce_drops_a_self_referential_condition() {
+        let mut a: Agent = serde_yaml::from_str(
+            "name: sa
+provides:
+  - name: b1
+    conditions:
+      - b1
+",
+        )
+        .unwrap();
+        a.reduce();
+        assert_eq!(a.provides, vec![Behavior::build("b1")]);
     }
 }

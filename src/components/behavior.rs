@@ -1,26 +1,37 @@
+use crate::components::pattern::{Bindings, Pattern};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+// A promise: a name, and the conditions its keeper needs met to keep it.
+//
+// The name and each condition are `Pattern`s, so a provider can describe a
+// family of promises at once. `get_name` and `get_conditions` keep returning
+// the source text, so everything that treated a behavior name as a string
+// still does; the pattern accessors are for code that needs to match or
+// substitute.
+//
+// Deliberately not a doc comment: schemars copies those into the generated
+// JSON schema, and this type's schema is meant to stay byte-identical.
 #[derive(
     Debug, PartialEq, Eq, Deserialize, Serialize, Clone, Hash, JsonSchema, PartialOrd, Ord,
 )]
 #[serde(deny_unknown_fields)]
 pub struct Behavior {
-    name: String,
+    name: Pattern,
     #[serde(default)]
     #[serde(skip_serializing_if = "String::is_empty")]
     comment: String,
 
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    conditions: Vec<String>,
+    conditions: Vec<Pattern>,
 }
 
 impl Behavior {
     pub fn new(name: String) -> Behavior {
         Behavior {
-            name: name,
+            name: Pattern::parse_lossy(&name),
             comment: String::from(""),
             conditions: vec![],
         }
@@ -28,25 +39,32 @@ impl Behavior {
 
     pub fn new_with_conditions(name: String, conditions: Vec<String>) -> Behavior {
         Behavior {
-            name: name,
+            name: Pattern::parse_lossy(&name),
             comment: String::from(""),
-            conditions: conditions,
+            conditions: conditions.iter().map(|c| Pattern::parse_lossy(c)).collect(),
         }
     }
 
     pub fn build(name: &str) -> Behavior {
         Behavior::new(String::from(name))
     }
+
     pub fn with_conditions(mut self, conditions: Vec<String>) -> Behavior {
+        self.conditions = conditions.iter().map(|c| Pattern::parse_lossy(c)).collect();
+        self
+    }
+
+    pub fn with_condition_patterns(mut self, conditions: Vec<Pattern>) -> Behavior {
         self.conditions = conditions;
         self
     }
 
     pub fn add_condition(&mut self, c: String) {
+        let c = Pattern::parse_lossy(&c);
         if self.conditions.contains(&c) {
             return;
         }
-        if c == "" {
+        if c.source().is_empty() {
             return;
         }
         if c == self.name {
@@ -55,24 +73,61 @@ impl Behavior {
         self.conditions.push(c)
     }
 
+    /// The name as written.
     pub fn get_name(&self) -> &String {
+        self.name.source()
+    }
+
+    pub fn get_name_pattern(&self) -> &Pattern {
         &self.name
     }
 
+    /// The conditions as written.
     pub fn get_conditions(&self) -> Vec<String> {
-        self.conditions.clone()
+        self.conditions.iter().map(|c| c.source().clone()).collect()
+    }
+
+    pub fn get_condition_patterns(&self) -> &[Pattern] {
+        &self.conditions
     }
 
     pub fn is_unconditional(&self) -> bool {
         self.conditions.len() == 0
     }
 
+    /// This promise names exactly one behavior, and so do all its conditions.
+    pub fn is_ground(&self) -> bool {
+        self.name.is_ground() && self.conditions.iter().all(|c| c.is_ground())
+    }
+
+    /// Bind this promise's variables from a concrete goal, if it can keep it.
+    pub fn match_goal(&self, goal: &str) -> Option<Bindings> {
+        self.name.match_ground(goal)
+    }
+
+    /// A copy with `bindings` substituted through the name and the conditions.
+    pub fn instantiate(&self, bindings: &Bindings) -> Behavior {
+        Behavior {
+            name: self.name.substitute(bindings),
+            comment: self.comment.clone(),
+            conditions: self
+                .conditions
+                .iter()
+                .map(|c| c.substitute(bindings))
+                .collect(),
+        }
+    }
+
     pub fn has_none_of_these_conditions(&self, conditions: &HashSet<String>) -> bool {
-        !self.conditions.iter().any(|c| conditions.contains(c))
+        !self
+            .conditions
+            .iter()
+            .any(|c| conditions.contains(c.source()))
     }
 
     pub fn has_behavior(&self, behavior_name: &String) -> bool {
-        self.name == *behavior_name || self.conditions.iter().any(|x| x == behavior_name)
+        self.get_name() == behavior_name
+            || self.conditions.iter().any(|x| x.source() == behavior_name)
     }
 }
 
@@ -109,9 +164,9 @@ mod tests {
     #[test]
     fn add_condition() {
         let mut p = Behavior {
-            name: String::from("a"),
+            name: Pattern::from("a"),
             comment: String::from(""),
-            conditions: [].to_vec(),
+            conditions: vec![],
         };
         p.add_condition(String::from("c1"));
         assert!(p.conditions == ["c1"]);
@@ -131,9 +186,9 @@ mod tests {
     #[test]
     fn is_conditional() {
         let mut p = Behavior {
-            name: String::from("a"),
+            name: Pattern::from("a"),
             comment: String::from(""),
-            conditions: [].to_vec(),
+            conditions: vec![],
         };
         assert!(p.is_unconditional());
         p.add_condition(String::from("c1"));
@@ -143,9 +198,9 @@ mod tests {
     #[test]
     fn test_has_none_of_these_conditions() {
         let p = Behavior {
-            name: String::from("b1"),
+            name: Pattern::from("b1"),
             comment: String::from(""),
-            conditions: [String::from("c1"), String::from("c2")].to_vec(),
+            conditions: vec![Pattern::from("c1"), Pattern::from("c2")],
         };
         let mut conditions = HashSet::new();
         assert!(p.has_none_of_these_conditions(&conditions));

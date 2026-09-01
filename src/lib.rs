@@ -24,6 +24,12 @@ pub struct Tracker {
 // - TODO - schema validation  - ContractCarder
 // - TODO ptdiagram?
 
+/// How deep a chain of conditions may go before resolution stops descending.
+/// The cycle guard catches a goal that comes back around to itself; this
+/// catches a chain that keeps naming something new, which a parameterized
+/// condition can do indefinitely.
+const MAX_RESOLVE_DEPTH: usize = 64;
+
 impl Tracker {
     pub fn new() -> Tracker {
         Tracker {
@@ -192,53 +198,84 @@ impl Tracker {
     // - satisfied conditions will result in an Offer
     // - unsatisfied conditions will result in an Resolution
     pub fn resolve(&self, behavior_name: &str) -> Resolution {
-        let mut r = Resolution::new(behavior_name);
-        let mut agent_names: Vec<String> = vec![];
-        for (a, _) in &self.working_agents {
-            if agent_names.contains(a) {
-                continue;
-            }
-            agent_names.push(a.clone());
+        let mut in_progress: Vec<String> = vec![];
+        let mut settled: HashMap<String, Resolution> = HashMap::new();
+        self.resolve_goal(behavior_name, &mut in_progress, &mut settled)
+            .0
+    }
+
+    /// Resolve one concrete goal.
+    ///
+    /// The second return value says whether the answer stands on its own. It is
+    /// false when the subtree was cut short by the cycle guard or the depth cap,
+    /// because such an answer depends on the path it was reached by and must not
+    /// be reused for the same goal elsewhere.
+    fn resolve_goal(
+        &self,
+        goal: &str,
+        in_progress: &mut Vec<String>,
+        settled: &mut HashMap<String, Resolution>,
+    ) -> (Resolution, bool) {
+        // A promise that depends on itself, however far around, keeps nothing.
+        if in_progress.iter().any(|g| g == goal) {
+            return (Resolution::new(goal), false);
         }
+        if in_progress.len() >= MAX_RESOLVE_DEPTH {
+            return (Resolution::new(goal), false);
+        }
+        if let Some(known) = settled.get(goal) {
+            return (known.clone(), true);
+        }
+
+        in_progress.push(goal.to_string());
+        let mut r = Resolution::new(goal);
+        let mut self_contained = true;
+
+        let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
         agent_names.sort();
         for agent_name in agent_names {
-            let variants = match self.working_agents.get(&agent_name) {
-                Some(variants) => variants,
-                None => continue,
+            let Some(variants) = self.working_agents.get(agent_name) else {
+                continue;
             };
-            // for (agent_name, variants) in &self.working_agents {
             for variant_agent in variants {
-                if let Some(behaviors) = variant_agent.get_provides(behavior_name) {
-                    for b in behaviors {
-                        // if unconditional, add this as a satisfied Offer
-                        if b.is_unconditional() {
-                            r = r.add_satisfying_offer(Offer::new(&agent_name));
-                            continue;
-                        }
-                        // resolve conditions
-                        let resolved_conditions = b
-                            .get_conditions()
-                            .iter()
-                            .map(|c| self.resolve(c))
-                            .collect::<Vec<Resolution>>();
-                        // if all conditions are satisfied, add this as a satisfied Offer
-                        if resolved_conditions.iter().all(|x| x.is_satisfied()) {
-                            r = r.add_satisfying_offer(Offer::new_conditional(
-                                &agent_name,
-                                resolved_conditions,
-                            ));
-                        // otherwise, add this as an unsatisfied Offer
-                        } else {
-                            r = r.add_unsatisfying_offer(Offer::new_conditional(
-                                &agent_name,
-                                resolved_conditions,
-                            ));
-                        }
+                for (behavior, bindings) in variant_agent.get_matching_provides(goal) {
+                    // if unconditional, add this as a satisfied Offer
+                    if behavior.is_unconditional() {
+                        r = r.add_satisfying_offer(Offer::new(agent_name));
+                        continue;
+                    }
+                    // resolve conditions, with whatever the goal bound
+                    // substituted into them
+                    let mut resolved_conditions = Vec::new();
+                    for condition in behavior.get_condition_patterns() {
+                        let sub_goal = condition.substitute(&bindings);
+                        let (resolved, stands_alone) =
+                            self.resolve_goal(sub_goal.source(), in_progress, settled);
+                        self_contained &= stands_alone;
+                        resolved_conditions.push(resolved);
+                    }
+                    // if all conditions are satisfied, add this as a satisfied Offer
+                    if resolved_conditions.iter().all(|x| x.is_satisfied()) {
+                        r = r.add_satisfying_offer(Offer::new_conditional(
+                            agent_name,
+                            resolved_conditions,
+                        ));
+                    // otherwise, add this as an unsatisfied Offer
+                    } else {
+                        r = r.add_unsatisfying_offer(Offer::new_conditional(
+                            agent_name,
+                            resolved_conditions,
+                        ));
                     }
                 }
             }
         }
-        r
+
+        in_progress.pop();
+        if self_contained {
+            settled.insert(goal.to_string(), r.clone());
+        }
+        (r, self_contained)
     }
 }
 
@@ -652,5 +689,131 @@ mod tests {
                     vec![Resolution::new("b4").add_satisfying_offer(Offer::new("a4"))],
                 )),
         )
+    }
+
+    #[test]
+    fn test_resolve_parameterized_promise() {
+        let mut t = Tracker::new();
+        // One host, promising execution to whoever asks, on terms that name
+        // the asker.
+        t.add_agent(Agent::build("host").with_provides(vec![
+            Behavior::build("process-execution/{{process}}")
+                .with_conditions(vec![String::from("binary-installed/{{process}}")]),
+        ]));
+        t.add_agent(Agent::build("p1").with_wants(vec![Behavior::build("process-execution/p1")]));
+        t.add_agent(Agent::build("p2").with_wants(vec![Behavior::build("process-execution/p2")]));
+        t.add_agent(
+            Agent::build("packaging").with_provides(vec![Behavior::build("binary-installed/p1")]),
+        );
+
+        // p1's binary is installed, so the host can keep its promise to p1
+        assert_eq!(
+            t.resolve("process-execution/p1"),
+            Resolution::new("process-execution/p1").add_satisfying_offer(Offer::new_conditional(
+                "host",
+                vec![Resolution::new("binary-installed/p1")
+                    .add_satisfying_offer(Offer::new("packaging"))],
+            ))
+        );
+        // p2's is not — and that is now sayable separately, which is the whole
+        // point of the exercise
+        assert_eq!(
+            t.resolve("process-execution/p2"),
+            Resolution::new("process-execution/p2").add_unsatisfying_offer(Offer::new_conditional(
+                "host",
+                vec![Resolution::new("binary-installed/p2")]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_pattern_and_ground_provider_both_offer() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("generic").with_provides(vec![Behavior::build("run/{{p}}")]));
+        t.add_agent(Agent::build("special").with_provides(vec![Behavior::build("run/x")]));
+
+        // No specificity ordering: a wanter sees everyone who can help.
+        assert_eq!(
+            t.resolve("run/x"),
+            Resolution::new("run/x")
+                .add_satisfying_offer(Offer::new("generic"))
+                .add_satisfying_offer(Offer::new("special"))
+        );
+        // The ground provider only answers its own name.
+        assert_eq!(
+            t.resolve("run/y"),
+            Resolution::new("run/y").add_satisfying_offer(Offer::new("generic"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_terminates_on_a_cycle() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("b").with_provides(vec![
+            Behavior::build("b2").with_conditions(vec![String::from("b1")]),
+        ]));
+
+        // Coming back around to a goal already being resolved yields nothing,
+        // so neither promise can be kept and the walk ends.
+        assert_eq!(
+            t.resolve("b1"),
+            Resolution::new("b1").add_unsatisfying_offer(Offer::new_conditional(
+                "a",
+                vec![
+                    Resolution::new("b2").add_unsatisfying_offer(Offer::new_conditional(
+                        "b",
+                        vec![Resolution::new("b1")],
+                    ))
+                ],
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_terminates_on_an_ever_growing_goal() {
+        let mut t = Tracker::new();
+        // `{{x}}` can be kept only if `{{x}}x` can, which names something one
+        // character longer every time. The goal never repeats, so the cycle
+        // guard cannot help and the depth cap has to.
+        t.add_agent(Agent::build("grower").with_provides(vec![
+            Behavior::build("{{x}}").with_conditions(vec![String::from("{{x}}x")]),
+        ]));
+
+        let r = t.resolve("a");
+        assert!(!r.is_satisfied());
+    }
+
+    #[test]
+    fn test_resolve_reuses_a_settled_goal() {
+        let mut t = Tracker::new();
+        // `shared` is reached through both conditions of `top`; the answer is
+        // the same either way.
+        t.add_agent(Agent::build("t").with_provides(vec![
+            Behavior::build("top").with_conditions(vec![String::from("l"), String::from("r")]),
+        ]));
+        t.add_agent(Agent::build("l").with_provides(vec![
+            Behavior::build("l").with_conditions(vec![String::from("shared")]),
+        ]));
+        t.add_agent(Agent::build("r").with_provides(vec![
+            Behavior::build("r").with_conditions(vec![String::from("shared")]),
+        ]));
+        t.add_agent(Agent::build("s").with_provides(vec![Behavior::build("shared")]));
+
+        let shared = Resolution::new("shared").add_satisfying_offer(Offer::new("s"));
+        assert_eq!(
+            t.resolve("top"),
+            Resolution::new("top").add_satisfying_offer(Offer::new_conditional(
+                "t",
+                vec![
+                    Resolution::new("l")
+                        .add_satisfying_offer(Offer::new_conditional("l", vec![shared.clone()])),
+                    Resolution::new("r")
+                        .add_satisfying_offer(Offer::new_conditional("r", vec![shared])),
+                ],
+            ))
+        );
     }
 }
