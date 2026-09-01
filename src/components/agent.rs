@@ -309,9 +309,10 @@ const MAX_REDUCE_STEPS: usize = 1_000;
 /// One promise with its internally-met conditions replaced by their own
 /// external conditions, transitively.
 fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
-    // Conditions already dealt with. Seeding it with the promise's own name
-    // drops a self-referential condition instead of looping on it.
-    let mut seen: HashSet<String> = HashSet::from([behavior.get_name().clone()]);
+    let own = behavior.get_name().clone();
+    // Conditions already dealt with, so that a chain reconverging on one is
+    // expanded once rather than once per path into it.
+    let mut seen: HashSet<String> = HashSet::new();
     let mut queue: Vec<Pattern> = behavior.get_condition_patterns().to_vec();
     let mut external: BTreeSet<Pattern> = BTreeSet::new();
     let mut steps = 0;
@@ -322,6 +323,15 @@ fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
             external.insert(condition);
             external.extend(queue.drain(..));
             break;
+        }
+        // A condition that comes back around to the promise carrying it is not
+        // met from inside — it is what makes the promise unkeepable. Keeping it
+        // is what leaves the loop visible to resolution; dropping it would
+        // reduce a circular promise to an unconditional one, and the collective
+        // holding the loop would report the behavior as satisfied.
+        if condition.source() == &own {
+            external.insert(condition);
+            continue;
         }
         if !seen.insert(condition.source().clone()) {
             continue;
@@ -779,7 +789,10 @@ provides:
     }
 
     #[test]
-    fn test_reduce_drops_a_self_referential_condition() {
+    fn test_reduce_keeps_a_self_referential_condition() {
+        // b1 needing b1 is a promise that cannot be kept. Reduction has to
+        // leave the condition standing: dropping it would say the opposite,
+        // that b1 is promised unconditionally.
         let mut a: Agent = serde_yaml::from_str(
             "name: sa
 provides:
@@ -790,6 +803,66 @@ provides:
         )
         .unwrap();
         a.reduce();
-        assert_eq!(a.provides, vec![Behavior::build("b1")]);
+        assert_eq!(
+            a.provides,
+            vec![Behavior::build("b1").with_conditions(vec![String::from("b1")])]
+        );
+    }
+
+    #[test]
+    fn test_reduce_keeps_a_loop_that_closes_through_another_promise() {
+        // The shape a collective folds two agents into: b1 needs b2, b2 needs
+        // b1. Expanding b1's condition arrives back at b1, so what is left is
+        // b1 conditioned on itself rather than b1 promised outright.
+        let mut a: Agent = serde_yaml::from_str(
+            "name: sa
+provides:
+  - name: b1
+    conditions:
+      - b2
+  - name: b2
+    conditions:
+      - b1
+",
+        )
+        .unwrap();
+        a.reduce();
+        assert_eq!(
+            a.provides,
+            vec![
+                Behavior::build("b1").with_conditions(vec![String::from("b1")]),
+                Behavior::build("b2").with_conditions(vec![String::from("b2")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reduce_still_settles_a_chain_that_reconverges() {
+        // Two conditions meeting at the same inner promise is not a loop; the
+        // shared one is expanded once and its own external condition kept.
+        let mut a: Agent = serde_yaml::from_str(
+            "name: sa
+provides:
+  - name: b1
+    conditions:
+      - c1
+      - c2
+  - name: c1
+    conditions:
+      - d
+  - name: c2
+    conditions:
+      - d
+  - name: d
+    conditions:
+      - outside
+",
+        )
+        .unwrap();
+        a.reduce();
+        assert_eq!(
+            a.provides[0],
+            Behavior::build("b1").with_conditions(vec![String::from("outside")])
+        );
     }
 }

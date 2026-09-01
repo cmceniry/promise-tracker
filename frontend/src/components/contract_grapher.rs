@@ -12,6 +12,7 @@ use crate::models::Contract;
 // Import real components
 use super::contract_graph::ContractGraph;
 use super::contract_text::ContractText;
+use super::cycle_banner::CycleBanner;
 use super::display_options::DisplayOptions;
 use super::promise_graph_view::PromiseGraphView;
 use super::simulation_controls::SimulationControls;
@@ -323,6 +324,7 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
+                                            <CycleBanner tracker=tracker_signal />
                                             <PromiseGraphView
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
@@ -417,6 +419,7 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
+                                            <CycleBanner tracker=tracker_signal />
 
                                             // Inner tabs for Text View / Sequence Diagram
                                             <ul class="nav nav-tabs mb-2">

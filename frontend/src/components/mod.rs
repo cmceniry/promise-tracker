@@ -5,6 +5,7 @@ mod contract_edit_modal;
 mod contract_graph;
 mod contract_grapher;
 mod contract_text;
+mod cycle_banner;
 mod display_options;
 mod promise_graph_view;
 mod promise_network_graph;
@@ -22,6 +23,8 @@ pub use contract_grapher::ContractGrapher;
 pub(crate) use contract_graph::ContractGraph;
 #[allow(unused_imports)]
 pub(crate) use contract_text::ContractText;
+#[allow(unused_imports)]
+pub(crate) use cycle_banner::CycleBanner;
 #[allow(unused_imports)]
 pub(crate) use display_options::DisplayOptions;
 #[allow(unused_imports)]

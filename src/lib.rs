@@ -8,6 +8,7 @@ use components::BaseKind;
 use components::Instance;
 use components::Item;
 use components::SuperAgent;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -244,6 +245,85 @@ impl Tracker {
         ret
     }
 
+    /// Collectives that contain one another, as the loop of names that comes
+    /// back around to itself.
+    ///
+    /// A collective folded into another is a template: it describes something
+    /// rather than being it, so it does not stand as a working agent of its
+    /// own. When two contain each other, each makes a template of the other and
+    /// neither is left standing — nor is anything they hold. The contract
+    /// parses, every document loads, and the agents simply are not there.
+    ///
+    /// Rotated and deduplicated the way [`Tracker::dependency_cycles`] is, so
+    /// `["sa1", "sa2"]` is sa1 containing sa2 containing sa1. A collective that
+    /// lists itself comes back as a loop of one.
+    pub fn membership_cycles(&self) -> Vec<Vec<String>> {
+        let mut names: Vec<String> = self
+            .available_superagents
+            .iter()
+            .map(|sa| sa.get_name().clone())
+            .collect();
+        names.sort();
+        names.dedup();
+
+        let mut found: BTreeSet<Vec<String>> = BTreeSet::new();
+        let mut clean: HashSet<String> = HashSet::new();
+        for name in &names {
+            let mut visiting: Vec<String> = vec![];
+            self.walk_membership(name, &mut visiting, &mut clean, &mut found);
+        }
+        found.into_iter().collect()
+    }
+
+    /// The descent [`Tracker::flatten_collective`] makes over `agents:` lists,
+    /// keeping the loops rather than the promises.
+    ///
+    /// Returns whether the collective's members were walked in full. The
+    /// membership graph is finite — its nodes are the collectives declared —
+    /// so the guard on the path down is the only bound needed.
+    fn walk_membership(
+        &self,
+        name: &str,
+        visiting: &mut Vec<String>,
+        clean: &mut HashSet<String>,
+        found: &mut BTreeSet<Vec<String>>,
+    ) -> bool {
+        if let Some(at) = visiting.iter().position(|n| n == name) {
+            found.insert(rotate_to_first(&visiting[at..]));
+            return false;
+        }
+        if clean.contains(name) {
+            return true;
+        }
+
+        let members: Vec<String> = self
+            .available_superagents
+            .iter()
+            .filter(|sa| sa.get_name() == name)
+            .flat_map(|sa| sa.get_agent_names())
+            .collect();
+
+        visiting.push(name.to_string());
+        let mut complete = true;
+        for member in members {
+            // Only a member that is itself a collective is an edge here; a
+            // plain agent is where the nesting ends.
+            if self
+                .available_superagents
+                .iter()
+                .any(|sa| sa.get_name() == &member)
+            {
+                complete &= self.walk_membership(&member, visiting, clean, found);
+            }
+        }
+        visiting.pop();
+
+        if complete {
+            clean.insert(name.to_string());
+        }
+        complete
+    }
+
     /// Instances whose `base` names nothing loaded here, as
     /// `(instance, base)` pairs.
     ///
@@ -394,6 +474,86 @@ impl Tracker {
             .0
     }
 
+    /// Every circular dependency the contract holds, as the loop of goals that
+    /// comes back around to itself.
+    ///
+    /// [`Tracker::resolve`] keeps nothing from a promise that depends on
+    /// itself: the guard returns an empty resolution, which reads exactly like
+    /// nobody having promised the goal at all. That is the right answer — a
+    /// circular promise keeps nothing — but it is not the whole story, and this
+    /// is what tells the two apart for anything that wants to say so.
+    ///
+    /// Each loop is listed once, rotated to start at its first name in sort
+    /// order so that the same loop reached from two different goals is
+    /// recognized as one. The loop closes back on its first entry: `["b1",
+    /// "b2"]` is b1 depending on b2 depending on b1.
+    pub fn dependency_cycles(&self) -> Vec<Vec<String>> {
+        let mut roots: Vec<String> = self.get_working_behaviors().into_iter().collect();
+        roots.sort();
+
+        let mut found: BTreeSet<Vec<String>> = BTreeSet::new();
+        // Goals whose dependencies have been walked all the way down without
+        // being cut short, and so need not be walked again from another root.
+        let mut clean: HashSet<String> = HashSet::new();
+        for root in &roots {
+            let mut in_progress: Vec<String> = vec![];
+            self.walk_for_cycles(root, &mut in_progress, &mut clean, &mut found);
+        }
+        found.into_iter().collect()
+    }
+
+    /// The same descent [`Tracker::resolve_goal`] makes, keeping the loops
+    /// rather than the offers.
+    ///
+    /// Returns whether the goal's dependencies were walked in full. A goal that
+    /// was cut short — by the loop it sits on, or by the depth cap — is not
+    /// recorded as clean, because what it reached depends on the path it was
+    /// reached by.
+    fn walk_for_cycles(
+        &self,
+        goal: &str,
+        in_progress: &mut Vec<String>,
+        clean: &mut HashSet<String>,
+        found: &mut BTreeSet<Vec<String>>,
+    ) -> bool {
+        if let Some(at) = in_progress.iter().position(|g| g == goal) {
+            found.insert(rotate_to_first(&in_progress[at..]));
+            return false;
+        }
+        if in_progress.len() >= MAX_RESOLVE_DEPTH {
+            return false;
+        }
+        if clean.contains(goal) {
+            return true;
+        }
+
+        in_progress.push(goal.to_string());
+        let mut complete = true;
+
+        let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
+        agent_names.sort();
+        for agent_name in agent_names {
+            let Some(variants) = self.working_agents.get(agent_name) else {
+                continue;
+            };
+            for variant_agent in variants {
+                for (behavior, bindings) in variant_agent.get_matching_provides(goal) {
+                    for condition in behavior.get_condition_patterns() {
+                        let sub_goal = condition.substitute(&bindings);
+                        complete &=
+                            self.walk_for_cycles(sub_goal.source(), in_progress, clean, found);
+                    }
+                }
+            }
+        }
+
+        in_progress.pop();
+        if complete {
+            clean.insert(goal.to_string());
+        }
+        complete
+    }
+
     /// Resolve one concrete goal.
     ///
     /// The second return value says whether the answer stands on its own. It is
@@ -467,6 +627,22 @@ impl Tracker {
         }
         (r, self_contained)
     }
+}
+
+/// One loop rotated to begin at its first name in sort order, so the same loop
+/// entered at two different points comes out as one answer.
+fn rotate_to_first(loop_goals: &[String]) -> Vec<String> {
+    let start = loop_goals
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.cmp(b))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    loop_goals[start..]
+        .iter()
+        .chain(loop_goals[..start].iter())
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -1111,6 +1287,265 @@ mod tests {
                     ))
                 ],
             ))
+        );
+    }
+
+    #[test]
+    fn test_membership_cycles_reports_two_collectives_containing_each_other() {
+        let mut t = Tracker::new();
+        t.add_superagent(SuperAgent::new(String::from("sa1")).with_agent("sa2"));
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("sa1"));
+
+        assert_eq!(
+            t.membership_cycles(),
+            vec![vec!["sa1".to_string(), "sa2".to_string()]]
+        );
+        // and the reason it is worth saying: neither is left standing
+        assert!(t.get_working_agent_names().is_empty());
+    }
+
+    #[test]
+    fn test_membership_cycles_reports_a_collective_listing_itself() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("b1")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("sa1"),
+        );
+
+        assert_eq!(t.membership_cycles(), vec![vec!["sa1".to_string()]]);
+        // a1 is folded in, and sa1 makes a template of itself, so b1 is gone
+        assert!(t.get_working_agent_names().is_empty());
+        assert_eq!(t.resolve("b1"), Resolution::new("b1"));
+    }
+
+    #[test]
+    fn test_membership_cycles_is_empty_for_plain_nesting() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        t.add_superagent(SuperAgent::new(String::from("sa1")).with_agent("a1"));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("sa1")
+                .with_agent("a2"),
+        );
+
+        assert!(t.membership_cycles().is_empty());
+        // Two collectives naming the same member is sharing, not a loop.
+        t.add_superagent(SuperAgent::new(String::from("sa3")).with_agent("sa1"));
+        assert!(t.membership_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_membership_cycles_reports_a_longer_ring_once() {
+        let mut t = Tracker::new();
+        t.add_superagent(SuperAgent::new(String::from("sa1")).with_agent("sa2"));
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("sa3"));
+        t.add_superagent(SuperAgent::new(String::from("sa3")).with_agent("sa1"));
+
+        // Reachable from all three names; reported as one loop.
+        assert_eq!(
+            t.membership_cycles(),
+            vec![vec![
+                "sa1".to_string(),
+                "sa2".to_string(),
+                "sa3".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn test_membership_cycles_from_a_written_contract() {
+        let mut t = Tracker::new();
+        for document in serde_yaml::Deserializer::from_str(
+            "kind: SuperAgent
+name: sa1
+agents:
+  - sa2
+---
+kind: SuperAgent
+name: sa2
+agents:
+  - sa1
+",
+        ) {
+            t.add_item(<Item as serde::Deserialize>::deserialize(document).unwrap());
+        }
+
+        assert_eq!(
+            t.membership_cycles(),
+            vec![vec!["sa1".to_string(), "sa2".to_string()]]
+        );
+    }
+
+    #[test]
+    fn test_dependency_cycles_reports_a_two_agent_loop() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("b").with_provides(vec![
+            Behavior::build("b2").with_conditions(vec![String::from("b1")]),
+        ]));
+
+        // The same loop is reachable from either goal; it is reported once.
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["b1".to_string(), "b2".to_string()]]
+        );
+    }
+
+    #[test]
+    fn test_dependency_cycles_from_a_written_contract() {
+        // The path the editor takes: YAML documents in, cycles out.
+        let mut t = Tracker::new();
+        for document in serde_yaml::Deserializer::from_str(
+            "kind: Agent
+name: w1
+wants:
+  - name: web
+---
+kind: Agent
+name: app
+provides:
+  - name: web
+    conditions: [db]
+---
+kind: Agent
+name: db
+provides:
+  - name: db
+    conditions: [web]
+",
+        ) {
+            t.add_item(<Item as serde::Deserialize>::deserialize(document).unwrap());
+        }
+
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["db".to_string(), "web".to_string()]]
+        );
+        // and the resolution it explains: the want reads as unpromised
+        assert!(!t.resolve("web").is_satisfied());
+    }
+
+    #[test]
+    fn test_dependency_cycles_is_empty_without_one() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w1").with_wants(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("b").with_provides(vec![Behavior::build("b2")]));
+
+        assert!(t.dependency_cycles().is_empty());
+        // An unanswered goal is not a loop either, however deep the chain.
+        t.add_agent(Agent::build("c").with_provides(vec![
+            Behavior::build("b3").with_conditions(vec![String::from("nobody-promises-this")]),
+        ]));
+        assert!(t.dependency_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_dependency_cycles_reports_each_loop_once() {
+        let mut t = Tracker::new();
+        // b1 -> b2 -> b1, and a separate b3 -> b4 -> b5 -> b3
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+            Behavior::build("b2").with_conditions(vec![String::from("b1")]),
+            Behavior::build("b3").with_conditions(vec![String::from("b4")]),
+            Behavior::build("b4").with_conditions(vec![String::from("b5")]),
+            Behavior::build("b5").with_conditions(vec![String::from("b3")]),
+        ]));
+
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![
+                vec!["b1".to_string(), "b2".to_string()],
+                vec!["b3".to_string(), "b4".to_string(), "b5".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dependency_cycles_reports_a_promise_that_depends_on_itself() {
+        let mut t = Tracker::new();
+        // b2 needing itself, reached through a promise that needs b2.
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("b").with_provides(vec![
+            Behavior::build("b2").with_conditions(vec![String::from("b2")]),
+        ]));
+
+        assert_eq!(t.dependency_cycles(), vec![vec!["b2".to_string()]]);
+    }
+
+    #[test]
+    fn test_dependency_cycles_survives_being_folded_into_one_collective() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w1").with_wants(vec![Behavior::build("web")]));
+        t.add_agent(Agent::build("app").with_provides(vec![
+            Behavior::build("web").with_conditions(vec![String::from("db")]),
+        ]));
+        t.add_agent(Agent::build("dbsvc").with_provides(vec![
+            Behavior::build("db").with_conditions(vec![String::from("web")]),
+        ]));
+        t.add_superagent(
+            SuperAgent::new(String::from("stack"))
+                .with_agent("app")
+                .with_agent("dbsvc"),
+        );
+
+        // Folding the loop into one working agent is where it used to
+        // disappear: reduction dropped the condition that came back around and
+        // left the collective promising web outright. What the collective can
+        // say is that each half needs itself.
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["db".to_string()], vec!["web".to_string()]]
+        );
+        assert!(!t.resolve("web").is_satisfied());
+    }
+
+    #[test]
+    fn test_dependency_cycles_follows_a_parameterized_loop() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w1").with_wants(vec![Behavior::build("p/x")]));
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("p/{{v}}").with_conditions(vec![String::from("q/{{v}}")]),
+        ]));
+        t.add_agent(Agent::build("b").with_provides(vec![
+            Behavior::build("q/{{v}}").with_conditions(vec![String::from("p/{{v}}")]),
+        ]));
+
+        // The loop only exists once a want grounds the family, so it is named
+        // by the concrete goals the want reaches.
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["p/x".to_string(), "q/x".to_string()]]
+        );
+    }
+
+    #[test]
+    fn test_dependency_cycles_survives_a_collective() {
+        let mut t = Tracker::new();
+        // Folded into one collective, reduce() would close the loop internally;
+        // split across two, it reaches resolution.
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b2").with_conditions(vec![String::from("b1")]),
+        ]));
+        t.add_superagent(SuperAgent::new(String::from("sa1")).with_agent("a1"));
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("a2"));
+
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["b1".to_string(), "b2".to_string()]]
         );
     }
 

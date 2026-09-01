@@ -37,6 +37,18 @@ pub fn command(parameters: &Parameters) {
 
     // These need every file in play, so they wait until all of them are in: a
     // base may perfectly well live in a different document than its instance.
+    for cycle in tracker.membership_cycles() {
+        problems += 1;
+        let mut ring: Vec<&str> = cycle.iter().map(|n| n.as_str()).collect();
+        if let Some(first) = cycle.first() {
+            ring.push(first);
+        }
+        eprintln!(
+            "SuperAgent/{}: collectives contain each other ({}); each makes a template of the next, so none of them stands as an agent",
+            cycle[0],
+            ring.join(" -> ")
+        );
+    }
     for (instance, base) in tracker.dangling_instance_bases() {
         problems += 1;
         eprintln!(
