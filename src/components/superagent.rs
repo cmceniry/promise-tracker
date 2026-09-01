@@ -9,8 +9,6 @@ pub struct SuperAgentInstance {
     name: String,
     #[serde(default)]
     comment: String,
-    provides_tag: String,
-    conditions_tag: String,
 
     #[serde(default)]
     provides: Vec<Behavior>,
@@ -30,14 +28,6 @@ impl SuperAgentInstance {
 
     pub fn get_wants(&self) -> &Vec<Behavior> {
         &self.wants
-    }
-
-    pub fn get_provides_tags(&self) -> &String {
-        &self.provides_tag
-    }
-
-    pub fn get_conditions_tags(&self) -> &String {
-        &self.conditions_tag
     }
 }
 
@@ -78,8 +68,6 @@ impl SuperAgent {
         mut self,
         name: &str,
         comment: &str,
-        provides_tag: &str,
-        conditions_tag: &str,
         provides: Vec<Behavior>,
         wants: Vec<Behavior>,
     ) -> SuperAgent {
@@ -89,8 +77,6 @@ impl SuperAgent {
         self.instances.push(SuperAgentInstance {
             name: name.to_string(),
             comment: comment.to_string(),
-            provides_tag: provides_tag.to_string(),
-            conditions_tag: conditions_tag.to_string(),
             provides: provides,
             wants: wants,
         });
@@ -140,8 +126,6 @@ mod tests {
             {
               "name": "i1",
               "comment": "this is a comment",
-              "providesTag": "jp",
-              "conditionsTag": "jc",
               "provides": [
                 {"name": "p1"},
                 {"name": "p2", "conditions": ["c1", "c2"]},
@@ -168,8 +152,6 @@ mod tests {
             .with_instance(
                 "i1",
                 "this is a comment",
-                "jp",
-                "jc",
                 vec![Behavior::new("p1".to_string())],
                 vec![Behavior::new("w1".to_string())],
             );
@@ -192,8 +174,6 @@ mod tests {
             vec![SuperAgentInstance {
                 name: "i1".to_string(),
                 comment: "this is a comment".to_string(),
-                provides_tag: "jp".to_string(),
-                conditions_tag: "jc".to_string(),
                 provides: vec![Behavior::build("p1")],
                 wants: vec![Behavior::build("w1")],
             }]
@@ -205,14 +185,10 @@ mod tests {
         let sai = SuperAgentInstance {
             name: "i1".to_string(),
             comment: "this is a comment".to_string(),
-            provides_tag: "jp".to_string(),
-            conditions_tag: "jc".to_string(),
             provides: vec![Behavior::build("p1")],
             wants: vec![Behavior::build("w1")],
         };
         assert_eq!(sai.get_name(), "i1");
-        assert_eq!(sai.get_provides_tags(), "jp");
-        assert_eq!(sai.get_conditions_tags(), "jc");
         assert_eq!(sai.get_provides(), &vec!(Behavior::build("p1")));
         assert_eq!(sai.get_wants(), &vec!(Behavior::build("w1")));
     }

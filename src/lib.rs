@@ -93,11 +93,7 @@ impl Tracker {
                 continue;
             }
             for i in instances.iter() {
-                let mut instance_agent = stub_agent.make_instance(
-                    i.get_name(),
-                    i.get_provides_tags(),
-                    i.get_conditions_tags(),
-                );
+                let mut instance_agent = stub_agent.make_instance(i.get_name());
                 for p in i.get_provides().iter() {
                     instance_agent.add_provide(p.clone());
                 }
@@ -505,12 +501,10 @@ mod tests {
                 .with_instance(
                     "i1",
                     "",
-                    "i1p",
-                    "i1c",
                     vec![Behavior::build("i1p1")],
                     vec![Behavior::build("i1w1")],
                 )
-                .with_instance("i2", "", "i2p", "i2c", vec![], vec![]),
+                .with_instance("i2", "", vec![], vec![]),
         );
         assert_eq!(t.working_agents.len(), 2);
         let wsa = t.working_agents.get("i1").unwrap();
@@ -520,9 +514,9 @@ mod tests {
         assert_eq!(
             combined_provides,
             vec![
-                &Behavior::build("b1 | i1p"),
-                &Behavior::build("b2 | i1p"),
-                &Behavior::build("b3 | i1p").with_conditions(vec![String::from("b4 | i1c")]),
+                &Behavior::build("b1"),
+                &Behavior::build("b2"),
+                &Behavior::build("b3").with_conditions(vec![String::from("b4")]),
                 &Behavior::build("i1p1"),
             ]
         );
@@ -533,21 +527,28 @@ mod tests {
         assert_eq!(
             combined_provides,
             vec![
-                &Behavior::build("b1 | i2p"),
-                &Behavior::build("b2 | i2p"),
-                &Behavior::build("b3 | i2p").with_conditions(vec![String::from("b4 | i2c")]),
+                &Behavior::build("b1"),
+                &Behavior::build("b2"),
+                &Behavior::build("b3").with_conditions(vec![String::from("b4")]),
             ]
         );
 
         assert_eq!(
             t.get_agent_provides("i1"),
             Some(
-                HashSet::from(["i1p1", "b1 | i1p", "b2 | i1p", "b3 | i1p"])
+                HashSet::from(["i1p1", "b1", "b2", "b3"])
                     .iter()
                     .map(|x| x.to_string())
                     .collect()
             )
         );
+
+        // Instance-specific wants land on that instance and no other.
+        assert_eq!(
+            t.get_agent_wants(String::from("i1")),
+            HashSet::from([String::from("i1w1")])
+        );
+        assert_eq!(t.get_agent_wants(String::from("i2")), HashSet::new());
     }
 
     #[test]
@@ -607,33 +608,49 @@ mod tests {
                 .with_instance(
                     "i1",
                     "",
-                    "i1p",
-                    "i1c",
                     vec![Behavior::build("i1p1")],
                     vec![Behavior::build("i1w1")],
                 )
-                .with_instance("i2", "", "i2p", "i2c", vec![], vec![]),
+                .with_instance("i2", "", vec![], vec![]),
         );
-        // fully internally resolved
+        // Instances share the collective's behavior names verbatim, so every
+        // instance offers every behavior and the offers are indistinguishable.
+        // Telling them apart is what parameterized behaviors are for; see
+        // docs/design/parameterized-behaviors.md.
+
+        // fully internally resolved, by both instances
         assert_eq!(
-            t.resolve("b1 | i1p"),
-            Resolution::new("b1 | i1p").add_satisfying_offer(Offer::new("i1"))
+            t.resolve("b1"),
+            Resolution::new("b1")
+                .add_satisfying_offer(Offer::new("i1"))
+                .add_satisfying_offer(Offer::new("i2"))
         );
         // partially internally resolved but otherwise unresolved
         assert_eq!(
-            t.resolve("b3 | i1p"),
-            Resolution::new("b3 | i1p").add_unsatisfying_offer(Offer::new_conditional(
-                "i1",
-                vec![Resolution::new("b4 | i1c")],
-            )),
+            t.resolve("b3"),
+            Resolution::new("b3")
+                .add_unsatisfying_offer(Offer::new_conditional(
+                    "i1",
+                    vec![Resolution::new("b4")],
+                ))
+                .add_unsatisfying_offer(Offer::new_conditional(
+                    "i2",
+                    vec![Resolution::new("b4")],
+                )),
         );
-        t.add_agent(Agent::build("a4").with_provides(vec![Behavior::build("b4 | i1c")]));
+        // one outside provider satisfies the same condition for both instances
+        t.add_agent(Agent::build("a4").with_provides(vec![Behavior::build("b4")]));
         assert_eq!(
-            t.resolve("b3 | i1p"),
-            Resolution::new("b3 | i1p").add_satisfying_offer(Offer::new_conditional(
-                "i1",
-                vec![Resolution::new("b4 | i1c").add_satisfying_offer(Offer::new("a4"))],
-            )),
+            t.resolve("b3"),
+            Resolution::new("b3")
+                .add_satisfying_offer(Offer::new_conditional(
+                    "i1",
+                    vec![Resolution::new("b4").add_satisfying_offer(Offer::new("a4"))],
+                ))
+                .add_satisfying_offer(Offer::new_conditional(
+                    "i2",
+                    vec![Resolution::new("b4").add_satisfying_offer(Offer::new("a4"))],
+                )),
         )
     }
 }

@@ -249,19 +249,12 @@ impl Agent {
         self.provides = reduced_provides;
     }
 
-    pub fn make_instance(
-        &self,
-        instance_name: &String,
-        provides_tags: &String,
-        conditions_tags: &String,
-    ) -> Agent {
+    /// A copy of this agent under an instance name. Instances share the
+    /// collective's behaviors verbatim; nothing distinguishes one instance's
+    /// promises from another's.
+    pub fn make_instance(&self, instance_name: &String) -> Agent {
         Agent::new(instance_name.clone())
-            .with_provides(
-                self.provides
-                    .iter()
-                    .map(|p| p.make_instance(provides_tags, conditions_tags))
-                    .collect(),
-            )
+            .with_provides(self.provides.clone())
             .with_wants(self.wants.clone())
     }
 }
@@ -586,20 +579,14 @@ provides:
                 Behavior::new(String::from("w1")),
                 Behavior::new(String::from("w2")),
             ]);
-        let result = a.make_instance(
-            &String::from("i1"),
-            &String::from("i1p"),
-            &String::from("i1c"),
-        );
+        let result = a.make_instance(&String::from("i1"));
         assert_eq!(
             result,
             Agent::new(String::from("i1"))
                 .with_provides(vec![
-                    Behavior::new(String::from("p1 | i1p")).with_conditions(vec![
-                        String::from("p1c1 | i1c"),
-                        String::from("p1c2 | i1c")
-                    ]),
-                    Behavior::new(String::from("p2 | i1p")),
+                    Behavior::new(String::from("p1"))
+                        .with_conditions(vec![String::from("p1c1"), String::from("p1c2")]),
+                    Behavior::new(String::from("p2")),
                 ])
                 .with_wants(vec![
                     Behavior::new(String::from("w1")),

@@ -74,25 +74,6 @@ impl Behavior {
     pub fn has_behavior(&self, behavior_name: &String) -> bool {
         self.name == *behavior_name || self.conditions.iter().any(|x| x == behavior_name)
     }
-
-    pub fn make_instance(&self, suffix: &str, condition_suffix: &str) -> Behavior {
-        Behavior {
-            name: if suffix == "" {
-                self.name.clone()
-            } else {
-                format!("{} | {}", self.name, suffix)
-            },
-            comment: self.comment.clone(),
-            conditions: if condition_suffix == "" {
-                self.conditions.clone()
-            } else {
-                self.conditions
-                    .iter()
-                    .map(|c| format!("{} | {}", c, condition_suffix))
-                    .collect()
-            },
-        }
-    }
 }
 
 #[cfg(test)]
@@ -173,18 +154,6 @@ mod tests {
         conditions.insert(String::from("c1"));
         assert!(!p.has_none_of_these_conditions(&conditions));
         conditions.insert(String::from("c2"));
-    }
-
-    #[test]
-    fn test_make_instance() {
-        let p = Behavior {
-            name: String::from("b1"),
-            comment: String::from(""),
-            conditions: [String::from("c1"), String::from("c2")].to_vec(),
-        };
-        let p2 = p.make_instance("suf", "csuf");
-        assert_eq!(p2.name, "b1 | suf");
-        assert_eq!(p2.conditions, ["c1 | csuf", "c2 | csuf"]);
     }
 
     // #[test]
