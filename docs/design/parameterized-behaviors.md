@@ -1,9 +1,11 @@
 # Parameterized Behaviors and Instances
 
-**Status**: Proposed
+**Status**: P0–P3 landed, P4 outstanding
 **Date**: 2026-08-31
 **Scope**: core library, CLI, API, frontend
-**Landed so far**: `providesTag` / `conditionsTag` removed from the code (§8.2)
+**Landed**: the tag removal that preceded this work (§8.2), then P0 `fb4b00f`,
+P1 `86bcd8e`, P2 `8a847ff`, P3 `42d45da`. Sections corrected against the
+implementation are marked *amended*.
 
 Two changes that turn out to be the same idea at two levels. A **behavior**
 becomes parameterized so one agent can promise the same thing to many agents on
@@ -149,16 +151,38 @@ called with a concrete goal, so:
 Compare with structured tags, where behavior identity becomes a struct and every
 place that treats a behavior name as a `String` — roughly 81 sites across 14
 files including `diagram.rs`, `network_diagram.rs`, `resolve.rs`, two CLI
-commands and three frontend components — has to change.
+commands and three frontend components — has to change. In the end the whole of
+that was avoided by one decision: `Behavior::get_name` keeps returning the
+source text as a `&String`, so every caller that treated a name as a string
+still does.
+
+*Amended.* Where this restriction is **checked** moved during implementation —
+one document cannot answer it. See §5.6.
 
 ### Restriction B — variables bind to atoms
 
 A variable binds to a flat string. It never binds to another parameterized term.
+Compound terms are a deliberate YAGNI; revisit only with a concrete use case.
 
-This keeps the system in Datalog rather than Prolog: the set of derivable goals
-is the finite set of substitutions of already-present atoms into already-present
-patterns, so resolution terminates. Without it, `b({{x}})` conditional on
-`b(f({{x}}))` diverges.
+*Amended.* **This does not by itself guarantee termination.** The first draft of
+this section argued that it kept the system in Datalog rather than Prolog: the
+derivable goals being substitutions of already-present atoms into
+already-present patterns, a finite set. Implementation showed the hole. A
+condition may name something *longer* than the promise carrying it, and string
+concatenation is term construction under another name. `{{x}}` conditional on
+`{{x}}x` derives `a`, then `ax`, then `axx`, without end — and because the goal
+never repeats, the cycle guard cannot see it.
+
+Two caps close it, and both are in the code:
+
+| Cap | What it bounds |
+|---|---|
+| `MAX_RESOLVE_DEPTH` (64) | how deep a chain of conditions may go before resolution stops descending |
+| `MAX_REDUCE_STEPS` (1000) | how many expansions one promise may go through in `reduce()` before the remainder passes through untouched |
+
+The cleaner fix is a rule that a condition may not extend the term it belongs
+to, which would restore a real finiteness argument in place of a numeric bound.
+The caps are what ships, with a test asserting an ever-growing goal terminates.
 
 ### Explicit non-goal: capacity
 
@@ -244,6 +268,10 @@ pub type Bindings = BTreeMap<String, String>;
 
 impl Pattern {
     pub fn parse(s: &str) -> Result<Pattern, PatternError>;
+    /// Parse, treating anything malformed as one literal segment, so a bad
+    /// name loads and behaves as it did before patterns existed. Validation
+    /// re-parses with `parse` and reports it there.
+    pub fn parse_lossy(s: &str) -> Pattern;
     pub fn is_ground(&self) -> bool;
     pub fn vars(&self) -> BTreeSet<&str>;
     /// Match a concrete name, leftmost-shortest, consistent repeats.
@@ -309,13 +337,19 @@ for (behavior, bindings) in variant_agent.get_matching_provides(goal) {
 **Cycle guard, now mandatory.** `resolve()` today has no visited set: two
 mutually conditional agents already recurse forever. Templating does not create
 that bug but will make it easy to hit. Carry a goal stack; re-entering an
-in-progress goal yields an unsatisfying offer marked as cyclic rather than
-recursing.
+in-progress goal stops the descent.
+
+*Amended.* That re-entry yields a resolution with **no offers at all** rather
+than an offer marked as cyclic. Marking it would mean a new field on `Offer`,
+changing its serialization and reaching the frontend — scope this phase did not
+need. A promise that depends on itself keeps nothing either way, and a test
+asserts the exact shape.
 
 **Memoize completed ground goals.** `promise_graph()` calls `resolve()` once per
 want and re-derives the same subtrees repeatedly. A per-query cache keyed on the
 ground goal string is a straight win and becomes more valuable once one pattern
-serves many goals.
+serves many goals. A goal whose subtree was cut short by either guard is *not*
+cached: that answer depends on the path it was reached by.
 
 ### 5.5 `src/lib.rs` — enumeration split
 
@@ -341,22 +375,40 @@ bindings and should gain the new method alongside it.
 
 ### 5.6 Validation
 
-A semantic pass runs after parsing, in `validate_contract`
-(`api/src/validation.rs:25`) so that the CLI `validate`, the API `PUT`, and the
-frontend edit modal all share it. Errors:
+*Amended in two ways: where the pass lives, and which checks it can make.*
+
+A semantic pass runs after parsing. It lives in the **library**, at
+`src/validate.rs`, not in `api/src/validation.rs` as first planned: the frontend
+keeps its own separate copy of `validate_contract`, so putting the rules in the
+API module would have meant maintaining them twice. The CLI `validate`, the API
+`PUT` and the editor all call the one implementation.
+
+What one document can be judged on:
 
 - malformed or unbalanced `{{ }}`
 - empty or invalid variable identifier
 - adjacent variables
 - a variable in `conditions[]` not bound by the behavior's `name` (safety rule)
-- a variable anywhere in `wants[]` (Restriction A)
-- an `Instance` whose `base` names nothing, or names ambiguously (§6)
-- an `Instance` whose bindings leave a `wants` entry non-ground (§6)
+- an `Instance` binding whose value contains `{{`, which would not round-trip
+  through the pattern's own source
 
-These are semantic, not syntactic, so they cannot ride on serde_yaml's
-line/column marks the way `Item`'s hand-written deserializer carefully preserves
-them. Each error carries the owning document's name plus the behavior name; the
-edit modal renders them in the same place it renders parse failures.
+What one document **cannot** be judged on, because the answer depends on
+documents it cannot see:
+
+| Check | Why it moved | Where it lives |
+|---|---|---|
+| a want must be ground (Restriction A) | a want may legitimately carry a variable that an instance's `bindings` fill in, and this pass cannot know whether anything instantiates the document in front of it | `Tracker::non_ground_wants()` |
+| an `Instance`'s `base` must resolve | a base may perfectly well be declared in another file | `Tracker::dangling_instance_bases()` |
+
+Both are reported by `cli validate` once every file is read, and the frontend
+can call them too since it builds one tracker over all contracts. This is a
+genuine correction: the original placement would have produced false positives
+on any contract whose base lived elsewhere.
+
+The document-level errors are semantic, not syntactic, so they cannot ride on
+serde_yaml's line/column marks the way `Item`'s hand-written deserializer
+carefully preserves them. Each carries the owning document's name plus the
+behavior name; the edit modal renders them where it renders parse failures.
 
 ## 6. Instances as a first-class kind
 
@@ -467,7 +519,8 @@ Provides may stay parameterized.
 from `add_agent` / `add_superagent` / `add_item`, all infallible and all called
 from the CLI, `wpt`, and the frontend; making it return `Result` is a bad ripple
 for what is a load-time authoring error. The instance materializes with only its
-own provides and wants, and the §5.6 validation pass reports it.
+own provides and wants, and `Tracker::dangling_instance_bases()` reports it —
+not the per-document pass, for the reason given in §5.6.
 
 **Instance names are ground in v1.** `name` is a plain string, not a pattern.
 Pattern-named instances arrive with `matrix:` in v2.
@@ -591,13 +644,17 @@ than reporting a generic syntax failure.
 
 Each phase is independently shippable and independently testable.
 
-| | Phase | Contents |
-|---|---|---|
-| **P0** | Pattern type | `pattern.rs` with parse, match, substitute, round-trip. No wiring. Property tests on match/substitute round-tripping. Shared by P1 and P3. |
-| **P1** | Resolution | `Behavior` holds patterns; `get_matching_provides`; `resolve` substitutes; cycle guard; memoization. Library only. CLI `simulate` and `check-unsatisfied` light up with no changes of their own. Every existing resolve test must pass untouched — ground patterns are the identity case. |
-| **P2** | Enumeration and validation | The `has_ground_behavior` / `get_behavior_patterns` split, the three frontend guard call sites, the semantic validation pass and its error surface in CLI `validate` and the edit modal. |
-| **P3** | `kind: Instance` | §6 in full. Independent of P0–P2 except that `bindings` needs `Pattern::substitute`; can land first if the format break is wanted early. |
-| **P4** | Offered view | `catalog.rs`, CLI flags, the `DisplayOptions` toggle, template ghost nodes, suppressed instance bases. |
+| | Phase | Contents | |
+|---|---|---|---|
+| **P0** | Pattern type | `pattern.rs` with parse, match, substitute, round-trip. No wiring. Property tests on match/substitute round-tripping. Shared by P1 and P3. | `fb4b00f` |
+| **P1** | Resolution | `Behavior` holds patterns; `get_matching_provides`; `resolve` substitutes; cycle guard; memoization. Library only. CLI `simulate` and `check-unsatisfied` light up with no changes of their own. Every existing resolve test must pass untouched — ground patterns are the identity case. | `86bcd8e` |
+| **P2** | Enumeration and validation | The `has_ground_behavior` / `get_behavior_patterns` split, the three frontend guard call sites, the semantic validation pass and its error surface in CLI `validate` and the edit modal. | `8a847ff` |
+| **P3** | `kind: Instance` | §6 in full. Independent of P0–P2 except that `bindings` needs `Pattern::substitute`; can land first if the format break is wanted early. | `42d45da` |
+| **P4** | Offered view | `catalog.rs`, CLI flags, the `DisplayOptions` toggle, template ghost nodes, suppressed instance bases. | outstanding |
+
+Each landed phase was verified twice: green in the working tree, then again in
+a clean checkout of the commit itself, so the history bisects. Test counts run
+141 (before) → 162 → 172 → 180 → 194.
 
 ## 10. Test plan
 
