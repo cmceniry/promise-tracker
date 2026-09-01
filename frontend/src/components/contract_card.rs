@@ -14,18 +14,22 @@ pub struct DiffStatus {
     pub error: Option<String>,
 }
 
-/// Extract agents and superagents from contract YAML content
+/// Extract agents, superagents and instances from contract YAML content
 ///
 /// Parses the YAML content (potentially multiple documents) and extracts
 /// entities based on their `kind` field:
 /// - "Agent" or "Component" (or no kind) -> agents
 /// - "SuperAgent" or "Collective" -> superagents
-pub fn extract_agents_and_superagents(contract_text: &str) -> (Vec<String>, Vec<String>) {
+/// - "Instance" -> instances
+pub fn extract_agents_and_superagents(
+    contract_text: &str,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut agents = Vec::new();
     let mut superagents = Vec::new();
+    let mut instances = Vec::new();
 
     if contract_text.trim().is_empty() {
-        return (agents, superagents);
+        return (agents, superagents, instances);
     }
 
     // Parse multi-document YAML
@@ -45,6 +49,9 @@ pub fn extract_agents_and_superagents(contract_text: &str) -> (Vec<String>, Vec<
                         Some("SuperAgent") | Some("Collective") => {
                             superagents.push(name.to_string());
                         }
+                        Some("Instance") => {
+                            instances.push(name.to_string());
+                        }
                         Some("Agent") | Some("Component") | None => {
                             agents.push(name.to_string());
                         }
@@ -58,7 +65,7 @@ pub fn extract_agents_and_superagents(contract_text: &str) -> (Vec<String>, Vec<
         }
     }
 
-    (agents, superagents)
+    (agents, superagents, instances)
 }
 
 /// Create a download URL for the given content
@@ -96,11 +103,11 @@ pub fn ContractCard(
     #[prop(into)] diff_status: Signal<DiffStatus>,
 ) -> impl IntoView {
     // Extract agents and superagents reactively
-    let agents_and_superagents = Memo::new(move |_| {
-        extract_agents_and_superagents(&contract_content.get())
-    });
+    let agents_and_superagents =
+        Memo::new(move |_| extract_agents_and_superagents(&contract_content.get()));
     let agents = Memo::new(move |_| agents_and_superagents.get().0);
     let superagents = Memo::new(move |_| agents_and_superagents.get().1);
+    let instances = Memo::new(move |_| agents_and_superagents.get().2);
 
     // Create download URL reactively
     let download_url = Memo::new(move |_| create_download_url(&contract_content.get()));
@@ -233,12 +240,16 @@ pub fn ContractCard(
                     }}
                 </div>
 
-                // Agents and Superagents badges
+                // Agents, Superagents and Instances badges
                 {move || {
                     let agents_list = agents.get();
                     let superagents_list = superagents.get();
+                    let instances_list = instances.get();
 
-                    if !agents_list.is_empty() || !superagents_list.is_empty() {
+                    if !agents_list.is_empty()
+                        || !superagents_list.is_empty()
+                        || !instances_list.is_empty()
+                    {
                         view! {
                             <div style="margin-bottom: 0.5rem; margin-left: 32px; font-size: 0.9em;">
                                 {if !agents_list.is_empty() {
@@ -257,11 +268,25 @@ pub fn ContractCard(
                                 }}
                                 {if !superagents_list.is_empty() {
                                     view! {
-                                        <div>
+                                        <div style="margin-bottom: 0.25rem;">
                                             <strong>"Superagents: "</strong>
                                             {superagents_list.iter().map(|superagent| {
                                                 view! {
                                                     <span class="badge bg-info me-1">{superagent.clone()}</span>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <span></span> }.into_any()
+                                }}
+                                {if !instances_list.is_empty() {
+                                    view! {
+                                        <div>
+                                            <strong>"Instances: "</strong>
+                                            {instances_list.iter().map(|instance| {
+                                                view! {
+                                                    <span class="badge bg-secondary me-1">{instance.clone()}</span>
                                                 }
                                             }).collect_view()}
                                         </div>

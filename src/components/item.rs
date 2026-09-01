@@ -1,4 +1,5 @@
 use crate::components::agent::Agent;
+use crate::components::instance::Instance;
 use crate::components::superagent::SuperAgent;
 use schemars::JsonSchema;
 use serde::de::value::{MapAccessDeserializer, StringDeserializer};
@@ -12,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub enum Item {
     Agent(Agent),
     SuperAgent(SuperAgent),
+    Instance(Instance),
 }
 
 impl Item {
@@ -19,6 +21,7 @@ impl Item {
         match self {
             Item::Agent(agent) => format!("Agent/{}", agent.get_name().clone()),
             Item::SuperAgent(superagent) => format!("SuperAgent/{}", superagent.get_name().clone()),
+            Item::Instance(instance) => format!("Instance/{}", instance.get_name().clone()),
         }
     }
 }
@@ -30,6 +33,7 @@ impl Item {
 enum Kind {
     Agent,
     SuperAgent,
+    Instance,
 }
 
 /// `Item` is deserialized by hand rather than with `#[serde(tag = "kind")]`.
@@ -54,7 +58,7 @@ impl<'de> Visitor<'de> for ItemVisitor {
     type Value = Item;
 
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("an Agent or SuperAgent mapping with a `kind` field")
+        f.write_str("an Agent, SuperAgent or Instance mapping with a `kind` field")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Item, A::Error>
@@ -82,6 +86,7 @@ impl<'de> Visitor<'de> for ItemVisitor {
         match kind {
             Kind::Agent => Agent::deserialize(rest).map(Item::Agent),
             Kind::SuperAgent => SuperAgent::deserialize(rest).map(Item::SuperAgent),
+            Kind::Instance => Instance::deserialize(rest).map(Item::Instance),
         }
     }
 }
@@ -162,6 +167,12 @@ mod tests {
     }
 
     #[test]
+    fn instance_is_a_kind() {
+        let items = parse("kind: Instance\nname: prod\nbase: SuperAgent/cluster\n").unwrap();
+        assert_eq!(items[0].get_name(), "Instance/prod");
+    }
+
+    #[test]
     fn missing_kind_is_reported() {
         let e = parse("name: a\n").expect_err("expected a parse failure");
         assert!(e.to_string().contains("missing field `kind`"), "{}", e);
@@ -179,7 +190,10 @@ mod tests {
 
     #[test]
     fn unknown_field_points_at_the_field() {
-        assert_eq!(location("kind: Agent\nname: a\nwnats:\n  - x\n"), Some((3, 1)));
+        assert_eq!(
+            location("kind: Agent\nname: a\nwnats:\n  - x\n"),
+            Some((3, 1))
+        );
     }
 
     #[test]

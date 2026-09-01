@@ -1,36 +1,11 @@
-use crate::components::behavior::Behavior;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Clone, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "camelCase")]
-pub struct SuperAgentInstance {
-    name: String,
-    #[serde(default)]
-    comment: String,
-
-    #[serde(default)]
-    provides: Vec<Behavior>,
-
-    #[serde(default)]
-    wants: Vec<Behavior>,
-}
-
-impl SuperAgentInstance {
-    pub fn get_name(&self) -> &String {
-        &self.name
-    }
-
-    pub fn get_provides(&self) -> &Vec<Behavior> {
-        &self.provides
-    }
-
-    pub fn get_wants(&self) -> &Vec<Behavior> {
-        &self.wants
-    }
-}
-
+/// A collection of Agents, flattened into one working agent.
+///
+/// Copies of a collective are `kind: Instance` documents naming it as their
+/// base; a collective that something instantiates is a template and does not
+/// stand as a working agent itself.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SuperAgent {
@@ -41,9 +16,6 @@ pub struct SuperAgent {
 
     #[serde(default)]
     agents: Vec<String>,
-
-    #[serde(default)]
-    instances: Vec<SuperAgentInstance>,
 }
 
 impl SuperAgent {
@@ -52,7 +24,6 @@ impl SuperAgent {
             name: name,
             comment: String::from(""),
             agents: vec![],
-            instances: vec![],
         }
     }
 
@@ -64,25 +35,6 @@ impl SuperAgent {
         self
     }
 
-    pub fn with_instance(
-        mut self,
-        name: &str,
-        comment: &str,
-        provides: Vec<Behavior>,
-        wants: Vec<Behavior>,
-    ) -> SuperAgent {
-        if self.instances.iter().any(|i| i.name == self.name) {
-            return self;
-        }
-        self.instances.push(SuperAgentInstance {
-            name: name.to_string(),
-            comment: comment.to_string(),
-            provides: provides,
-            wants: wants,
-        });
-        self
-    }
-
     pub fn get_name(&self) -> &String {
         &self.name
     }
@@ -90,20 +42,11 @@ impl SuperAgent {
     pub fn get_agent_names(&self) -> Vec<String> {
         self.agents.clone()
     }
-
-    pub fn get_instance_names(&self) -> Vec<String> {
-        self.instances.iter().map(|i| i.name.clone()).collect()
-    }
-
-    pub fn get_instances(&self) -> Vec<SuperAgentInstance> {
-        self.instances.clone()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::Behavior;
     use serde_json::json;
     use serde_yaml::{self};
 
@@ -113,7 +56,6 @@ mod tests {
         assert_eq!(s.name, "sa");
         let ra: Vec<String> = vec![];
         assert_eq!(s.agents, ra);
-        assert_eq!(s.instances, vec!());
     }
 
     #[test]
@@ -122,26 +64,21 @@ mod tests {
           "name": "j",
           "agents": ["a1", "a2"],
           "comment": "this is a comment",
-          "instances": [
-            {
-              "name": "i1",
-              "comment": "this is a comment",
-              "provides": [
-                {"name": "p1"},
-                {"name": "p2", "conditions": ["c1", "c2"]},
-              ],
-              "wants": [{"name": "w1"}],
-            },
-          ],
         }))
         .expect("setup fail");
         let s: SuperAgent = serde_yaml::from_str(&j).expect("Unable to parse");
         assert_eq!(s.name, "j");
         assert_eq!(s.agents, ["a1", "a2"]);
-        assert_eq!(s.instances[0].name, "i1");
-        assert_eq!(s.instances[0].comment, "this is a comment");
-        assert_eq!(s.instances[0].provides[0].get_name(), "p1");
-        assert_eq!(s.instances[0].provides[1].get_conditions(), ["c1", "c2"]);
+        assert_eq!(s.comment, "this is a comment");
+    }
+
+    #[test]
+    fn instances_are_their_own_kind_now() {
+        // Copies of a collective are `kind: Instance` documents naming it as
+        // their base, so a collective no longer nests them.
+        let e = serde_yaml::from_str::<SuperAgent>("name: sa\ninstances:\n  - name: i1\n")
+            .expect_err("expected a parse failure");
+        assert!(e.to_string().contains("unknown field `instances`"), "{}", e);
     }
 
     #[test]
@@ -149,47 +86,15 @@ mod tests {
         let sa = SuperAgent::new("sa".to_string())
             .with_agent("a1")
             .with_agent("a2")
-            .with_instance(
-                "i1",
-                "this is a comment",
-                vec![Behavior::new("p1".to_string())],
-                vec![Behavior::new("w1".to_string())],
-            );
-        // construction check
+            .with_agent("a1");
         assert_eq!(sa.name, "sa");
+        // construction check, and a member is only listed once
         assert_eq!(sa.agents, vec!(String::from("a1"), String::from("a2")));
-        assert_eq!(sa.instances[0].name, "i1");
-        assert_eq!(
-            sa.instances[0].provides,
-            vec!(Behavior::new("p1".to_string()))
-        );
         // getters
+        assert_eq!(sa.get_name(), "sa");
         assert_eq!(
             sa.get_agent_names(),
             vec!(String::from("a1"), String::from("a2"))
         );
-        assert_eq!(sa.get_instance_names(), vec!(String::from("i1")));
-        assert_eq!(
-            sa.get_instances(),
-            vec![SuperAgentInstance {
-                name: "i1".to_string(),
-                comment: "this is a comment".to_string(),
-                provides: vec![Behavior::build("p1")],
-                wants: vec![Behavior::build("w1")],
-            }]
-        );
-    }
-
-    #[test]
-    fn test_superagentinstance() {
-        let sai = SuperAgentInstance {
-            name: "i1".to_string(),
-            comment: "this is a comment".to_string(),
-            provides: vec![Behavior::build("p1")],
-            wants: vec![Behavior::build("w1")],
-        };
-        assert_eq!(sai.get_name(), "i1");
-        assert_eq!(sai.get_provides(), &vec!(Behavior::build("p1")));
-        assert_eq!(sai.get_wants(), &vec!(Behavior::build("w1")));
     }
 }

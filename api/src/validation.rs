@@ -21,7 +21,7 @@ impl std::fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-/// Validate a contract (multidoc YAML) containing only Agents and SuperAgents
+/// Validate a contract (multidoc YAML) containing only Agents, SuperAgents and Instances
 /// Returns the parsed Items if valid
 pub fn validate_contract(content: &str) -> Result<Vec<Item>, ValidationError> {
     let mut items: Vec<Item> = vec![];
@@ -30,9 +30,9 @@ pub fn validate_contract(content: &str) -> Result<Vec<Item>, ValidationError> {
     for document in serde_yaml::Deserializer::from_str(content) {
         match Item::deserialize(document) {
             Ok(item) => {
-                // Ensure it's either Agent or SuperAgent
+                // Ensure it's a kind the tracker knows
                 match &item {
-                    Item::Agent(_) | Item::SuperAgent(_) => {
+                    Item::Agent(_) | Item::SuperAgent(_) | Item::Instance(_) => {
                         items.push(item);
                     }
                 }
@@ -45,7 +45,7 @@ pub fn validate_contract(content: &str) -> Result<Vec<Item>, ValidationError> {
 
     if items.is_empty() {
         return Err(ValidationError::InvalidContent(
-            "Contract must contain at least one Agent or SuperAgent".to_string(),
+            "Contract must contain at least one Agent, SuperAgent or Instance".to_string(),
         ));
     }
 

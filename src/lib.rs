@@ -4,6 +4,8 @@ pub mod network_diagram;
 pub mod promise_graph;
 
 use components::Agent;
+use components::BaseKind;
+use components::Instance;
 use components::Item;
 use components::SuperAgent;
 use std::collections::HashMap;
@@ -18,6 +20,7 @@ use resolve::Resolution;
 pub struct Tracker {
     available_agents: Vec<Agent>,
     available_superagents: Vec<SuperAgent>,
+    available_instances: Vec<Instance>,
     working_agents: HashMap<String, Vec<Agent>>,
 }
 
@@ -36,6 +39,7 @@ impl Tracker {
         Tracker {
             available_agents: vec![],
             available_superagents: vec![],
+            available_instances: vec![],
             working_agents: HashMap::new(),
         }
     }
@@ -64,22 +68,41 @@ impl Tracker {
         self.rebuild();
     }
 
+    pub fn add_instance(&mut self, i: Instance) {
+        for existing in &self.available_instances {
+            if existing == &i {
+                return;
+            }
+        }
+        let _ = &self.available_instances.push(i.clone());
+        self.rebuild();
+    }
+
     pub fn add_item(&mut self, i: Item) {
         match i {
             Item::Agent(a) => self.add_agent(a),
             Item::SuperAgent(sa) => self.add_superagent(sa),
+            Item::Instance(i) => self.add_instance(i),
         }
     }
 
     pub fn rebuild(&mut self) {
-        let mut new_working_agents: HashMap<String, Vec<Agent>> = HashMap::new();
-        let mut all_contained_agent_names = HashSet::new();
+        // An agent folded into a collective, and anything an instance is built
+        // from, are templates: they describe something rather than being it, so
+        // they do not stand as working agents of their own.
+        let mut templates: HashSet<String> = HashSet::new();
+        for sa in &self.available_superagents {
+            templates.extend(sa.get_agent_names());
+        }
+        for instance in &self.available_instances {
+            templates.insert(instance.get_base().name().clone());
+        }
+
+        // Collectives first, flattened: an instance built on one needs it
+        // whole before it can copy it.
+        let mut collectives: HashMap<String, Agent> = HashMap::new();
         for sa in &self.available_superagents {
             let contained_agents_names = sa.get_agent_names();
-            for contained_agent_name in contained_agents_names.iter() {
-                all_contained_agent_names.insert(contained_agent_name.clone());
-            }
-            // build out a stub agent that is a combination of all of the contained agents
             let mut stub_agent = Agent::new(sa.get_name().clone());
             self.available_agents
                 .iter()
@@ -89,32 +112,35 @@ impl Tracker {
                 });
             // reduce its behaviors to those that are not internally handled
             stub_agent.reduce();
+            collectives
+                .entry(stub_agent.get_name().clone())
+                .or_insert_with(|| Agent::new(sa.get_name().clone()))
+                .merge(&stub_agent);
+        }
 
-            // if there are instances of this sa, use those; otherwise use itself
-            let instances = sa.get_instances();
-            if instances.len() == 0 {
-                let e = new_working_agents
-                    .entry(stub_agent.get_name().clone())
-                    .or_insert(vec![stub_agent.clone()]);
-                e[0].merge(&stub_agent);
+        let mut new_working_agents: HashMap<String, Vec<Agent>> = HashMap::new();
+
+        for (name, collective) in &collectives {
+            if templates.contains(name) {
                 continue;
             }
-            for i in instances.iter() {
-                let mut instance_agent = stub_agent.make_instance(i.get_name());
-                for p in i.get_provides().iter() {
-                    instance_agent.add_provide(p.clone());
-                }
-                for w in i.get_wants().iter() {
-                    instance_agent.add_want(w.clone());
-                }
-                let e = new_working_agents
-                    .entry(instance_agent.get_name().clone())
-                    .or_insert(vec![instance_agent.clone()]);
-                e[0].merge(&instance_agent);
-            }
+            let e = new_working_agents
+                .entry(name.clone())
+                .or_insert(vec![collective.clone()]);
+            e[0].merge(collective);
         }
+
+        for instance in &self.available_instances {
+            let base = self.find_base(instance);
+            let instance_agent = instance.materialize(&base);
+            let e = new_working_agents
+                .entry(instance_agent.get_name().clone())
+                .or_insert(vec![instance_agent.clone()]);
+            e[0].merge(&instance_agent);
+        }
+
         for a in &self.available_agents {
-            if all_contained_agent_names.contains(a.get_name()) {
+            if templates.contains(a.get_name()) {
                 continue;
             }
             let e = new_working_agents
@@ -122,7 +148,98 @@ impl Tracker {
                 .or_insert(vec![a.clone()]);
             e[0].merge(&a);
         }
+
         self.working_agents = new_working_agents;
+    }
+
+    /// What an instance is built from.
+    ///
+    /// A base that names nothing yields an empty agent, so the instance still
+    /// carries whatever it declares itself and the rest of the contract keeps
+    /// loading; [`Tracker::dangling_instance_bases`] is what reports it.
+    fn find_base(&self, instance: &Instance) -> Agent {
+        let base = instance.get_base();
+        let name = base.name();
+        let collective = || {
+            self.available_superagents
+                .iter()
+                .find(|sa| sa.get_name() == name)
+                .map(|sa| {
+                    let contained = sa.get_agent_names();
+                    let mut stub = Agent::new(name.clone());
+                    self.available_agents
+                        .iter()
+                        .filter(|a| contained.contains(a.get_name()))
+                        .for_each(|a| stub.merge(a));
+                    stub.reduce();
+                    stub
+                })
+        };
+        let plain = || {
+            self.available_agents
+                .iter()
+                .find(|a| a.get_name() == name)
+                .cloned()
+        };
+        match base.kind() {
+            Some(BaseKind::SuperAgent) => collective(),
+            Some(BaseKind::Agent) => plain(),
+            // Unqualified: a collective first, then a plain agent.
+            None => collective().or_else(plain),
+        }
+        .unwrap_or_else(|| Agent::new(name.clone()))
+    }
+
+    /// Working agents whose wants are still parameterized, as
+    /// `(agent, want)` pairs.
+    ///
+    /// Restriction A: resolution starts from a concrete goal, so a want has to
+    /// name one. A want may carry a variable in the document that declares it,
+    /// as long as an instance's bindings fill it in — which is why this is
+    /// answered here, with every document in play, rather than per contract.
+    pub fn non_ground_wants(&self) -> Vec<(String, String)> {
+        let mut ret: Vec<(String, String)> = vec![];
+        for (agent_name, variants) in &self.working_agents {
+            for variant in variants {
+                for want in variant.wants() {
+                    if !want.get_name_pattern().is_ground() {
+                        ret.push((agent_name.clone(), want.get_name().clone()));
+                    }
+                }
+            }
+        }
+        ret.sort();
+        ret.dedup();
+        ret
+    }
+
+    /// Instances whose `base` names nothing loaded here, as
+    /// `(instance, base)` pairs.
+    ///
+    /// This needs every document in play to answer, which is why it lives on
+    /// the tracker rather than in the per-contract validation pass: a base may
+    /// perfectly well be declared in a different file.
+    pub fn dangling_instance_bases(&self) -> Vec<(String, String)> {
+        let mut ret: Vec<(String, String)> = self
+            .available_instances
+            .iter()
+            .filter(|i| {
+                let name = i.get_base().name();
+                let is_collective = self
+                    .available_superagents
+                    .iter()
+                    .any(|sa| sa.get_name() == name);
+                let is_agent = self.available_agents.iter().any(|a| a.get_name() == name);
+                match i.get_base().kind() {
+                    Some(BaseKind::SuperAgent) => !is_collective,
+                    Some(BaseKind::Agent) => !is_agent,
+                    None => !is_collective && !is_agent,
+                }
+            })
+            .map(|i| (i.get_name().clone(), i.get_base().to_string()))
+            .collect();
+        ret.sort();
+        ret
     }
 
     pub fn get_agent_names(&self) -> Vec<&String> {
@@ -144,6 +261,13 @@ impl Tracker {
             .any(|(_, variants)| variants.iter().any(|a| a.has_behavior(&behavior_name)))
     }
 
+    /// Is `behavior_name` a concrete behavior something here could answer, ask
+    /// for, or depend on — matching a plain declaration, or a pattern covering it?
+    ///
+    /// [`Tracker::has_behavior`] asks the narrower question of whether that
+    /// exact text was written down anywhere. Once names can be parameterized
+    /// the two answers diverge, and anything guarding a call to
+    /// [`Tracker::resolve`] wants this one.
     pub fn has_ground_behavior(&self, behavior_name: &str) -> bool {
         self.working_agents.iter().any(|(_, variants)| {
             variants
@@ -152,6 +276,8 @@ impl Tracker {
         })
     }
 
+    /// The parameterized names in play, as written. Each stands for a family of
+    /// behaviors rather than naming one, so none of these can be resolved.
     pub fn get_behavior_patterns(&self) -> HashSet<String> {
         let mut ret = HashSet::new();
         for (_, variants) in &self.working_agents {
@@ -162,6 +288,7 @@ impl Tracker {
         ret
     }
 
+    /// The concrete behaviors this agent promises.
     pub fn get_agent_provides(&self, agent_name: &str) -> Option<HashSet<String>> {
         let agents = self.working_agents.get(agent_name)?;
         let mut ret: HashSet<String> = HashSet::new();
@@ -175,6 +302,7 @@ impl Tracker {
         Some(ret)
     }
 
+    /// The parameterized promises this agent makes, as written.
     pub fn get_agent_provide_patterns(&self, agent_name: &str) -> Option<HashSet<String>> {
         let agents = self.working_agents.get(agent_name)?;
         let mut ret: HashSet<String> = HashSet::new();
@@ -314,12 +442,14 @@ impl Tracker {
 mod tests {
     use super::*;
     use components::Behavior;
+    use components::Instance;
 
     #[test]
     fn simple_adds() {
         let mut t = Tracker {
             available_agents: vec![],
             available_superagents: vec![],
+            available_instances: vec![],
             working_agents: HashMap::new(),
         };
         let mut a = Agent::new(String::from("abcd"));
@@ -565,15 +695,16 @@ mod tests {
             SuperAgent::new(String::from("sa1"))
                 .with_agent("a1")
                 .with_agent("a2")
-                .with_agent("a3")
-                .with_instance(
-                    "i1",
-                    "",
-                    vec![Behavior::build("i1p1")],
-                    vec![Behavior::build("i1w1")],
-                )
-                .with_instance("i2", "", vec![], vec![]),
+                .with_agent("a3"),
         );
+        t.add_instance(
+            Instance::new("i1", "SuperAgent/sa1")
+                .with_provides(vec![Behavior::build("i1p1")])
+                .with_wants(vec![Behavior::build("i1w1")]),
+        );
+        t.add_instance(Instance::new("i2", "SuperAgent/sa1"));
+        // The collective is a template once something is built from it, so
+        // only the copies stand as working agents.
         assert_eq!(t.working_agents.len(), 2);
         let wsa = t.working_agents.get("i1").unwrap();
         let all_provides = wsa[0].get_all_provides();
@@ -672,19 +803,17 @@ mod tests {
             SuperAgent::new(String::from("sa1"))
                 .with_agent("a1")
                 .with_agent("a2")
-                .with_agent("a3")
-                .with_instance(
-                    "i1",
-                    "",
-                    vec![Behavior::build("i1p1")],
-                    vec![Behavior::build("i1w1")],
-                )
-                .with_instance("i2", "", vec![], vec![]),
+                .with_agent("a3"),
         );
-        // Instances share the collective's behavior names verbatim, so every
-        // instance offers every behavior and the offers are indistinguishable.
-        // Telling them apart is what parameterized behaviors are for; see
-        // docs/design/parameterized-behaviors.md.
+        t.add_instance(
+            Instance::new("i1", "SuperAgent/sa1")
+                .with_provides(vec![Behavior::build("i1p1")])
+                .with_wants(vec![Behavior::build("i1w1")]),
+        );
+        t.add_instance(Instance::new("i2", "SuperAgent/sa1"));
+        // Unbound copies share the collective's behavior names verbatim, so every
+        // copy offers every behavior and the offers are indistinguishable.
+        // Bindings are what tell them apart; see the test below.
 
         // fully internally resolved, by both instances
         assert_eq!(
@@ -697,14 +826,8 @@ mod tests {
         assert_eq!(
             t.resolve("b3"),
             Resolution::new("b3")
-                .add_unsatisfying_offer(Offer::new_conditional(
-                    "i1",
-                    vec![Resolution::new("b4")],
-                ))
-                .add_unsatisfying_offer(Offer::new_conditional(
-                    "i2",
-                    vec![Resolution::new("b4")],
-                )),
+                .add_unsatisfying_offer(Offer::new_conditional("i1", vec![Resolution::new("b4")],))
+                .add_unsatisfying_offer(Offer::new_conditional("i2", vec![Resolution::new("b4")],)),
         );
         // one outside provider satisfies the same condition for both instances
         t.add_agent(Agent::build("a4").with_provides(vec![Behavior::build("b4")]));
@@ -845,6 +968,120 @@ mod tests {
                         .add_satisfying_offer(Offer::new_conditional("r", vec![shared])),
                 ],
             ))
+        );
+    }
+
+    #[test]
+    fn test_instances_are_told_apart_by_their_bindings() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("api").with_provides(vec![
+            Behavior::build("kube-api/{{env}}").with_conditions(vec![String::from("etcd/{{env}}")]),
+        ]));
+        t.add_instance(Instance::new("prod", "Agent/api").with_binding("env", "prod"));
+        t.add_instance(Instance::new("staging", "Agent/api").with_binding("env", "staging"));
+        t.add_agent(Agent::build("etcd-prod").with_provides(vec![Behavior::build("etcd/prod")]));
+
+        // The base is a template, so only its copies stand as agents.
+        assert_eq!(
+            t.get_working_agent_names(),
+            vec!["etcd-prod", "prod", "staging"]
+        );
+        // prod's dependency is met and staging's is not — two separate
+        // questions, which is what instancing is for.
+        assert_eq!(
+            t.resolve("kube-api/prod"),
+            Resolution::new("kube-api/prod").add_satisfying_offer(Offer::new_conditional(
+                "prod",
+                vec![Resolution::new("etcd/prod").add_satisfying_offer(Offer::new("etcd-prod"))],
+            ))
+        );
+        assert_eq!(
+            t.resolve("kube-api/staging"),
+            Resolution::new("kube-api/staging").add_unsatisfying_offer(Offer::new_conditional(
+                "staging",
+                vec![Resolution::new("etcd/staging")],
+            ))
+        );
+    }
+
+    #[test]
+    fn test_instance_may_bind_only_part_of_a_name() {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("api").with_provides(vec![Behavior::build("api/{{env}}/{{tenant}}")]),
+        );
+        t.add_instance(Instance::new("prod", "api").with_binding("env", "prod"));
+
+        // The instance fixes env; the wanter still names the tenant.
+        assert_eq!(
+            t.resolve("api/prod/acme"),
+            Resolution::new("api/prod/acme").add_satisfying_offer(Offer::new("prod"))
+        );
+        assert_eq!(
+            t.resolve("api/staging/acme"),
+            Resolution::new("api/staging/acme")
+        );
+    }
+
+    #[test]
+    fn test_an_uninstantiated_base_stands_on_its_own() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("api").with_provides(vec![Behavior::build("thing")]));
+        // Nothing is built from it, so it is a component rather than a template.
+        assert_eq!(t.get_working_agent_names(), vec!["api"]);
+
+        t.add_instance(Instance::new("copy", "api"));
+        assert_eq!(t.get_working_agent_names(), vec!["copy"]);
+    }
+
+    #[test]
+    fn test_dangling_and_open_wants_are_reported() {
+        let mut t = Tracker::new();
+        t.add_instance(Instance::new("orphan", "SuperAgent/nowhere"));
+        t.add_agent(Agent::build("w").with_wants(vec![Behavior::build("thing/{{v}}")]));
+
+        assert_eq!(
+            t.dangling_instance_bases(),
+            vec![("orphan".to_string(), "SuperAgent/nowhere".to_string())]
+        );
+        assert_eq!(
+            t.non_ground_wants(),
+            vec![("w".to_string(), "thing/{{v}}".to_string())]
+        );
+
+        // Binding it from an instance settles it.
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("base").with_wants(vec![Behavior::build("thing/{{v}}")]));
+        t.add_instance(Instance::new("bound", "base").with_binding("v", "x"));
+        assert!(t.non_ground_wants().is_empty());
+        assert_eq!(
+            t.get_agent_wants(String::from("bound")),
+            HashSet::from([String::from("thing/x")])
+        );
+    }
+
+    #[test]
+    fn test_instance_of_a_plain_agent_from_yaml() {
+        let mut t = Tracker::new();
+        for document in serde_yaml::Deserializer::from_str(
+            "kind: Agent
+name: host
+provides:
+  - name: run/{{env}}
+---
+kind: Instance
+name: host-prod
+base: Agent/host
+bindings:
+  env: prod
+",
+        ) {
+            t.add_item(<Item as serde::Deserialize>::deserialize(document).unwrap());
+        }
+        assert_eq!(t.get_working_agent_names(), vec!["host-prod"]);
+        assert_eq!(
+            t.resolve("run/prod"),
+            Resolution::new("run/prod").add_satisfying_offer(Offer::new("host-prod"))
         );
     }
 }

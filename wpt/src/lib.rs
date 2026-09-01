@@ -1,5 +1,6 @@
 use promise_tracker;
 use promise_tracker::components::Agent;
+use promise_tracker::components::Instance;
 use promise_tracker::components::Item;
 use promise_tracker::components::SuperAgent;
 use schemars::JsonSchema;
@@ -13,6 +14,7 @@ use wasm_bindgen::prelude::*;
 enum PTComponent {
     SuperAgent(SuperAgent),
     Agent(Agent),
+    Instance(Instance),
 }
 
 #[wasm_bindgen]

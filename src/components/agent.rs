@@ -129,10 +129,12 @@ impl Agent {
         &self.name
     }
 
+    /// What this agent promises, as declared.
     pub fn provides(&self) -> &[Behavior] {
         &self.provides
     }
 
+    /// What this agent needs, as declared.
     pub fn wants(&self) -> &[Behavior] {
         &self.wants
     }
@@ -172,6 +174,11 @@ impl Agent {
         ret
     }
 
+    /// Every promise this agent could keep for `goal`, with the bindings that
+    /// goal implies for the promise's variables.
+    ///
+    /// Declaration order rather than a set: one agent may declare the same
+    /// behavior twice, and two matches of one pattern carry different bindings.
     pub fn get_matching_provides(&self, goal: &str) -> Vec<(Behavior, Bindings)> {
         self.provides
             .iter()
@@ -179,6 +186,7 @@ impl Agent {
             .collect()
     }
 
+    /// The promises this agent describes with variables still in them.
     pub fn get_provide_patterns(&self) -> Vec<&Behavior> {
         self.provides
             .iter()
@@ -194,6 +202,10 @@ impl Agent {
         ret
     }
 
+    /// Every concrete behavior name this agent mentions.
+    ///
+    /// A parameterized name is left out: it is not a behavior, it stands for a
+    /// family of them. Those come from [`Agent::get_behavior_patterns`].
     pub fn get_behaviors(&self) -> HashSet<String> {
         let mut ret = HashSet::new();
         for p in &self.provides {
@@ -214,6 +226,7 @@ impl Agent {
         ret
     }
 
+    /// The parameterized names this agent mentions, as written.
     pub fn get_behavior_patterns(&self) -> HashSet<String> {
         let mut ret = HashSet::new();
         for p in &self.provides {
@@ -229,6 +242,11 @@ impl Agent {
         ret
     }
 
+    /// Could this agent take part in answering the concrete `behavior_name` —
+    /// by promising it, needing it, or depending on it?
+    ///
+    /// A pattern that covers the name counts, which is what separates this from
+    /// [`Agent::has_behavior`] and its literal reading.
     pub fn has_ground_behavior(&self, behavior_name: &str) -> bool {
         self.provides.iter().any(|p| {
             p.match_goal(behavior_name).is_some()
@@ -253,6 +271,8 @@ impl Agent {
         }
     }
 
+    /// Replace every condition the agent already meets itself with whatever
+    /// meeting it depends on from outside.
     pub fn reduce(&mut self) {
         let originals = self.provides.clone();
         let mut reduced: Vec<Behavior> = originals
@@ -263,10 +283,20 @@ impl Agent {
         self.provides = reduced;
     }
 
-    pub fn make_instance(&self, instance_name: &String) -> Agent {
-        Agent::new(instance_name.clone())
-            .with_provides(self.provides.clone())
-            .with_wants(self.wants.clone())
+    /// A copy of this agent under an instance name, with `bindings`
+    /// substituted through everything it promises and needs.
+    ///
+    /// What the bindings do not cover stays parameterized, so a copy can fix
+    /// some values and leave the rest to whoever wants the promise.
+    pub fn make_instance(&self, instance_name: &str, bindings: &Bindings) -> Agent {
+        Agent::new(instance_name.to_string())
+            .with_provides(
+                self.provides
+                    .iter()
+                    .map(|p| p.instantiate(bindings))
+                    .collect(),
+            )
+            .with_wants(self.wants.iter().map(|w| w.instantiate(bindings)).collect())
     }
 }
 
@@ -654,7 +684,7 @@ provides:
                 Behavior::new(String::from("w1")),
                 Behavior::new(String::from("w2")),
             ]);
-        let result = a.make_instance(&String::from("i1"));
+        let result = a.make_instance("i1", &Bindings::new());
         assert_eq!(
             result,
             Agent::new(String::from("i1"))

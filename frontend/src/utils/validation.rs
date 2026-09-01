@@ -130,7 +130,7 @@ pub fn validate_contract_content(content: &str) -> String {
     }
 
     if items.is_empty() {
-        return "Contract must contain at least one Agent or SuperAgent".to_string();
+        return "Contract must contain at least one Agent, SuperAgent or Instance".to_string();
     }
 
     // Shape is right; now check what only makes sense once it is read as a

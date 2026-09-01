@@ -1,5 +1,6 @@
 use clap::Parser;
 use promise_tracker::validate::check_items;
+use promise_tracker::Tracker;
 use std::process;
 
 #[derive(Parser)]
@@ -15,6 +16,7 @@ pub fn command(parameters: &Parameters) {
         Err(e) => cli::abort(e),
     };
     let mut problems = 0;
+    let mut tracker = Tracker::new();
     for file in todo.files {
         match cli::check_file(&file) {
             Ok(items) => {
@@ -25,10 +27,31 @@ pub fn command(parameters: &Parameters) {
                     problems += 1;
                     eprintln!("{}: {}", file, problem);
                 }
+                for item in items {
+                    tracker.add_item(item);
+                }
             }
             Err(e) => cli::abort(e),
         }
     }
+
+    // These need every file in play, so they wait until all of them are in: a
+    // base may perfectly well live in a different document than its instance.
+    for (instance, base) in tracker.dangling_instance_bases() {
+        problems += 1;
+        eprintln!(
+            "Instance/{}: base `{}` names nothing loaded here",
+            instance, base
+        );
+    }
+    for (agent, want) in tracker.non_ground_wants() {
+        problems += 1;
+        eprintln!(
+            "{} wants `{}`, which names no one behavior; bind it from an Instance or write it out",
+            agent, want
+        );
+    }
+
     if problems > 0 {
         process::exit(1);
     }
