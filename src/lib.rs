@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub mod resolve;
+pub mod validate;
 use resolve::Offer;
 use resolve::Resolution;
 
@@ -143,15 +144,45 @@ impl Tracker {
             .any(|(_, variants)| variants.iter().any(|a| a.has_behavior(&behavior_name)))
     }
 
+    pub fn has_ground_behavior(&self, behavior_name: &str) -> bool {
+        self.working_agents.iter().any(|(_, variants)| {
+            variants
+                .iter()
+                .any(|a| a.has_ground_behavior(behavior_name))
+        })
+    }
+
+    pub fn get_behavior_patterns(&self) -> HashSet<String> {
+        let mut ret = HashSet::new();
+        for (_, variants) in &self.working_agents {
+            for variant_agent in variants {
+                ret.extend(variant_agent.get_behavior_patterns());
+            }
+        }
+        ret
+    }
+
     pub fn get_agent_provides(&self, agent_name: &str) -> Option<HashSet<String>> {
-        let agents = match self.working_agents.get(agent_name) {
-            Some(a) => a,
-            None => return None,
-        };
+        let agents = self.working_agents.get(agent_name)?;
         let mut ret: HashSet<String> = HashSet::new();
         for agent in agents {
             for behavior in agent.get_all_provides() {
-                ret.insert(behavior.get_name().clone());
+                if behavior.get_name_pattern().is_ground() {
+                    ret.insert(behavior.get_name().clone());
+                }
+            }
+        }
+        Some(ret)
+    }
+
+    pub fn get_agent_provide_patterns(&self, agent_name: &str) -> Option<HashSet<String>> {
+        let agents = self.working_agents.get(agent_name)?;
+        let mut ret: HashSet<String> = HashSet::new();
+        for agent in agents {
+            for behavior in agent.get_all_provides() {
+                if !behavior.get_name_pattern().is_ground() {
+                    ret.insert(behavior.get_name().clone());
+                }
             }
         }
         Some(ret)

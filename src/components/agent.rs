@@ -129,6 +129,14 @@ impl Agent {
         &self.name
     }
 
+    pub fn provides(&self) -> &[Behavior] {
+        &self.provides
+    }
+
+    pub fn wants(&self) -> &[Behavior] {
+        &self.wants
+    }
+
     pub fn is_wants_empty(&self) -> bool {
         self.wants.len() == 0
     }
@@ -189,15 +197,45 @@ impl Agent {
     pub fn get_behaviors(&self) -> HashSet<String> {
         let mut ret = HashSet::new();
         for p in &self.provides {
-            ret.insert(p.get_name().clone());
-            for c in p.get_conditions() {
-                ret.insert(c.clone());
+            if p.get_name_pattern().is_ground() {
+                ret.insert(p.get_name().clone());
+            }
+            for c in p.get_condition_patterns() {
+                if c.is_ground() {
+                    ret.insert(c.source().clone());
+                }
             }
         }
         for w in &self.wants {
-            ret.insert(w.get_name().clone());
+            if w.get_name_pattern().is_ground() {
+                ret.insert(w.get_name().clone());
+            }
         }
         ret
+    }
+
+    pub fn get_behavior_patterns(&self) -> HashSet<String> {
+        let mut ret = HashSet::new();
+        for p in &self.provides {
+            if !p.get_name_pattern().is_ground() {
+                ret.insert(p.get_name().clone());
+            }
+            for c in p.get_condition_patterns() {
+                if !c.is_ground() {
+                    ret.insert(c.source().clone());
+                }
+            }
+        }
+        ret
+    }
+
+    pub fn has_ground_behavior(&self, behavior_name: &str) -> bool {
+        self.provides.iter().any(|p| {
+            p.match_goal(behavior_name).is_some()
+                || p.get_condition_patterns()
+                    .iter()
+                    .any(|c| c.match_ground(behavior_name).is_some())
+        }) || self.wants.iter().any(|w| w.get_name() == behavior_name)
     }
 
     pub fn merge(&mut self, other: &Agent) {

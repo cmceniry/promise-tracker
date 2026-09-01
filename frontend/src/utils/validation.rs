@@ -1,5 +1,6 @@
 use crate::models::Contract;
 use promise_tracker::components::Item;
+use promise_tracker::validate::check_items;
 use serde::Deserialize;
 
 /// Validates a contract filename according to the rules:
@@ -115,12 +116,12 @@ pub fn validate_contract_content(content: &str) -> String {
         return String::new(); // Empty content is valid (new contract)
     }
 
-    let mut item_count = 0;
+    let mut items = Vec::new();
 
     for (idx, document) in serde_yaml::Deserializer::from_str(content).enumerate() {
         match Item::deserialize(document) {
-            Ok(_item) => {
-                item_count += 1;
+            Ok(item) => {
+                items.push(item);
             }
             Err(e) => {
                 return format!("Document {}: {}", idx + 1, e);
@@ -128,8 +129,19 @@ pub fn validate_contract_content(content: &str) -> String {
         }
     }
 
-    if item_count == 0 {
+    if items.is_empty() {
         return "Contract must contain at least one Agent or SuperAgent".to_string();
+    }
+
+    // Shape is right; now check what only makes sense once it is read as a
+    // contract — malformed patterns, unbindable conditions, open wants.
+    let problems = check_items(&items);
+    if !problems.is_empty() {
+        return problems
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<String>>()
+            .join("\n");
     }
 
     String::new()

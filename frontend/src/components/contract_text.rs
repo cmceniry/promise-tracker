@@ -268,7 +268,7 @@ pub fn ContractText(
         let pt = tracker.get_untracked()?;
         let component = selected_component.get_untracked();
         let behavior = selected_behavior.get_untracked();
-        if component == "---" || behavior == "---" || !pt.has_behavior(behavior.clone()) {
+        if component == "---" || behavior == "---" || !pt.has_ground_behavior(&behavior) {
             return None;
         }
         let rows = contract_rows(
@@ -362,7 +362,7 @@ pub fn ContractText(
             .into_any();
         }
 
-        if !pt.has_behavior(behavior.clone()) {
+        if !pt.has_ground_behavior(&behavior) {
             return view! {
                 <div class="text-muted p-3">"Select a valid behavior"</div>
             }

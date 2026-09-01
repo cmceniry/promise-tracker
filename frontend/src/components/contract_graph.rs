@@ -207,7 +207,7 @@ pub fn ContractGraph(
             return placeholder_diagram("Select a behavior");
         }
 
-        if !pt.has_behavior(behavior.clone()) {
+        if !pt.has_ground_behavior(&behavior) {
             return placeholder_diagram("Select a valid behavior");
         }
 

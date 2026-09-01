@@ -1,5 +1,6 @@
 use anyhow::Result;
 use promise_tracker::components::Item;
+use promise_tracker::validate::check_items;
 use serde::Deserialize;
 
 /// Validation error type
@@ -45,6 +46,19 @@ pub fn validate_contract(content: &str) -> Result<Vec<Item>, ValidationError> {
     if items.is_empty() {
         return Err(ValidationError::InvalidContent(
             "Contract must contain at least one Agent or SuperAgent".to_string(),
+        ));
+    }
+
+    // Shape is right; now check what only makes sense once it is read as a
+    // contract — malformed patterns, unbindable conditions, open wants.
+    let problems = check_items(&items);
+    if !problems.is_empty() {
+        return Err(ValidationError::InvalidContent(
+            problems
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<String>>()
+                .join("\n"),
         ));
     }
 

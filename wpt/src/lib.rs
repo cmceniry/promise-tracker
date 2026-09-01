@@ -88,6 +88,10 @@ impl PT {
         self.tracker.has_behavior(String::from(input))
     }
 
+    pub fn has_ground_behavior(&self, input: &str) -> bool {
+        self.tracker.has_ground_behavior(input)
+    }
+
     pub fn resolve(&mut self, input: &str) -> JsValue {
         let r = self.tracker.resolve(input);
         serde_wasm_bindgen::to_value(&r).unwrap()

@@ -24,17 +24,22 @@ pub fn command(parameters: &Parameters) {
             Err(e) => cli::abort(e),
         }
     }
-    let mut provides: Vec<String> = vec![];
-    if let Some(pa) = tracker.get_agent_provides(&parameters.agent) {
-        for p in pa {
-            provides.push(p);
-        }
-    } else {
+    let Some(pa) = tracker.get_agent_provides(&parameters.agent) else {
         println!("Agent {} not found", parameters.agent);
         process::exit(1);
-    }
+    };
+    let mut provides: Vec<String> = pa.into_iter().collect();
     provides.sort();
     for p in provides {
         println!("{}", p);
+    }
+    let mut patterns: Vec<String> = tracker
+        .get_agent_provide_patterns(&parameters.agent)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    patterns.sort();
+    for p in patterns {
+        println!("{}\t(pattern)", p);
     }
 }

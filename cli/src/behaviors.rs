@@ -20,12 +20,16 @@ pub fn command(parameters: &Parameters) {
             Err(e) => cli::abort(e),
         }
     }
-    let mut behaviors: Vec<String> = vec![];
-    for behavior_name in tracker.get_working_behaviors() {
-        behaviors.push(behavior_name);
-    }
+    let mut behaviors: Vec<String> = tracker.get_working_behaviors().into_iter().collect();
     behaviors.sort();
     for behavior_name in behaviors {
         println!("{}", behavior_name);
+    }
+    // Patterns are not behaviors — each stands for a family of them — so they
+    // are listed apart and marked.
+    let mut patterns: Vec<String> = tracker.get_behavior_patterns().into_iter().collect();
+    patterns.sort();
+    for pattern in patterns {
+        println!("{}\t(pattern)", pattern);
     }
 }
