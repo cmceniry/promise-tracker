@@ -79,7 +79,7 @@ metrics-server would provide and nothing here does. Everything else resolves.
 ```
 cargo run -p cli -- validate $(for f in examples/kubernetes/*.yaml; do echo -f $f; done)
 cargo run -p cli -- check-unsatisfied -f examples/kubernetes
-cargo run -p cli -- who-provides -f examples/kubernetes kube-apiserver
+cargo run -p cli -- who-provides -f examples/kubernetes control-plane-1
 ```
 
 ## Sources
