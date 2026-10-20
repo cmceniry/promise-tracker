@@ -1,0 +1,100 @@
+# Cluster add-ons the core components reference: CoreDNS, and the
+# cloud-controller-manager with its three cloud-specific controllers.
+# Sources:
+#   https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/
+#   https://kubernetes.io/docs/concepts/architecture/cloud-controller/
+
+kind: Agent
+name: coredns
+comment: >-
+  Cluster DNS behind the kube-dns Service in kube-system. CoreDNS runs as pods
+  itself but uses dnsPolicy Default, which is why pod-execution is deliberately
+  not a condition here: it would make the graph circular.
+provides:
+  - name: cluster-dns
+    comment: the nameserver at the kube-dns ClusterIP that the kubelet writes into every pod.
+    conditions:
+      - service-dns-records
+      - pod-dns-records
+      - service-virtual-ips
+      - host-dns-resolver
+  - name: service-dns-records
+    comment: A/AAAA for my-svc.my-ns.svc.cluster.local and SRV for named ports; headless Services resolve to pod IPs.
+    conditions:
+      - list-watch-streams
+      - endpointslices
+  - name: pod-dns-records
+    comment: a-b-c-d.my-ns.pod.cluster.local and hostname.subdomain forms.
+    conditions:
+      - list-watch-streams
+      - pod-status-reporting
+wants:
+  - name: list-watch-streams
+  - name: endpointslices
+  - name: service-virtual-ips
+  - name: host-dns-resolver
+
+---
+kind: SuperAgent
+name: cloud-controller-manager
+comment: >-
+  Cloud-specific control loops split out of kube-controller-manager. Absent on
+  bare metal. One binary per cloud provider, three shared controllers.
+agents:
+  - ccm-leader-election
+  - cloud-node-controller
+  - cloud-route-controller
+  - cloud-service-controller
+
+---
+kind: Agent
+name: ccm-leader-election
+provides:
+  - name: cloud-controller-manager-leadership
+    conditions:
+      - leader-election-leases
+
+---
+kind: Agent
+name: cloud-node-controller
+comment: initializes nodes with provider ID, region/zone labels and addresses; deletes the Node when the cloud says the instance is gone.
+provides:
+  - name: cloud-node-initialization
+    comment: removes the node.cloudprovider.kubernetes.io/uninitialized taint the kubelet registered with.
+    conditions:
+      - cloud-instances-api
+      - cloud-instance-metadata
+      - node-registration
+      - kubernetes-api
+      - cloud-controller-manager-leadership
+  - name: cloud-node-lifecycle
+    comment: deletes Node objects whose backing instance was terminated.
+    conditions:
+      - cloud-instances-api
+      - node-status-conditions
+      - kubernetes-api
+      - cloud-controller-manager-leadership
+
+---
+kind: Agent
+name: cloud-route-controller
+comment: programs one cloud route per node podCIDR so pods reach each other without an overlay.
+provides:
+  - name: node-pod-routes
+    conditions:
+      - cloud-routes-api
+      - pod-cidr-allocation
+      - cloud-controller-manager-leadership
+
+---
+kind: Agent
+name: cloud-service-controller
+comment: provisions cloud load balancers for type=LoadBalancer Services and writes status.loadBalancer.ingress.
+provides:
+  - name: load-balancer-services
+    conditions:
+      - cloud-load-balancer-api
+      - nodeport-services
+      - list-watch-streams
+      - kubernetes-api
+      - cloud-controller-manager-leadership

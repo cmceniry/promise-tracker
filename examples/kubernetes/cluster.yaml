@@ -1,0 +1,65 @@
+# A concrete cluster: three control-plane nodes (stacked etcd, as kubeadm
+# does it) and three workers. The node shapes are SuperAgents; the nodes are
+# Instances of them.
+#
+# Promise names in this directory are plain, so every copy of a kubelet
+# makes the same promises. That means a want for pod-execution sees six
+# offers, one per node, which is the right reading for "is there anywhere to
+# run this" and the wrong one for "is worker-2 healthy". Parameterized names
+# would fix the second question; see docs/design/parameterized-behaviors.md.
+
+kind: SuperAgent
+name: control-plane-node
+comment: >-
+  kubeadm layout: etcd, apiserver, controller-manager and scheduler run as
+  static pods, so the node also carries a kubelet, a runtime, CNI and
+  kube-proxy. The kubelet's static-pod-manifests promise is what boots the
+  control plane before the apiserver exists.
+agents:
+  - etcd
+  - kube-apiserver
+  - kube-controller-manager
+  - kube-scheduler
+  - kubelet
+  - containerd
+  - runc
+  - cni-plugin
+  - kube-proxy
+  - node-operating-system
+
+---
+kind: SuperAgent
+name: worker-node
+agents:
+  - kubelet
+  - containerd
+  - runc
+  - cni-plugin
+  - kube-proxy
+  - csi-node-plugin
+  - node-operating-system
+
+---
+kind: Instance
+name: control-plane-1
+base: SuperAgent/control-plane-node
+---
+kind: Instance
+name: control-plane-2
+base: SuperAgent/control-plane-node
+---
+kind: Instance
+name: control-plane-3
+base: SuperAgent/control-plane-node
+---
+kind: Instance
+name: worker-1
+base: SuperAgent/worker-node
+---
+kind: Instance
+name: worker-2
+base: SuperAgent/worker-node
+---
+kind: Instance
+name: worker-3
+base: SuperAgent/worker-node

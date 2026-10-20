@@ -1,0 +1,33 @@
+# etcd: the consistent, highly available key-value store that holds all
+# cluster state. kube-apiserver is its only client.
+# Source: https://kubernetes.io/docs/concepts/architecture/#etcd
+
+kind: Agent
+name: etcd
+comment: >-
+  Raft-replicated key-value store. Modeled as one agent; a three-member
+  quorum is a deployment detail that lives in cluster.yaml.
+provides:
+  - name: cluster-state-storage
+    comment: linearizable reads and writes under /registry; what --etcd-servers points at.
+    conditions:
+      - etcd-serving-certificate
+      - local-disk
+  - name: key-watch-notifications
+    comment: the watch RPC that the apiserver's watch cache is fed from.
+    conditions:
+      - cluster-state-storage
+  - name: storage-compaction
+    comment: apiserver requests compaction every --etcd-compaction-interval (5m).
+    conditions:
+      - cluster-state-storage
+  - name: etcd-backup-snapshots
+    comment: etcdctl snapshot save; the docs say to have a backup plan.
+    conditions:
+      - cluster-state-storage
+      - local-disk
+wants:
+  - name: etcd-serving-certificate
+  - name: cluster-ca-certificate
+    comment: to verify the apiserver's client certificate.
+  - name: local-disk

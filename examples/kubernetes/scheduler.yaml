@@ -1,0 +1,68 @@
+# kube-scheduler: watches for Pods with no nodeName and binds each to a node.
+# Modeled as one agent whose internal framework stages are separate promises.
+# Source: https://kubernetes.io/docs/reference/scheduling/config/
+
+kind: Agent
+name: kube-scheduler
+comment: >-
+  One active instance at a time (leader election). The scheduling framework
+  runs plugins through queueSort, preFilter, filter, postFilter, preScore,
+  score, reserve, permit, preBind, bind, postBind.
+provides:
+  - name: pod-scheduling
+    comment: a Pod with no nodeName gets one, or stays Pending with a reason.
+    conditions:
+      - scheduler-leadership
+      - scheduling-queue
+      - node-filtering
+      - node-scoring
+      - pod-binding
+      - scheduling-events
+  - name: scheduler-leadership
+    comment: --leader-elect against a Lease named kube-scheduler in kube-system.
+    conditions:
+      - leader-election-leases
+  - name: scheduling-queue
+    comment: >-
+      active/backoff/unschedulable queues fed by informers; PrioritySort at
+      queueSort; SchedulingGates holds pods out of the active queue.
+    conditions:
+      - list-watch-streams
+  - name: node-filtering
+    comment: >-
+      filter plugins: NodeUnschedulable, NodeName, TaintToleration, NodeAffinity,
+      NodePorts, NodeResourcesFit, PodTopologySpread, InterPodAffinity,
+      VolumeBinding, VolumeRestrictions, VolumeZone, NodeVolumeLimits.
+    conditions:
+      - node-capacity-reporting
+      - node-condition-taints
+      - csi-node-info
+      - persistent-volume-binding
+  - name: node-scoring
+    comment: >-
+      score plugins: NodeResourcesFit (LeastAllocated), NodeResourcesBalancedAllocation,
+      ImageLocality, NodeAffinity, TaintToleration, PodTopologySpread, InterPodAffinity.
+    conditions:
+      - node-capacity-reporting
+  - name: pod-preemption
+    comment: DefaultPreemption at postFilter; evicts lower-priority pods to make room.
+    conditions:
+      - kubernetes-api
+      - pod-disruption-budget-status
+  - name: dynamic-resource-scheduling
+    comment: DynamicResources plugin; needs ResourceClaims allocated.
+    conditions:
+      - resource-claim-allocation
+      - node-filtering
+  - name: scheduling-events
+    comment: FailedScheduling, Scheduled, Preempted.
+    conditions:
+      - event-recording
+wants:
+  - name: list-watch-streams
+    comment: pods, nodes, PVs, PVCs, StorageClasses, CSINodes, PDBs, ResourceClaims.
+  - name: kubernetes-api
+  - name: pod-binding
+  - name: leader-election-leases
+  - name: event-recording
+  - name: scheduler-client-certificate
