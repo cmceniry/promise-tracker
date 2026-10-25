@@ -460,9 +460,9 @@
             // containerId -> { signature, positions, zoom, pan, expandedPairs }
             // Survives destroy/create so tab switches keep the user's viewport.
             const savedStates = new Map();
-            // More than this many parallel edges between one (source, target) pair
-            // collapse into a single bundled edge until expanded.
-            const BUNDLE_THRESHOLD = 3;
+            // Bundling is decided in Rust (fold.rs): a line arrives with its
+            // promises inside, one or many. A many-promise line draws as one
+            // bundled edge until the pair is expanded by tapping it.
             const PAIR_SEP = '\u0000';
 
             const LAYOUT = {
@@ -482,7 +482,23 @@
             const measureCtx = document.createElement('canvas').getContext('2d');
             const nodeLabelWidth = n => {
                 measureCtx.font = NODE_FONT;
-                return Math.ceil(measureCtx.measureText(n.data('label') || '').width) + 4;
+                const lines = (n.data('label') || '').split('\n');
+                return Math.ceil(Math.max(...lines.map(l => measureCtx.measureText(l).width))) + 4;
+            }
+            const nodeLabelHeight = n => 14 * ((n.data('label') || '').split('\n').length);
+
+            // What a node says under its name: the folds that happened to it.
+            function nodeLabel(n) {
+                const lines = [n.label];
+                if (n.kind === 'collective') lines.push(n.members.length + ' inside');
+                if (n.kind === 'hub') lines.push('hub \u00b7 ' + n.incoming + ' in');
+                if (n.own > 0) {
+                    lines.push('+' + n.own + ' own' + (n.own_unsatisfied ? ' (' + n.own_unsatisfied + '\u2717)' : ''));
+                }
+                (n.badges || []).forEach(b => {
+                    lines.push('\u21b3 ' + b.hub + (b.satisfied ? '' : ' \u2717'));
+                });
+                return lines.join('\n');
             }
 
             // Status is never color-only: unsatisfied edges are dashed, conditions
@@ -496,9 +512,24 @@
                     'text-valign': 'center',
                     'text-halign': 'center',
                     'width': nodeLabelWidth,
-                    'height': 14,
+                    'height': nodeLabelHeight,
                     'padding': '8px',
                     'font-size': '11px',
+                    'text-wrap': 'wrap',
+                }},
+                { selector: 'node.collective', style: {
+                    'background-color': '#E3EAF2',
+                    'color': '#1F2A37',
+                    'border-width': 1,
+                    'border-color': '#78909C',
+                }},
+                { selector: 'node.hub', style: {
+                    'shape': 'rectangle',
+                    'background-color': '#1F2A37',
+                }},
+                { selector: 'node.badge-broken', style: {
+                    'border-width': 2,
+                    'border-color': '#C62828',
                 }},
                 { selector: 'node.ghost', style: {
                     'background-opacity': 0,
@@ -567,7 +598,8 @@
             // status flip recolors edges without discarding the user's layout.
             function signatureOf(nodes, edges) {
                 const n = nodes.map(x => x.id).sort().join(PAIR_SEP);
-                const e = edges.map(x => x.source + '>' + x.target + ':' + x.behavior + ':' + x.kind)
+                const e = edges.map(x => x.source + '>' + x.target + ':'
+                        + x.promises.map(p => p.behavior + '/' + p.kind).join(','))
                     .sort().join(PAIR_SEP);
                 return n + '#' + e;
             }
@@ -591,49 +623,46 @@
                 });
             }
 
-            // Wrap flat Rust records into cytoscape elements, bundling parallel
-            // edges beyond the threshold unless the pair has been expanded.
+            // Wrap the folded Rust records into cytoscape elements. A line with
+            // several promises inside draws as one bundled edge until the pair
+            // has been expanded by a tap.
             function buildElements(nodes, edges, expandedPairs) {
                 const els = nodes.map(n => ({
-                    data: { id: n.id, label: n.label },
-                    classes: n.kind === 'missing' ? 'ghost' : 'agent',
+                    data: { id: n.id, label: nodeLabel(n), kind: n.kind, members: n.members || [] },
+                    classes: (n.kind === 'missing' ? 'ghost' : n.kind)
+                        + ((n.badges || []).some(b => !b.satisfied) ? ' badge-broken' : ''),
                 }));
-                const groups = new Map();
                 edges.forEach(e => {
                     const k = pairKeyOf(e);
-                    if (!groups.has(k)) groups.set(k, []);
-                    groups.get(k).push(e);
-                });
-                groups.forEach((group, k) => {
-                    if (group.length > BUNDLE_THRESHOLD && !expandedPairs.has(k)) {
-                        const unsat = group.filter(e => !e.satisfied).length;
+                    const group = e.promises;
+                    if (group.length > 1 && !expandedPairs.has(k)) {
                         els.push({
                             data: {
                                 id: 'bundle:' + k,
-                                source: group[0].source,
-                                target: group[0].target,
-                                label: group.length + ' promises' + (unsat ? ' (' + unsat + '✗)' : ''),
+                                source: e.source,
+                                target: e.target,
+                                label: e.label,
                                 bundled: true,
                                 pairKey: k,
                             },
                             // aggregate status = worst
-                            classes: 'bundled ' + (unsat ? 'unsatisfied' : 'satisfied'),
+                            classes: 'bundled ' + (e.unsatisfied ? 'unsatisfied' : 'satisfied'),
                         });
                     } else {
-                        group.forEach((e, i) => els.push({
+                        group.forEach((p, i) => els.push({
                             data: {
                                 // cytoscape silently drops duplicate ids; make them unique
-                                id: 'p:' + k + ':' + e.behavior + ':' + e.kind + ':' + i,
+                                id: 'p:' + k + ':' + p.behavior + ':' + p.kind + ':' + i,
                                 source: e.source,
                                 target: e.target,
-                                label: e.behavior,
-                                behavior: e.behavior,
-                                kind: e.kind,
-                                satisfied: e.satisfied,
+                                label: p.behavior,
+                                behavior: p.behavior,
+                                kind: p.kind,
+                                satisfied: p.satisfied,
                                 pairKey: k,
                             },
-                            classes: (e.satisfied ? 'satisfied' : 'unsatisfied')
-                                + (e.kind === 'condition' ? ' condition' : ''),
+                            classes: (p.satisfied ? 'satisfied' : 'unsatisfied')
+                                + (p.kind === 'condition' ? ' condition' : ''),
                         }));
                     }
                 });
@@ -797,11 +826,11 @@
                 // Expand any bundle hiding the target edge.
                 let changed = false;
                 g.rawEdges
-                    .filter(e => e.source === agent && e.behavior === behavior && e.kind === 'want')
+                    .filter(e => e.source === agent
+                        && e.promises.some(p => p.behavior === behavior && p.kind === 'want'))
                     .forEach(e => {
                         const k = pairKeyOf(e);
-                        if (!g.expandedPairs.has(k)
-                            && g.rawEdges.filter(x => pairKeyOf(x) === k).length > BUNDLE_THRESHOLD) {
+                        if (e.promises.length > 1 && !g.expandedPairs.has(k)) {
                             g.expandedPairs.add(k);
                             changed = true;
                         }
@@ -809,10 +838,13 @@
                 if (changed) rebuild(containerId, true);
 
                 const cy = g.cy;
-                const sel = cy.edges().filter(e =>
+                let sel = cy.edges().filter(e =>
                     e.data('kind') === 'want'
                     && e.data('behavior') === behavior
                     && e.data('source') === agent);
+                // A want on a hub has no line of its own; the badge on the
+                // wanter is where it shows, so land on the wanter.
+                if (sel.empty()) sel = cy.getElementById(agent);
                 if (sel.empty()) return;
                 cy.elements().addClass('dimmed').removeClass('highlighted');
                 const focusEles = sel.union(sel.connectedNodes());

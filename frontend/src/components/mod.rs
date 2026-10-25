@@ -9,6 +9,7 @@ mod cycle_banner;
 mod display_options;
 mod promise_graph_view;
 mod promise_network_graph;
+mod simplify_panel;
 mod simulation_controls;
 mod trace_view;
 mod view_frame;
@@ -32,6 +33,8 @@ pub(crate) use display_options::DisplayOptions;
 pub(crate) use promise_graph_view::PromiseGraphView;
 #[allow(unused_imports)]
 pub(crate) use promise_network_graph::PromiseNetworkGraph;
+#[allow(unused_imports)]
+pub(crate) use simplify_panel::SimplifyPanel;
 #[allow(unused_imports)]
 pub(crate) use simulation_controls::SimulationControls;
 #[allow(unused_imports)]

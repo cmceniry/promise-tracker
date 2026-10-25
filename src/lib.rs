@@ -1,5 +1,6 @@
 pub mod components;
 pub mod diagram;
+pub mod fold;
 pub mod network_diagram;
 pub mod promise_graph;
 pub mod trace;
@@ -412,6 +413,46 @@ impl Tracker {
             }
         }
         Some(ret)
+    }
+
+    /// The agents a collective is built from, flattened through any
+    /// collectives among them, in declaration order without repeats. None
+    /// when nothing declares a collective by that name.
+    pub fn collective_members(&self, name: &str) -> Option<Vec<String>> {
+        if !self
+            .available_superagents
+            .iter()
+            .any(|sa| sa.get_name() == name)
+        {
+            return None;
+        }
+        let mut out: Vec<String> = vec![];
+        let mut visiting: HashSet<String> = HashSet::new();
+        self.collect_members(name, &mut visiting, &mut out);
+        Some(out)
+    }
+
+    fn collect_members(&self, name: &str, visiting: &mut HashSet<String>, out: &mut Vec<String>) {
+        if !visiting.insert(name.to_string()) {
+            return;
+        }
+        let members: Vec<String> = self
+            .available_superagents
+            .iter()
+            .filter(|sa| sa.get_name() == name)
+            .flat_map(|sa| sa.get_agent_names())
+            .collect();
+        for member in members {
+            let is_collective = self
+                .available_superagents
+                .iter()
+                .any(|sa| sa.get_name() == &member);
+            if is_collective {
+                self.collect_members(&member, visiting, out);
+            } else if !out.contains(&member) {
+                out.push(member);
+            }
+        }
     }
 
     /// The comment on a working agent, if it has one. An instance carries

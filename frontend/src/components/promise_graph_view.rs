@@ -2,8 +2,12 @@
 //!
 //! Agents are nodes; every promise is an agent-to-agent edge labeled with its
 //! behavior. Unresolvable behaviors appear as dashed "missing" ghost nodes.
+//! The folding rules in `promise_tracker::fold` run between the walk and the
+//! canvas: collectives and hubs are marked, parallel promises become one line,
+//! and self promises stay inside their node.
 
 use leptos::prelude::*;
+use promise_tracker::fold::{fold, FoldOptions};
 use promise_tracker::promise_graph::{promise_graph, UnsatisfiedWant};
 use promise_tracker::Tracker;
 use serde::Serialize;
@@ -77,8 +81,22 @@ fn PromiseGraphLegend() -> impl IntoView {
                 <span>"Condition"</span>
             </div>
             <div class="promise-network-legend-item">
-                <span style="font-weight: bold;">"n promises"</span>
+                <span style="font-weight: bold;">"\u{00d7}n"</span>
                 <span>"Bundle (tap to expand)"</span>
+            </div>
+            <div class="promise-network-legend-item">
+                <span
+                    class="promise-network-legend-color"
+                    style="background-color: #1F2A37;"
+                ></span>
+                <span>"Hub (lines folded into \u{21b3} badges)"</span>
+            </div>
+            <div class="promise-network-legend-item">
+                <span
+                    class="promise-network-legend-color"
+                    style="background-color: #E3EAF2; border: 1px solid #78909C;"
+                ></span>
+                <span>"Collective"</span>
             </div>
         </div>
     }
@@ -90,7 +108,9 @@ fn PromiseGraphLegend() -> impl IntoView {
 pub fn PromiseGraphView(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     sim_id: String,
-    #[prop(into)] show_self_promises: Signal<bool>,
+    /// Which folding rules to apply before drawing
+    #[prop(into)]
+    fold_options: Signal<FoldOptions>,
     /// Which simulation this panel belongs to, for the export's header
     sim_label: String,
     #[prop(optional)] on_edge_select: Option<Callback<(String, String)>>,
@@ -110,16 +130,14 @@ pub fn PromiseGraphView(
     let full_graph =
         Memo::new(move |_| tracker.get().map(|t| promise_graph(&t)).unwrap_or_default());
 
-    // PartialEq on PromiseGraphData makes this memo gate re-renders: filtering
-    // a graph that has no self promises returns an equal value, so panels
-    // without any are never told to re-render and keep their layout.
+    // PartialEq on FoldedGraph makes this memo gate re-renders: a rule that
+    // changes nothing in this panel's graph yields an equal value, so the
+    // panel is never told to re-render and keeps its layout.
     let graph_data = Memo::new(move |_| {
-        let data = full_graph.get();
-        if show_self_promises.get() {
-            data
-        } else {
-            data.without_self_promises()
-        }
+        tracker
+            .get()
+            .map(|t| fold(&full_graph.get(), &t, fold_options.get()))
+            .unwrap_or_default()
     });
 
     // Determine the current state for conditional rendering
@@ -191,12 +209,23 @@ pub fn PromiseGraphView(
     let sim_for_file = sim_label.clone();
     let frame_title = Signal::derive(move || format!("Overview - Simulation {}", sim_for_title));
     let frame_subtitle = Signal::derive(move || {
-        let self_state = if show_self_promises.get() {
-            "self-fulfilling promises shown"
+        let opts = fold_options.get();
+        let mut rules: Vec<String> = vec![];
+        if opts.own_inside {
+            rules.push("self promises inside".to_string());
+        }
+        if let Some(n) = opts.hub_threshold {
+            rules.push(format!("hubs at {} in", n));
+        }
+        if opts.bundle {
+            rules.push("bundled".to_string());
+        }
+        let folded = if rules.is_empty() {
+            "nothing folded".to_string()
         } else {
-            "self-fulfilling promises hidden"
+            rules.join(", ")
         };
-        format!("{} - generated {}", self_state, generated_at())
+        format!("{} - generated {}", folded, generated_at())
     });
     let frame_filename =
         Signal::derive(move || format!("promise-tracker-overview-{}", slugify(&sim_for_file)));
