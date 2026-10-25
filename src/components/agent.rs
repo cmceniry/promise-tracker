@@ -129,6 +129,11 @@ impl Agent {
         &self.name
     }
 
+    /// The comment written on the agent, empty when there is none.
+    pub fn get_comment(&self) -> &str {
+        &self.comment
+    }
+
     /// What this agent promises, as declared.
     pub fn provides(&self) -> &[Behavior] {
         &self.provides

@@ -2,6 +2,7 @@ pub mod components;
 pub mod diagram;
 pub mod network_diagram;
 pub mod promise_graph;
+pub mod trace;
 
 use components::Agent;
 use components::BaseKind;
@@ -411,6 +412,30 @@ impl Tracker {
             }
         }
         Some(ret)
+    }
+
+    /// The comment on a working agent, if it has one. An instance carries
+    /// its base's comment; a collective's members keep their own.
+    pub fn get_agent_comment(&self, agent_name: &str) -> Option<String> {
+        let agents = self.working_agents.get(agent_name)?;
+        agents
+            .iter()
+            .map(|a| a.get_comment())
+            .find(|c| !c.is_empty())
+            .map(str::to_string)
+    }
+
+    /// The comment on one of an agent's promises, if the promise is written
+    /// with one.
+    pub fn get_behavior_comment(&self, agent_name: &str, behavior_name: &str) -> Option<String> {
+        let agents = self.working_agents.get(agent_name)?;
+        agents
+            .iter()
+            .flat_map(|a| a.provides().iter())
+            .filter(|b| b.get_name() == behavior_name)
+            .map(|b| b.get_comment())
+            .find(|c| !c.is_empty())
+            .map(str::to_string)
     }
 
     /// The parameterized promises this agent makes, as written.

@@ -16,6 +16,7 @@ use super::cycle_banner::CycleBanner;
 use super::display_options::DisplayOptions;
 use super::promise_graph_view::PromiseGraphView;
 use super::simulation_controls::SimulationControls;
+use super::trace_view::TraceView;
 
 /// Build a Tracker from contract contents
 fn build_tracker_from_contracts(contracts: &[Contract], filter_sims: Option<&str>) -> Tracker {
@@ -248,6 +249,13 @@ pub fn ContractGrapher(
         }
     });
 
+    // The Trace view's want list shares the Detailed view's selection, so
+    // moving between the two tabs keeps the same want in front.
+    let on_trace_select = Callback::new(move |(component, behavior): (String, String)| {
+        set_d_component.set(component);
+        set_d_behavior.set(behavior);
+    });
+
     view! {
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
@@ -293,6 +301,19 @@ pub fn ContractGrapher(
                         }
                     >
                         "Detailed View"
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a
+                        class="nav-link"
+                        class:active=move || active_view.get() == "trace"
+                        href="#"
+                        on:click=move |ev| {
+                            ev.prevent_default();
+                            set_active_view.set("trace".to_string());
+                        }
+                    >
+                        "Trace"
                     </a>
                 </li>
             </ul>
@@ -470,6 +491,48 @@ pub fn ContractGrapher(
                                                     sim_label=sim_for_sequence.clone()
                                                 />
                                             </Show>
+                                        </div>
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                            }}
+                        </div>
+                    </div>
+                </Show>
+
+                // Trace Tab
+                <Show when=move || active_view.get() == "trace">
+                    <div style="margin-top: 1rem;">
+                        <div style="margin-bottom: 1rem;">
+                            <h3 style="margin: 0;">"Trace a Want"</h3>
+                            <p style="color: #666; font-size: 0.9em; margin-top: 0.25rem; margin-bottom: 0;">
+                                "One want, read left to right: who promises it, and what that rests on. Each promise is shown once."
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                            {move || {
+                                visible_simulations()
+                                    .iter()
+                                    .map(|sim| {
+                                    let tracker_signal = get_sim_tracker(sim);
+                                    let sim_display = sim.clone();
+                                    let sim_for_trace = sim.clone();
+                                    view! {
+                                        <div
+                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
+                                        >
+                                            <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
+                                                "Simulation " {sim_display}
+                                            </div>
+                                            <CycleBanner tracker=tracker_signal />
+                                            <TraceView
+                                                tracker=tracker_signal
+                                                selected_component=d_component
+                                                selected_behavior=d_behavior
+                                                on_select=on_trace_select
+                                                show_self_promises=show_self_promises
+                                                sim_label=sim_for_trace
+                                            />
                                         </div>
                                     }
                                 })

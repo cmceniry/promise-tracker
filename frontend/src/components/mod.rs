@@ -10,6 +10,7 @@ mod display_options;
 mod promise_graph_view;
 mod promise_network_graph;
 mod simulation_controls;
+mod trace_view;
 mod view_frame;
 
 pub use contract_browser::ContractBrowser;
@@ -33,5 +34,7 @@ pub(crate) use promise_graph_view::PromiseGraphView;
 pub(crate) use promise_network_graph::PromiseNetworkGraph;
 #[allow(unused_imports)]
 pub(crate) use simulation_controls::SimulationControls;
+#[allow(unused_imports)]
+pub(crate) use trace_view::TraceView;
 #[allow(unused_imports)]
 pub(crate) use view_frame::ViewFrame;
