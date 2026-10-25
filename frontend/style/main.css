@@ -339,11 +339,50 @@ body {
 }
 
 .trail-columns {
+    position: relative;
     display: flex;
-    gap: 0.75rem;
+    gap: 3rem;
     align-items: flex-start;
     overflow-x: auto;
     padding-bottom: 0.25rem;
+}
+
+/* The connector overlay sits under the cards and never takes a click */
+.trail-links {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: visible;
+}
+
+.trail-link {
+    fill: none;
+    stroke-width: 2;
+    transition: opacity 0.15s;
+}
+
+.trail-link-held {
+    stroke: #5C6B7A;
+}
+
+.trail-link-broken {
+    stroke: #C62828;
+    stroke-dasharray: 6 4;
+}
+
+.trail-link-ref {
+    stroke: #9AA5B1;
+    stroke-dasharray: 2 4;
+}
+
+.trail-link-lit {
+    stroke-width: 3;
+}
+
+.trail-link-faded {
+    opacity: 0.15;
 }
 
 .trail-column {
@@ -363,6 +402,8 @@ body {
 }
 
 .trail-card {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -385,6 +426,10 @@ body {
 
 .trail-card-selected {
     box-shadow: 0 0 0 2px #0d6efd;
+}
+
+.trail-card-faded {
+    opacity: 0.4;
 }
 
 .trail-card-want {

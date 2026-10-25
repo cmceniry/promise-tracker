@@ -884,6 +884,103 @@
         window.focus_promise_graph = RT.focus;
         window.refit_promise_graph = RT.refit;
 
+        // Connectors for the Trace view: arrows between the cards of a trail,
+        // drawn into an SVG laid over the columns. Positions are measured
+        // from the DOM, so the view calls this after it has rendered and the
+        // observer redraws when the columns change size.
+        (function () {
+            // containerId -> { links, chain, observer }
+            const trails = new Map();
+            const SVG_NS = 'http://www.w3.org/2000/svg';
+
+            function marker(containerId, name, color) {
+                const m = document.createElementNS(SVG_NS, 'marker');
+                m.setAttribute('id', containerId + '-arrow-' + name);
+                m.setAttribute('orient', 'auto');
+                m.setAttribute('markerWidth', '8');
+                m.setAttribute('markerHeight', '8');
+                m.setAttribute('refX', '7');
+                m.setAttribute('refY', '4');
+                m.setAttribute('markerUnits', 'userSpaceOnUse');
+                const path = document.createElementNS(SVG_NS, 'path');
+                path.setAttribute('d', 'M0 0 L8 4 L0 8 Z');
+                path.setAttribute('fill', color);
+                m.appendChild(path);
+                return m;
+            }
+
+            function draw(containerId) {
+                const state = trails.get(containerId);
+                const container = document.getElementById(containerId);
+                if (!state || !container) return;
+                let svg = container.querySelector(':scope > svg.trail-links');
+                if (!svg) {
+                    svg = document.createElementNS(SVG_NS, 'svg');
+                    svg.setAttribute('class', 'trail-links');
+                    svg.setAttribute('aria-hidden', 'true');
+                    container.insertBefore(svg, container.firstChild);
+                }
+                while (svg.firstChild) svg.removeChild(svg.firstChild);
+                svg.setAttribute('width', container.scrollWidth);
+                svg.setAttribute('height', container.scrollHeight);
+
+                const defs = document.createElementNS(SVG_NS, 'defs');
+                defs.appendChild(marker(containerId, 'held', '#5C6B7A'));
+                defs.appendChild(marker(containerId, 'broken', '#C62828'));
+                defs.appendChild(marker(containerId, 'ref', '#9AA5B1'));
+                svg.appendChild(defs);
+
+                const chain = state.chain ? new Set(state.chain) : null;
+                const cardEl = id => container.querySelector('[data-card="' + id + '"]');
+                state.links.forEach(link => {
+                    const from = cardEl(link.from);
+                    const to = cardEl(link.to);
+                    if (!from || !to) return;
+                    const forward = to.offsetLeft >= from.offsetLeft + from.offsetWidth;
+                    const x1 = forward ? from.offsetLeft + from.offsetWidth : from.offsetLeft;
+                    const y1 = from.offsetTop + from.offsetHeight / 2;
+                    const x2 = forward ? to.offsetLeft - 1 : to.offsetLeft + to.offsetWidth + 1;
+                    const y2 = to.offsetTop + to.offsetHeight / 2;
+                    const dx = Math.max(24, Math.abs(x2 - x1) / 2);
+                    const c1 = forward ? x1 + dx : x1 - dx;
+                    const c2 = forward ? x2 - dx : x2 + dx;
+                    const path = document.createElementNS(SVG_NS, 'path');
+                    path.setAttribute('d', 'M' + x1 + ' ' + y1 + ' C' + c1 + ' ' + y1 + ' ' + c2 + ' ' + y2 + ' ' + x2 + ' ' + y2);
+                    const kind = link.reference ? 'ref' : (link.broken ? 'broken' : 'held');
+                    let cls = 'trail-link trail-link-' + kind;
+                    if (chain) {
+                        cls += (chain.has(link.from) && chain.has(link.to)) ? ' trail-link-lit' : ' trail-link-faded';
+                    }
+                    path.setAttribute('class', cls);
+                    path.setAttribute('marker-end', 'url(#' + containerId + '-arrow-' + kind + ')');
+                    svg.appendChild(path);
+                });
+            }
+
+            window.draw_trail_links = function (containerId, links, chain) {
+                let state = trails.get(containerId);
+                if (!state) {
+                    state = { links: [], chain: null, observer: null };
+                    trails.set(containerId, state);
+                }
+                state.links = links || [];
+                state.chain = chain || null;
+                const container = document.getElementById(containerId);
+                if (container && !state.observer) {
+                    state.observer = new ResizeObserver(() => draw(containerId));
+                    state.observer.observe(container);
+                }
+                draw(containerId);
+            };
+
+            window.destroy_trail_links = function (containerId) {
+                const state = trails.get(containerId);
+                if (!state) return;
+                if (state.observer) state.observer.disconnect();
+                trails.delete(containerId);
+            };
+        })();
+
         // Kept beside index.html's own script tags on purpose: if one set of
         // versions moves, the other has to move with it.
         const CDN = {

@@ -8,9 +8,74 @@
 use leptos::prelude::*;
 use promise_tracker::trace::{trail, wants, CardKind, Trail, TrailCard, WantSummary};
 use promise_tracker::Tracker;
+use serde::Serialize;
+use std::collections::HashSet;
+use wasm_bindgen::prelude::*;
 
 use super::view_frame::ViewFrame;
 use crate::utils::{escape_html, generated_at, html_document, slugify};
+
+// JS interop for the connector overlay in index.html
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = draw_trail_links)]
+    fn js_draw_trail_links(container_id: &str, links: JsValue, chain: JsValue);
+
+    #[wasm_bindgen(js_name = destroy_trail_links)]
+    fn js_destroy_trail_links(container_id: &str);
+}
+
+/// One arrow between two cards, for the overlay.
+#[derive(Serialize)]
+struct Link {
+    from: usize,
+    to: usize,
+    /// The card pointed at is not held.
+    broken: bool,
+    /// Points back at a card that was already on the trail.
+    reference: bool,
+}
+
+fn links_of(trail: &Trail) -> Vec<Link> {
+    trail
+        .cards
+        .iter()
+        .flat_map(|card| {
+            card.needs.iter().map(move |need| Link {
+                from: card.id,
+                to: need.card,
+                broken: !trail.cards[need.card].satisfied,
+                reference: need.reference,
+            })
+        })
+        .collect()
+}
+
+/// Everything upstream and downstream of one card: the whole chain through
+/// it, read left to right.
+fn chain_through(trail: &Trail, id: usize) -> HashSet<usize> {
+    let mut chain: HashSet<usize> = HashSet::new();
+    chain.insert(id);
+    // Downstream: what it rests on.
+    let mut queue = vec![id];
+    while let Some(c) = queue.pop() {
+        for need in &trail.cards[c].needs {
+            if chain.insert(need.card) {
+                queue.push(need.card);
+            }
+        }
+    }
+    // Upstream: what rests on it.
+    let mut queue = vec![id];
+    while let Some(c) = queue.pop() {
+        for parent in needed_by(trail, c) {
+            if chain.insert(parent.id) {
+                queue.push(parent.id);
+            }
+        }
+    }
+    chain
+}
 
 /// Heading over a column, by depth.
 fn column_heading(depth: usize) -> &'static str {
@@ -198,6 +263,34 @@ pub fn TraceView(
         set_selected_card.set(None);
         set_lit_card.set(None);
     });
+
+    // The chain in front: through the hovered card, else the selected one.
+    let chain = Memo::new(move |_| {
+        let t = current_trail.get()?;
+        let focus = lit_card.get().or(selected_card.get())?;
+        t.cards.get(focus)?;
+        Some(chain_through(&t, focus))
+    });
+
+    // The connector overlay is drawn from the DOM, so it runs after the
+    // cards are in place and again whenever the chain changes.
+    let columns_id = format!("trail-columns-{}", slugify(&sim_label));
+    let columns_id_for_view = columns_id.clone();
+    let columns_id_for_cleanup = columns_id.clone();
+    Effect::new(move |_| {
+        let Some(t) = current_trail.get() else {
+            js_destroy_trail_links(&columns_id);
+            return;
+        };
+        let links = serde_wasm_bindgen::to_value(&links_of(&t)).unwrap_or(JsValue::NULL);
+        let chain_ids: Option<Vec<usize>> = chain.get().map(|c| c.into_iter().collect());
+        let chain_value = serde_wasm_bindgen::to_value(&chain_ids).unwrap_or(JsValue::NULL);
+        let id = columns_id.clone();
+        let _ = request_animation_frame(move || {
+            let _ = request_animation_frame(move || js_draw_trail_links(&id, links, chain_value));
+        });
+    });
+    on_cleanup(move || js_destroy_trail_links(&columns_id_for_cleanup));
 
     let summary = Memo::new(move |_| {
         current_trail
@@ -392,27 +485,23 @@ pub fn TraceView(
                                                 let agent_line = card_agent_line(&card);
                                                 let behavior = card.behavior.clone();
                                                 let needs = card.needs.clone();
-                                                let trail_for_needs = trail_for_cards.clone();
-                                                // Lit when hovered, or when the hovered card needs it.
-                                                let lit_by_hover = move || {
-                                                    match lit_card.get() {
-                                                        Some(l) if l == id => true,
-                                                        Some(l) => trail_for_needs
-                                                            .cards
-                                                            .get(l)
-                                                            .map(|c| c.needs.iter().any(|n| n.card == id))
-                                                            .unwrap_or(false),
-                                                        None => false,
-                                                    }
+                                                // On the chain in front, or faded behind it.
+                                                let on_chain = move || {
+                                                    chain.get().map(|c| c.contains(&id)).unwrap_or(false)
+                                                };
+                                                let off_chain = move || {
+                                                    chain.get().map(|c| !c.contains(&id)).unwrap_or(false)
                                                 };
                                                 view! {
                                                     <button
                                                         type="button"
                                                         class=format!("trail-card {}", status)
+                                                        data-card=id.to_string()
                                                         class:trail-card-selected=move || {
                                                             selected_card.get() == Some(id)
                                                         }
-                                                        class:trail-card-lit=lit_by_hover
+                                                        class:trail-card-lit=on_chain
+                                                        class:trail-card-faded=off_chain
                                                         on:click=move |_| set_selected_card.set(Some(id))
                                                         on:mouseenter=move |_| set_lit_card.set(Some(id))
                                                         on:mouseleave=move |_| set_lit_card.set(None)
@@ -589,7 +678,7 @@ pub fn TraceView(
 
                         view! {
                             <div class=status_class>{summary.get()}</div>
-                            <div class="trail-columns">{columns}</div>
+                            <div class="trail-columns" id=columns_id_for_view.clone()>{columns}</div>
                             {inspector}
                         }
                             .into_any()
@@ -598,4 +687,14 @@ pub fn TraceView(
             </div>
         </ViewFrame>
     }
+}
+
+/// Helper function to schedule a callback using requestAnimationFrame
+fn request_animation_frame<F>(f: F) -> Result<i32, JsValue>
+where
+    F: FnOnce() + 'static,
+{
+    let window = web_sys::window().expect("no global window exists");
+    let closure = Closure::once_into_js(f);
+    window.request_animation_frame(closure.as_ref().unchecked_ref())
 }
