@@ -1,6 +1,9 @@
+use gloo_storage::{LocalStorage, Storage};
 use gloo_timers::callback::Timeout;
 use leptos::prelude::*;
 use promise_tracker::components::Item;
+use promise_tracker::fold::{fold, FoldOptions, GroupSpec};
+use promise_tracker::promise_graph::promise_graph;
 use promise_tracker::Tracker;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -15,7 +18,11 @@ use super::contract_text::ContractText;
 use super::cycle_banner::CycleBanner;
 use super::display_options::DisplayOptions;
 use super::promise_graph_view::PromiseGraphView;
+use super::simplify_panel::SimplifyPanel;
 use super::simulation_controls::SimulationControls;
+use super::trace_view::TraceView;
+
+const GROUPS_STORAGE_KEY: &str = "scratch_groups";
 
 /// Build a Tracker from contract contents
 fn build_tracker_from_contracts(contracts: &[Contract], filter_sims: Option<&str>) -> Tracker {
@@ -69,6 +76,27 @@ pub fn ContractGrapher(
     // closures below would rebuild every panel on a toggle, resetting each
     // one's inner tab and tearing down its graph.
     let (show_self_promises, set_show_self_promises) = signal(true);
+
+    // The other folding rules for the overview graph. Self promises are the
+    // display toggle above, so the options handed to the graph are composed.
+    let (fold_options, set_fold_options) = signal(FoldOptions::default());
+
+    // Scratch groups the reader drew on the overview. They are how the reader
+    // is looking, not what the contract says, so they live in this browser.
+    let (groups, set_groups) =
+        signal::<Vec<GroupSpec>>(LocalStorage::get(GROUPS_STORAGE_KEY).unwrap_or_default());
+    Effect::new(move |_| {
+        if let Err(e) = LocalStorage::set(GROUPS_STORAGE_KEY, groups.get()) {
+            web_sys::console::error_1(&format!("Failed to save scratch groups: {:?}", e).into());
+        }
+    });
+    let on_groups_change = Callback::new(move |next: Vec<GroupSpec>| set_groups.set(next));
+
+    let effective_fold = Signal::derive(move || FoldOptions {
+        own_inside: !show_self_promises.get(),
+        groups: groups.get(),
+        ..fold_options.get()
+    });
 
     // Selected component and behavior for detailed view
     let (d_component, set_d_component) = signal("---".to_string());
@@ -248,6 +276,20 @@ pub fn ContractGrapher(
         }
     });
 
+    // The Trace view's want list shares the Detailed view's selection, so
+    // moving between the two tabs keeps the same want in front.
+    let on_trace_select = Callback::new(move |(component, behavior): (String, String)| {
+        set_d_component.set(component);
+        set_d_behavior.set(behavior);
+    });
+
+    // What the rules take off the main (unfiltered) graph, for the panel.
+    let fold_stats = Memo::new(move |_| {
+        main_tracker
+            .get()
+            .map(|t| fold(&promise_graph(&t), &t, effective_fold.get()).stats)
+    });
+
     view! {
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
@@ -295,6 +337,19 @@ pub fn ContractGrapher(
                         "Detailed View"
                     </a>
                 </li>
+                <li class="nav-item">
+                    <a
+                        class="nav-link"
+                        class:active=move || active_view.get() == "trace"
+                        href="#"
+                        on:click=move |ev| {
+                            ev.prevent_default();
+                            set_active_view.set("trace".to_string());
+                        }
+                    >
+                        "Trace"
+                    </a>
+                </li>
             </ul>
 
             // Tab Content
@@ -308,6 +363,13 @@ pub fn ContractGrapher(
                                 "This view shows all components and their promise relationships."
                             </p>
                         </div>
+                        <SimplifyPanel
+                            fold_options=fold_options
+                            set_fold_options=set_fold_options
+                            show_self_promises=show_self_promises
+                            on_toggle_self_promises=on_toggle_self_promises
+                            stats=fold_stats
+                        />
                         <div style="display: flex; gap: 1rem; margin-top: 1rem;">
                             {move || {
                                 visible_simulations()
@@ -328,7 +390,9 @@ pub fn ContractGrapher(
                                             <PromiseGraphView
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
-                                                show_self_promises=show_self_promises
+                                                fold_options=effective_fold
+                                                groups=groups
+                                                on_groups_change=on_groups_change
                                                 sim_label=sim_for_graph.clone()
                                                 on_edge_select=on_edge_select
                                             />
@@ -470,6 +534,48 @@ pub fn ContractGrapher(
                                                     sim_label=sim_for_sequence.clone()
                                                 />
                                             </Show>
+                                        </div>
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                            }}
+                        </div>
+                    </div>
+                </Show>
+
+                // Trace Tab
+                <Show when=move || active_view.get() == "trace">
+                    <div style="margin-top: 1rem;">
+                        <div style="margin-bottom: 1rem;">
+                            <h3 style="margin: 0;">"Trace a Want"</h3>
+                            <p style="color: #666; font-size: 0.9em; margin-top: 0.25rem; margin-bottom: 0;">
+                                "One want, read left to right: who promises it, and what that rests on. Each promise is shown once."
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                            {move || {
+                                visible_simulations()
+                                    .iter()
+                                    .map(|sim| {
+                                    let tracker_signal = get_sim_tracker(sim);
+                                    let sim_display = sim.clone();
+                                    let sim_for_trace = sim.clone();
+                                    view! {
+                                        <div
+                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
+                                        >
+                                            <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
+                                                "Simulation " {sim_display}
+                                            </div>
+                                            <CycleBanner tracker=tracker_signal />
+                                            <TraceView
+                                                tracker=tracker_signal
+                                                selected_component=d_component
+                                                selected_behavior=d_behavior
+                                                on_select=on_trace_select
+                                                show_self_promises=show_self_promises
+                                                sim_label=sim_for_trace
+                                            />
                                         </div>
                                     }
                                 })

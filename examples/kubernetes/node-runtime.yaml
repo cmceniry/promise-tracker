@@ -1,0 +1,157 @@
+# What a node needs besides the kubelet: a CRI runtime and its OCI runtime,
+# a CNI plugin, kube-proxy, and the CSI driver halves.
+# Sources:
+#   https://kubernetes.io/docs/concepts/architecture/cri/
+#   https://kubernetes.io/docs/reference/networking/virtual-ips/
+#   https://kubernetes.io/docs/concepts/storage/volumes/
+
+kind: Agent
+name: containerd
+comment: >-
+  CRI v1 runtime on unix:///run/containerd/containerd.sock. The kubelet will
+  not register a node whose runtime does not speak CRI v1.
+provides:
+  - name: container-runtime-service
+    comment: CRI RuntimeService; sandbox and container RPCs over gRPC.
+    conditions:
+      - oci-runtime
+      - linux-cgroups
+      - local-disk
+  - name: container-image-service
+    comment: CRI ImageService; the kubelet's --image-service-endpoint defaults to the same socket.
+    conditions:
+      - local-disk
+  - name: pod-sandbox-lifecycle
+    comment: RunPodSandbox creates the pause container and calls the CNI plugin for its network namespace.
+    conditions:
+      - container-runtime-service
+      - cni-network-plugin
+  - name: container-lifecycle
+    comment: CreateContainer / StartContainer / StopContainer / RemoveContainer, plus exec and attach streaming.
+    conditions:
+      - container-runtime-service
+      - oci-runtime
+  - name: container-image-pulls
+    comment: PullImage with credentials from imagePullSecrets or a kubelet credential provider.
+    conditions:
+      - container-image-service
+      - container-images
+wants:
+  - name: oci-runtime
+  - name: linux-cgroups
+  - name: local-disk
+  - name: container-images
+
+---
+kind: Agent
+name: runc
+comment: OCI runtime that actually creates the container process in its namespaces and cgroups.
+provides:
+  - name: oci-runtime
+    conditions:
+      - linux-namespaces
+      - linux-cgroups
+wants:
+  - name: linux-namespaces
+  - name: linux-cgroups
+
+---
+kind: Agent
+name: cni-plugin
+comment: >-
+  A CNI plugin such as Cilium, Calico or flannel. Assigns pod IPs out of the
+  node's podCIDR and makes pods reachable across nodes, either with its own
+  overlay/BGP or by leaning on cloud routes.
+provides:
+  - name: cni-network-plugin
+    comment: the ADD/DEL binary under /opt/cni/bin plus its config in /etc/cni/net.d.
+    conditions:
+      - pod-cidr-allocation
+      - linux-namespaces
+  - name: node-pod-routes
+    comment: overlay or BGP cross-node routes; the cloud route controller offers the same promise.
+    conditions:
+      - pod-cidr-allocation
+      - kernel-packet-filtering
+  - name: pod-network-connectivity
+    comment: any pod can reach any other pod without NAT, the network model's first rule.
+    conditions:
+      - cni-network-plugin
+      - node-pod-routes
+wants:
+  - name: list-watch-streams
+    comment: watches Nodes for podCIDRs and NetworkPolicies.
+  - name: pod-cidr-allocation
+
+---
+kind: Agent
+name: kube-proxy
+comment: >-
+  Implements Service virtual IPs on each node. --proxy-mode iptables (default),
+  ipvs or nftables on Linux; kernelspace on Windows. Watches Services and
+  EndpointSlices and keeps kernel rules in sync.
+provides:
+  - name: service-virtual-ips
+    comment: traffic to a ClusterIP:port is captured and redirected to a ready endpoint.
+    conditions:
+      - list-watch-streams
+      - endpointslices
+      - service-cluster-ip-allocation
+      - kernel-packet-filtering
+      - connection-tracking
+  - name: nodeport-services
+    comment: the same for type=NodePort on every node's addresses; what cloud load balancers target.
+    conditions:
+      - service-virtual-ips
+wants:
+  - name: list-watch-streams
+  - name: endpointslices
+  - name: kernel-packet-filtering
+  - name: connection-tracking
+
+---
+kind: Agent
+name: csi-node-plugin
+comment: >-
+  The DaemonSet half of a CSI driver. node-driver-registrar registers it with
+  the kubelet; the kubelet then calls NodeStageVolume / NodePublishVolume.
+provides:
+  - name: csi-node-volume-operations
+    conditions:
+      - kubelet-plugin-registration
+      - cloud-block-storage-api
+  - name: csi-node-info
+    comment: the CSINode object with topology keys and per-node volume limits.
+    conditions:
+      - kubernetes-api
+      - kubelet-plugin-registration
+wants:
+  - name: kubelet-plugin-registration
+  - name: cloud-block-storage-api
+
+---
+kind: Agent
+name: csi-controller-plugin
+comment: >-
+  The Deployment half of a CSI driver with its sidecars: external-provisioner,
+  external-attacher, external-resizer.
+provides:
+  - name: dynamic-volume-provisioning
+    comment: external-provisioner answers PVCs for its StorageClass with CreateVolume.
+    conditions:
+      - list-watch-streams
+      - kubernetes-api
+      - cloud-block-storage-api
+  - name: volume-attachment
+    comment: external-attacher acts on VolumeAttachment objects with ControllerPublishVolume.
+    conditions:
+      - volume-attachment-requests
+      - cloud-block-storage-api
+  - name: volume-expansion
+    comment: external-resizer acts on PVCs the expander controller flagged.
+    conditions:
+      - persistent-volume-expansion-requests
+      - cloud-block-storage-api
+wants:
+  - name: list-watch-streams
+  - name: cloud-block-storage-api

@@ -214,3 +214,453 @@ body {
     max-height: calc(100vh - 120px);
     overflow: auto;
 }
+
+/* Trace view: one want as columns of cards */
+.trail-layout {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    font-size: 0.85em;
+}
+
+.trail-wants {
+    flex: 0 0 220px;
+    max-height: 560px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.view-maximized .trail-wants {
+    max-height: calc(100vh - 140px);
+}
+
+.trail-wants-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    font-weight: bold;
+    border-bottom: 1px solid #dee2e6;
+    position: sticky;
+    top: 0;
+    background: #fff;
+}
+
+.trail-wants-group {
+    padding: 0.25rem 0;
+    border-bottom: 1px solid #f1f3f5;
+}
+
+.trail-wants-agent {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.3rem 0.6rem 0.15rem;
+    font-family: monospace;
+    font-weight: bold;
+    overflow-wrap: anywhere;
+}
+
+.trail-want {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    padding: 0.3rem 0.6rem;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-family: monospace;
+    font-size: 0.95em;
+    color: #212529;
+    cursor: pointer;
+}
+
+.trail-want:hover {
+    background: #f1f3f5;
+}
+
+.trail-want-active {
+    background: #e7f1ff;
+    color: #0a58ca;
+    font-weight: bold;
+}
+
+.trail-want-broken {
+    color: #b02a37;
+}
+
+.trail-want-label {
+    overflow-wrap: anywhere;
+}
+
+.trail-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #2e7d32;
+}
+
+.trail-dot-broken {
+    background: #c62828;
+}
+
+.trail-main {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.trail-empty {
+    padding: 2rem;
+    text-align: center;
+    color: #666;
+}
+
+.trail-status {
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+.trail-status-held {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.trail-status-broken {
+    background: #fdecea;
+    color: #b02a37;
+}
+
+.trail-columns {
+    position: relative;
+    display: flex;
+    gap: 3rem;
+    align-items: flex-start;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+}
+
+/* The connector overlay sits under the cards and never takes a click */
+.trail-links {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: visible;
+}
+
+.trail-link {
+    fill: none;
+    stroke-width: 2;
+    transition: opacity 0.15s;
+}
+
+.trail-link-held {
+    stroke: #5C6B7A;
+}
+
+.trail-link-broken {
+    stroke: #C62828;
+    stroke-dasharray: 6 4;
+}
+
+.trail-link-ref {
+    stroke: #9AA5B1;
+    stroke-dasharray: 2 4;
+}
+
+.trail-link-lit {
+    stroke-width: 3;
+}
+
+.trail-link-faded {
+    opacity: 0.15;
+}
+
+.trail-column {
+    flex: 0 0 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.trail-column-head {
+    font-size: 0.75em;
+    font-weight: bold;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #666;
+    padding: 0 0.2rem;
+}
+
+.trail-card {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.2rem;
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid #dee2e6;
+    border-left-width: 4px;
+    border-radius: 6px;
+    background: #fff;
+    text-align: left;
+    color: #212529;
+    cursor: pointer;
+}
+
+.trail-card:hover,
+.trail-card-lit {
+    box-shadow: 0 0 0 2px #cfe2ff;
+}
+
+.trail-card-selected {
+    box-shadow: 0 0 0 2px #0d6efd;
+}
+
+.trail-card-faded {
+    opacity: 0.4;
+}
+
+.trail-card-want {
+    border-left-color: #495057;
+}
+
+.trail-card-held {
+    border-left-color: #2e7d32;
+}
+
+.trail-card-broken {
+    border-left-color: #c62828;
+}
+
+.trail-card-missing {
+    border-style: dashed;
+    border-color: #c62828;
+    border-left-width: 1px;
+    background: #fdecea;
+    color: #7a2a0e;
+}
+
+.trail-card-behavior {
+    font-family: monospace;
+    font-weight: bold;
+    overflow-wrap: anywhere;
+}
+
+.trail-card-agent {
+    font-size: 0.85em;
+    color: #666;
+    overflow-wrap: anywhere;
+}
+
+.trail-needs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.15rem;
+}
+
+.trail-need {
+    font-family: monospace;
+    font-size: 0.8em;
+    padding: 0 0.35rem;
+    border: 1px solid #dee2e6;
+    border-radius: 3px;
+    background: #f8f9fa;
+    overflow-wrap: anywhere;
+}
+
+.trail-need:hover {
+    border-color: #0d6efd;
+}
+
+.trail-need-ref {
+    border-style: dashed;
+    color: #495057;
+}
+
+.trail-need-own {
+    background: #fff;
+    color: #666;
+    font-style: italic;
+}
+
+.trail-need-broken {
+    border-color: #c62828;
+    color: #b02a37;
+}
+
+.trail-inspector {
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    background: #fff;
+    padding: 0.6rem 0.75rem;
+}
+
+.trail-inspector-kind {
+    font-size: 0.75em;
+    font-weight: bold;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #666;
+}
+
+.trail-inspector-title {
+    font-family: monospace;
+    font-weight: bold;
+    font-size: 1.1em;
+    overflow-wrap: anywhere;
+}
+
+.trail-inspector-comment {
+    margin: 0.4rem 0 0;
+}
+
+.trail-inspector-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.6rem;
+}
+
+.trail-inspector-label {
+    font-size: 0.75em;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #666;
+    margin-bottom: 0.2rem;
+}
+
+.trail-inspector-list {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-family: monospace;
+    overflow-wrap: anywhere;
+}
+
+.trail-text-broken {
+    color: #b02a37;
+}
+
+.trail-muted {
+    color: #666;
+    font-weight: normal;
+}
+
+/* Simplify panel: the folding rules over the overview graph */
+.simplify-panel {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: #f8f9fa;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+.simplify-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+}
+
+.simplify-summary {
+    color: #495057;
+}
+
+.simplify-rules {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.5rem 1rem;
+}
+
+.simplify-rule {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    cursor: pointer;
+}
+
+.simplify-rule input[type="checkbox"] {
+    margin-top: 0.2rem;
+    flex: none;
+}
+
+.simplify-rule-name {
+    display: block;
+    font-weight: 600;
+}
+
+.simplify-rule-note {
+    display: block;
+    font-size: 0.85em;
+    color: #666;
+}
+
+.simplify-threshold {
+    width: 4.5rem;
+    padding: 0 0.3rem;
+    font: inherit;
+}
+
+.simplify-foot {
+    margin-top: 0.5rem;
+    font-size: 0.85em;
+    color: #666;
+}
+
+/* Scratch groups strip over the overview graph */
+.scratch-groups {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.75rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.85em;
+}
+
+.scratch-groups-head {
+    font-weight: bold;
+    color: #1A43A8;
+}
+
+.scratch-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.2rem 0.1rem 0.6rem;
+    border: 2px dashed #2458D6;
+    border-radius: 6px;
+    background: #EEF2FD;
+}
+
+.scratch-group-name {
+    font-weight: 600;
+    color: #1A43A8;
+}
+
+.scratch-group-count {
+    color: #666;
+}
+
+.scratch-group .btn-link {
+    padding: 0 0.3rem;
+    font-size: inherit;
+    text-decoration: none;
+}
+
+.scratch-groups-note {
+    color: #666;
+}

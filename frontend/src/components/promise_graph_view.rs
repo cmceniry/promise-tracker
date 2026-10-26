@@ -2,8 +2,12 @@
 //!
 //! Agents are nodes; every promise is an agent-to-agent edge labeled with its
 //! behavior. Unresolvable behaviors appear as dashed "missing" ghost nodes.
+//! The folding rules in `promise_tracker::fold` run between the walk and the
+//! canvas: collectives and hubs are marked, parallel promises become one line,
+//! and self promises stay inside their node.
 
 use leptos::prelude::*;
+use promise_tracker::fold::{fold, FoldOptions, GroupSpec};
 use promise_tracker::promise_graph::{promise_graph, UnsatisfiedWant};
 use promise_tracker::Tracker;
 use serde::Serialize;
@@ -33,6 +37,9 @@ extern "C" {
 
     #[wasm_bindgen(js_name = refit_promise_graph)]
     fn js_refit_promise_graph(container_id: &str);
+
+    #[wasm_bindgen(js_name = selected_promise_graph_nodes)]
+    fn js_selected_promise_graph_nodes(container_id: &str) -> JsValue;
 }
 
 /// Legend for the promise graph
@@ -77,8 +84,22 @@ fn PromiseGraphLegend() -> impl IntoView {
                 <span>"Condition"</span>
             </div>
             <div class="promise-network-legend-item">
-                <span style="font-weight: bold;">"n promises"</span>
+                <span style="font-weight: bold;">"\u{00d7}n"</span>
                 <span>"Bundle (tap to expand)"</span>
+            </div>
+            <div class="promise-network-legend-item">
+                <span
+                    class="promise-network-legend-color"
+                    style="background-color: #1F2A37;"
+                ></span>
+                <span>"Hub (lines folded into \u{21b3} badges)"</span>
+            </div>
+            <div class="promise-network-legend-item">
+                <span
+                    class="promise-network-legend-color"
+                    style="background-color: #E3EAF2; border: 1px solid #78909C;"
+                ></span>
+                <span>"Collective"</span>
             </div>
         </div>
     }
@@ -90,7 +111,14 @@ fn PromiseGraphLegend() -> impl IntoView {
 pub fn PromiseGraphView(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     sim_id: String,
-    #[prop(into)] show_self_promises: Signal<bool>,
+    /// Which folding rules to apply before drawing
+    #[prop(into)]
+    fold_options: Signal<FoldOptions>,
+    /// The reader's scratch groups, shared by every panel
+    #[prop(into)]
+    groups: Signal<Vec<GroupSpec>>,
+    /// Replaces the scratch groups
+    on_groups_change: Callback<Vec<GroupSpec>>,
     /// Which simulation this panel belongs to, for the export's header
     sim_label: String,
     #[prop(optional)] on_edge_select: Option<Callback<(String, String)>>,
@@ -104,22 +132,68 @@ pub fn PromiseGraphView(
     let container_id_for_reset = container_id.clone();
     let container_id_for_export = container_id.clone();
     let container_id_for_refit = container_id.clone();
+    let container_id_for_group = container_id.clone();
+
+    // Make a group of whatever is selected on the canvas. The name comes
+    // from a prompt: one question, no form to build for a scratch grouping.
+    let make_group = Callback::new(move |_: ()| {
+        let selected: Vec<String> = serde_wasm_bindgen::from_value(
+            js_selected_promise_graph_nodes(&container_id_for_group),
+        )
+        .unwrap_or_default();
+        let win = web_sys::window().expect("no global window exists");
+        if selected.is_empty() {
+            let _ = win.alert_with_message(
+                "Click the nodes to group first. Each click adds one; click the background to clear.",
+            );
+            return;
+        }
+        let Ok(Some(name)) = win.prompt_with_message_and_default(
+            "Name for the group",
+            &format!("group {}", groups.get_untracked().len() + 1),
+        ) else {
+            return;
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let mut next: Vec<GroupSpec> = groups
+            .get_untracked()
+            .into_iter()
+            .filter(|g| g.name != name)
+            .map(|g| GroupSpec {
+                // A node is in one group at a time.
+                members: g
+                    .members
+                    .into_iter()
+                    .filter(|m| !selected.contains(m))
+                    .collect(),
+                ..g
+            })
+            .filter(|g| !g.members.is_empty())
+            .collect();
+        next.push(GroupSpec {
+            name,
+            members: selected,
+            folded: false,
+        });
+        on_groups_change.run(next);
+    });
 
     // The tree walk is the expensive half and does not depend on the display
     // options, so it stays in its own memo.
     let full_graph =
         Memo::new(move |_| tracker.get().map(|t| promise_graph(&t)).unwrap_or_default());
 
-    // PartialEq on PromiseGraphData makes this memo gate re-renders: filtering
-    // a graph that has no self promises returns an equal value, so panels
-    // without any are never told to re-render and keep their layout.
+    // PartialEq on FoldedGraph makes this memo gate re-renders: a rule that
+    // changes nothing in this panel's graph yields an equal value, so the
+    // panel is never told to re-render and keeps its layout.
     let graph_data = Memo::new(move |_| {
-        let data = full_graph.get();
-        if show_self_promises.get() {
-            data
-        } else {
-            data.without_self_promises()
-        }
+        tracker
+            .get()
+            .map(|t| fold(&full_graph.get(), &t, fold_options.get()))
+            .unwrap_or_default()
     });
 
     // Determine the current state for conditional rendering
@@ -191,12 +265,23 @@ pub fn PromiseGraphView(
     let sim_for_file = sim_label.clone();
     let frame_title = Signal::derive(move || format!("Overview - Simulation {}", sim_for_title));
     let frame_subtitle = Signal::derive(move || {
-        let self_state = if show_self_promises.get() {
-            "self-fulfilling promises shown"
+        let opts = fold_options.get();
+        let mut rules: Vec<String> = vec![];
+        if opts.own_inside {
+            rules.push("self promises inside".to_string());
+        }
+        if let Some(n) = opts.hub_threshold {
+            rules.push(format!("hubs at {} in", n));
+        }
+        if opts.bundle {
+            rules.push("bundled".to_string());
+        }
+        let folded = if rules.is_empty() {
+            "nothing folded".to_string()
         } else {
-            "self-fulfilling promises hidden"
+            rules.join(", ")
         };
-        format!("{} - generated {}", self_state, generated_at())
+        format!("{} - generated {}", folded, generated_at())
     });
     let frame_filename =
         Signal::derive(move || format!("promise-tracker-overview-{}", slugify(&sim_for_file)));
@@ -236,6 +321,14 @@ pub fn PromiseGraphView(
                 let id = container_id_for_reset.clone();
                 view! {
                     <button
+                        class="btn btn-sm btn-outline-primary"
+                        style="flex-shrink: 0;"
+                        title="Draw a scratch group around the selected nodes. Click nodes to select them."
+                        on:click=move |_| make_group.run(())
+                    >
+                        "Group selected"
+                    </button>
+                    <button
                         class="btn btn-sm btn-outline-secondary"
                         style="flex-shrink: 0;"
                         title="Re-run the layout and fit the graph to the panel"
@@ -265,6 +358,65 @@ pub fn PromiseGraphView(
 
             <Show when=move || state.get() == "ready">
                 <PromiseGraphLegend />
+                <Show when=move || !groups.get().is_empty()>
+                    <div class="scratch-groups">
+                        <span class="scratch-groups-head">"Scratch groups"</span>
+                        {move || {
+                            groups
+                                .get()
+                                .into_iter()
+                                .map(|g| {
+                                    let name = g.name.clone();
+                                    let count = g.members.len();
+                                    let folded = g.folded;
+                                    let name_for_fold = name.clone();
+                                    let name_for_drop = name.clone();
+                                    let title = g.members.join(", ");
+                                    view! {
+                                        <span class="scratch-group" title=title>
+                                            <span class="scratch-group-name">{name}</span>
+                                            <span class="scratch-group-count">{format!("{} nodes", count)}</span>
+                                            <button
+                                                type="button"
+                                                class="btn btn-sm btn-link"
+                                                on:click=move |_| {
+                                                    let next = groups
+                                                        .get_untracked()
+                                                        .into_iter()
+                                                        .map(|mut g| {
+                                                            if g.name == name_for_fold {
+                                                                g.folded = !g.folded;
+                                                            }
+                                                            g
+                                                        })
+                                                        .collect();
+                                                    on_groups_change.run(next);
+                                                }
+                                            >
+                                                {if folded { "Open" } else { "Fold" }}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                class="btn btn-sm btn-link text-danger"
+                                                on:click=move |_| {
+                                                    let next = groups
+                                                        .get_untracked()
+                                                        .into_iter()
+                                                        .filter(|g| g.name != name_for_drop)
+                                                        .collect();
+                                                    on_groups_change.run(next);
+                                                }
+                                            >
+                                                "Ungroup"
+                                            </button>
+                                        </span>
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        }}
+                        <span class="scratch-groups-note">"Kept in this browser, not in the contract."</span>
+                    </div>
+                </Show>
                 {
                     let strip_id = container_id_for_strip.clone();
                     move || {

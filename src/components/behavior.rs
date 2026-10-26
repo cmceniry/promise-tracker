@@ -82,6 +82,11 @@ impl Behavior {
         &self.name
     }
 
+    /// The comment written beside the promise, empty when there is none.
+    pub fn get_comment(&self) -> &str {
+        &self.comment
+    }
+
     /// The conditions as written.
     pub fn get_conditions(&self) -> Vec<String> {
         self.conditions.iter().map(|c| c.source().clone()).collect()

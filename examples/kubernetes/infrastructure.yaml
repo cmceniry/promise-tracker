@@ -1,0 +1,85 @@
+# Things outside Kubernetes that the cluster stands on. These are the leaves
+# of the graph: PKI, the node operating system, the cloud provider, and the
+# image registry. Nothing here is a Kubernetes component.
+
+kind: Agent
+name: cluster-pki
+comment: >-
+  Certificate authority and key material, as kubeadm would lay it out under
+  /etc/kubernetes/pki. One CA for the cluster, a separate CA for the aggregation
+  layer (front-proxy), the service-account signing keypair, and the per-component
+  client certificates.
+provides:
+  - name: cluster-ca-certificate
+    comment: Root CA that every component trusts; the apiserver's --client-ca-file.
+  - name: cluster-signing-key
+    comment: CA private key the CSR signing controller uses (--cluster-signing-key-file).
+  - name: apiserver-serving-certificate
+    comment: --tls-cert-file / --tls-private-key-file on kube-apiserver.
+  - name: etcd-serving-certificate
+  - name: etcd-client-certificate
+    comment: --etcd-certfile / --etcd-keyfile on kube-apiserver.
+  - name: service-account-signing-key
+    comment: --service-account-signing-key-file; the private half.
+  - name: service-account-token-verification-key
+    comment: --service-account-key-file; the public half.
+  - name: aggregator-proxy-client-certificate
+    comment: --proxy-client-cert-file, signed by the front-proxy CA.
+  - name: front-proxy-ca-certificate
+    comment: --requestheader-client-ca-file.
+  - name: kubelet-client-certificate
+    comment: --kubelet-client-certificate; how the apiserver proves itself to kubelets.
+  - name: controller-manager-client-certificate
+  - name: scheduler-client-certificate
+  - name: kubelet-bootstrap-token
+    comment: bootstrap.kubernetes.io/token Secret used by kubelet TLS bootstrapping.
+  - name: encryption-provider-configuration
+    comment: --encryption-provider-config for Secrets at rest in etcd.
+
+---
+kind: Agent
+name: node-operating-system
+comment: >-
+  The Linux host under each node. The kubelet, runtime and kube-proxy all
+  reach into the kernel directly.
+provides:
+  - name: linux-cgroups
+    comment: cgroup v2 hierarchy; the kubelet's --cgroup-driver must match the runtime's.
+  - name: linux-namespaces
+  - name: kernel-packet-filtering
+    comment: netfilter via iptables or nftables; IPVS for the ipvs proxy mode.
+  - name: connection-tracking
+    comment: conntrack table that kube-proxy sizes with --conntrack-max-per-core.
+  - name: systemd-inhibitor-locks
+    comment: what graceful node shutdown hooks into.
+  - name: local-disk
+    comment: /var/lib/kubelet, /var/lib/containerd, /var/lib/etcd.
+  - name: host-dns-resolver
+    comment: /etc/resolv.conf, the kubelet's --resolv-conf, used as upstream for pods.
+  - name: swap-disabled
+    comment: kubelet refuses to start otherwise unless --fail-swap-on=false.
+
+---
+kind: Agent
+name: cloud-provider
+comment: >-
+  The IaaS API behind an external cloud-controller-manager and a CSI driver.
+  Absent on bare metal, in which case the promises that lean on it go unsatisfied.
+provides:
+  - name: cloud-instances-api
+    comment: list/describe instances; drives the cloud node controller.
+  - name: cloud-instance-metadata
+    comment: what the kubelet asks for with --cloud-provider=external at registration.
+  - name: cloud-routes-api
+    comment: VPC route tables; drives the route controller.
+  - name: cloud-load-balancer-api
+    comment: drives the service controller for type=LoadBalancer.
+  - name: cloud-block-storage-api
+    comment: volume create/attach/detach/expand behind the CSI driver.
+
+---
+kind: Agent
+name: container-image-registry
+provides:
+  - name: container-images
+    comment: OCI registry the runtime pulls from; registry.k8s.io for the control plane images.

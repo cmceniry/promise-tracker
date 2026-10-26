@@ -1,0 +1,55 @@
+# The people at the top of the graph. Nothing in a cluster is wanted for its
+# own sake; these two agents hold the wants that pull on everything else.
+
+kind: Agent
+name: application-owner
+comment: someone who kubectl applies a Deployment, a Service and a PVC and expects traffic to flow.
+wants:
+  - name: deployment-rollouts
+  - name: statefulset-rollouts
+  - name: daemonset-placement
+  - name: cronjob-scheduling
+  - name: pod-scheduling
+  - name: pod-execution
+  - name: pod-probes
+  - name: pod-network-connectivity
+  - name: service-virtual-ips
+  - name: load-balancer-services
+  - name: cluster-dns
+  - name: persistent-volume-binding
+  - name: volume-expansion
+  - name: horizontal-pod-autoscaling
+  - name: projected-service-account-tokens
+  - name: kubelet-api-proxy
+    comment: kubectl logs and kubectl exec.
+  - name: api-initiated-eviction
+    comment: kubectl drain respects their PodDisruptionBudgets.
+
+---
+kind: Agent
+name: cluster-administrator
+comment: someone who keeps the cluster itself healthy.
+wants:
+  - name: node-registration
+  - name: cloud-node-initialization
+  - name: node-lifecycle-management
+  - name: taint-based-eviction
+  - name: node-pressure-eviction
+  - name: graceful-node-shutdown
+  - name: kubelet-serving-certificate
+  - name: csr-cleanup
+  - name: namespace-deletion
+  - name: resource-quota-enforcement
+  - name: owner-reference-garbage-collection
+  - name: terminated-pod-cleanup
+  - name: finished-job-cleanup
+  - name: default-service-accounts
+  - name: root-ca-configmap-publication
+  - name: clusterrole-aggregation
+  - name: audit-logging
+  - name: secrets-encryption-at-rest
+  - name: etcd-backup-snapshots
+  - name: storage-compaction
+  - name: apiserver-identity-lease
+  - name: storage-version-cleanup
+  - name: validating-admission-policy-type-checking

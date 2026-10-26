@@ -1,0 +1,730 @@
+# kube-controller-manager: one binary, one process, many controllers. Each
+# controller is "logically a separate process", so each is an Agent here and
+# the binary is the SuperAgent that folds them together.
+#
+# The controller names are the --controllers flag's "All controllers" list;
+# three (bootstrap-signer, selinux-warning, token-cleaner) are disabled by
+# default and say so in their comments.
+# Source: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/
+
+kind: SuperAgent
+name: kube-controller-manager
+comment: >-
+  Runs every controller below in one process behind a single leader-election
+  lease. HA copies are instantiated in cluster.yaml.
+agents:
+  - kcm-leader-election
+  - kcm-shared-informers
+  - kcm-controller-credentials
+  - kcm-event-broadcaster
+  - bootstrap-signer-controller
+  - certificatesigningrequest-approving-controller
+  - certificatesigningrequest-cleaner-controller
+  - certificatesigningrequest-signing-controller
+  - clusterrole-aggregation-controller
+  - cronjob-controller
+  - daemonset-controller
+  - deployment-controller
+  - device-taint-eviction-controller
+  - disruption-controller
+  - endpoints-controller
+  - endpointslice-controller
+  - endpointslice-mirroring-controller
+  - ephemeral-volume-controller
+  - garbage-collector-controller
+  - horizontal-pod-autoscaler-controller
+  - job-controller
+  - kube-apiserver-serving-clustertrustbundle-publisher-controller
+  - legacy-serviceaccount-token-cleaner-controller
+  - namespace-controller
+  - node-ipam-controller
+  - node-lifecycle-controller
+  - persistentvolume-attach-detach-controller
+  - persistentvolume-binder-controller
+  - persistentvolume-expander-controller
+  - persistentvolume-protection-controller
+  - persistentvolumeclaim-protection-controller
+  - pod-garbage-collector-controller
+  - podcertificaterequest-cleaner-controller
+  - podgroup-protection-controller
+  - replicaset-controller
+  - replicationcontroller-controller
+  - resourceclaim-controller
+  - resourcepoolstatusrequest-controller
+  - resourcequota-controller
+  - root-ca-certificate-publisher-controller
+  - selinux-warning-controller
+  - service-cidr-controller
+  - serviceaccount-controller
+  - serviceaccount-token-controller
+  - statefulset-controller
+  - storage-version-migrator-controller
+  - storageversion-garbage-collector-controller
+  - taint-eviction-controller
+  - token-cleaner-controller
+  - ttl-after-finished-controller
+  - ttl-controller
+  - validatingadmissionpolicy-status-controller
+  - volumeattributesclass-protection-controller
+
+# ---------------------------------------------------------------------------
+# Shared machinery every controller sits on
+# ---------------------------------------------------------------------------
+---
+kind: Agent
+name: kcm-leader-election
+comment: --leader-elect against the Lease kube-controller-manager in kube-system; 15s lease, 10s renew, 2s retry.
+provides:
+  - name: controller-manager-leadership
+    conditions:
+      - leader-election-leases
+wants:
+  - name: leader-election-leases
+  - name: controller-manager-client-certificate
+
+---
+kind: Agent
+name: kcm-shared-informers
+comment: one informer factory; every controller reads from the same caches.
+provides:
+  - name: shared-informer-cache
+    conditions:
+      - list-watch-streams
+wants:
+  - name: list-watch-streams
+
+---
+kind: Agent
+name: kcm-controller-credentials
+comment: --use-service-account-credentials gives each controller its own system:controller:* identity.
+provides:
+  - name: per-controller-credentials
+    conditions:
+      - service-account-token-issuance
+      - request-authorization
+
+---
+kind: Agent
+name: kcm-event-broadcaster
+provides:
+  - name: controller-events
+    conditions:
+      - event-recording
+
+# ---------------------------------------------------------------------------
+# Controllers, alphabetical as in --controllers
+# ---------------------------------------------------------------------------
+---
+kind: Agent
+name: bootstrap-signer-controller
+comment: DISABLED BY DEFAULT. Signs the cluster-info ConfigMap in kube-public with each bootstrap token so a joining node can trust it.
+provides:
+  - name: cluster-info-signing
+    conditions:
+      - kubernetes-api
+      - kubelet-bootstrap-token
+      - cluster-ca-certificate
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: certificatesigningrequest-approving-controller
+comment: auto-approves kubelet client CSRs that come from a bootstrap token or an existing kubelet identity (kubernetes.io/kube-apiserver-client-kubelet).
+provides:
+  - name: kubelet-certificate-approval
+    conditions:
+      - certificate-signing-request-api
+      - request-authorization
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: certificatesigningrequest-cleaner-controller
+comment: deletes approved, denied or failed CSRs after an hour; pending ones after 24h.
+provides:
+  - name: csr-cleanup
+    conditions:
+      - certificate-signing-request-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: certificatesigningrequest-signing-controller
+comment: >-
+  signs approved CSRs for the built-in signers with --cluster-signing-cert-file /
+  --cluster-signing-key-file; --cluster-signing-duration defaults to one year.
+provides:
+  - name: kubelet-client-certificate-signing
+    comment: signer kubernetes.io/kube-apiserver-client-kubelet.
+    conditions:
+      - certificate-signing-request-api
+      - cluster-signing-key
+      - controller-manager-leadership
+      - shared-informer-cache
+  - name: kubelet-serving-certificate-signing
+    comment: signer kubernetes.io/kubelet-serving; these CSRs are never auto-approved.
+    conditions:
+      - certificate-signing-request-api
+      - cluster-signing-key
+      - controller-manager-leadership
+      - shared-informer-cache
+  - name: api-client-certificate-signing
+    comment: signer kubernetes.io/kube-apiserver-client for non-kubelet clients.
+    conditions:
+      - certificate-signing-request-api
+      - cluster-signing-key
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: clusterrole-aggregation-controller
+comment: fills in ClusterRoles that carry aggregationRule by unioning the rules of matching ClusterRoles (admin/edit/view).
+provides:
+  - name: clusterrole-aggregation
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: cronjob-controller
+comment: creates a Job for each schedule tick; honors concurrencyPolicy and startingDeadlineSeconds.
+provides:
+  - name: cronjob-scheduling
+    conditions:
+      - job-execution
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: daemonset-controller
+comment: >-
+  one Pod per eligible node, with a nodeAffinity term for the target node so
+  the default scheduler binds it; tolerates the node-lifecycle taints by default.
+provides:
+  - name: daemonset-placement
+    conditions:
+      - kubernetes-api
+      - node-registration
+      - node-condition-taints
+      - pod-scheduling
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: deployment-controller
+comment: owns ReplicaSets; rolling updates by scaling the new one up and the old one down under maxSurge/maxUnavailable.
+provides:
+  - name: deployment-rollouts
+    conditions:
+      - replicaset-scaling
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: device-taint-eviction-controller
+comment: DRA; evicts pods using a device whose ResourceSlice carries a NoExecute taint.
+provides:
+  - name: device-taint-eviction
+    conditions:
+      - kubernetes-api
+      - resource-claim-allocation
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: disruption-controller
+comment: keeps PodDisruptionBudget.status (disruptionsAllowed) current; the eviction API and preemption consult it.
+provides:
+  - name: pod-disruption-budget-status
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: endpoints-controller
+comment: legacy v1 Endpoints for Services with selectors; still populated for compatibility.
+provides:
+  - name: endpoints
+    conditions:
+      - kubernetes-api
+      - pod-status-reporting
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: endpointslice-controller
+comment: discovery.k8s.io EndpointSlices for Services with selectors, 100 endpoints per slice by default; what kube-proxy and CoreDNS read.
+provides:
+  - name: endpointslices
+    conditions:
+      - kubernetes-api
+      - pod-status-reporting
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: endpointslice-mirroring-controller
+comment: mirrors hand-written Endpoints (Services without selectors) into EndpointSlices.
+provides:
+  - name: endpointslice-mirroring
+    conditions:
+      - endpoints
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: ephemeral-volume-controller
+comment: creates a PVC per generic ephemeral volume in a pod spec, owned by the pod.
+provides:
+  - name: generic-ephemeral-volumes
+    conditions:
+      - persistent-volume-binding
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: garbage-collector-controller
+comment: deletes dependents whose ownerReferences point at nothing; background, foreground and orphan propagation. Needs discovery to find every resource type.
+provides:
+  - name: owner-reference-garbage-collection
+    conditions:
+      - kubernetes-api
+      - openapi-and-discovery
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: horizontal-pod-autoscaler-controller
+comment: >-
+  every --horizontal-pod-autoscaler-sync-period (15s) reads metrics.k8s.io /
+  custom.metrics.k8s.io through the aggregation layer and writes the scale
+  subresource. metrics-server is NOT modeled, so this want dangles on purpose.
+provides:
+  - name: horizontal-pod-autoscaling
+    conditions:
+      - resource-metrics-api
+      - api-aggregation
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+wants:
+  - name: resource-metrics-api
+    comment: served by metrics-server as an APIService; absent from this model.
+
+---
+kind: Agent
+name: job-controller
+comment: creates pods up to parallelism until completions succeed; tracks finished pods with the batch.kubernetes.io/job-tracking finalizer.
+provides:
+  - name: job-execution
+    conditions:
+      - kubernetes-api
+      - pod-execution
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: kube-apiserver-serving-clustertrustbundle-publisher-controller
+comment: publishes the apiserver serving CA as a ClusterTrustBundle so pods can mount it.
+provides:
+  - name: apiserver-serving-ca-trust-bundle
+    conditions:
+      - kubernetes-api
+      - cluster-ca-certificate
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: legacy-serviceaccount-token-cleaner-controller
+comment: deletes auto-generated secret-based tokens unused for --legacy-service-account-token-clean-up-period (one year).
+provides:
+  - name: legacy-token-cleanup
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: namespace-controller
+comment: on Namespace deletion, enumerates every namespaced resource type via discovery and deletes the contents before removing the finalizer.
+provides:
+  - name: namespace-deletion
+    conditions:
+      - kubernetes-api
+      - openapi-and-discovery
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: node-ipam-controller
+comment: with --allocate-node-cidrs, carves --cluster-cidr into per-node podCIDRs of --node-cidr-mask-size (24 / 64).
+provides:
+  - name: pod-cidr-allocation
+    conditions:
+      - kubernetes-api
+      - node-registration
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: node-lifecycle-controller
+comment: >-
+  checks every --node-monitor-period (5s); marks Ready=Unknown after
+  --node-monitor-grace-period (50s); taints unreachable / not-ready; limits
+  evictions to --node-eviction-rate (0.1/s), slower when a zone is >55% unhealthy.
+provides:
+  - name: node-lifecycle-management
+    conditions:
+      - node-heartbeats
+      - node-status-conditions
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+  - name: node-condition-taints
+    comment: node.kubernetes.io/not-ready, unreachable, memory-pressure, disk-pressure, pid-pressure, unschedulable.
+    conditions:
+      - node-status-conditions
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: persistentvolume-attach-detach-controller
+comment: watches pods against nodes and writes VolumeAttachment objects for the CSI external-attacher to act on.
+provides:
+  - name: volume-attachment-requests
+    conditions:
+      - kubernetes-api
+      - csi-node-info
+      - pod-scheduling
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: persistentvolume-binder-controller
+comment: binds PVCs to PVs, triggers dynamic provisioning through the StorageClass provisioner, honors WaitForFirstConsumer; syncs every --pvclaimbinder-sync-period (15s).
+provides:
+  - name: persistent-volume-binding
+    conditions:
+      - kubernetes-api
+      - dynamic-volume-provisioning
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: persistentvolume-expander-controller
+comment: marks PVCs whose requested size grew so the CSI external-resizer expands them.
+provides:
+  - name: persistent-volume-expansion-requests
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: persistentvolume-protection-controller
+comment: kubernetes.io/pv-protection finalizer; a PV bound to a PVC is not removed until released.
+provides:
+  - name: persistent-volume-in-use-protection
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: persistentvolumeclaim-protection-controller
+comment: kubernetes.io/pvc-protection finalizer; a PVC used by a pod is not removed until the pod is.
+provides:
+  - name: persistent-volume-claim-in-use-protection
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: pod-garbage-collector-controller
+comment: deletes terminated pods past --terminated-pod-gc-threshold (12500), orphaned pods on deleted nodes, and unscheduled terminating pods.
+provides:
+  - name: terminated-pod-cleanup
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: podcertificaterequest-cleaner-controller
+comment: removes PodCertificateRequests once their pod is gone or they have aged out.
+provides:
+  - name: pod-certificate-request-cleanup
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: podgroup-protection-controller
+comment: finalizer keeping a PodGroup (workload scheduling) around while pods reference it.
+provides:
+  - name: pod-group-protection
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: replicaset-controller
+comment: creates or deletes pods so that len(matching pods) == spec.replicas; the pods then need scheduling and a kubelet, which are separate promises.
+provides:
+  - name: replicaset-scaling
+    conditions:
+      - kubernetes-api
+      - admission-control
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: replicationcontroller-controller
+comment: the pre-ReplicaSet form of the same loop, kept for compatibility.
+provides:
+  - name: replication-controller-scaling
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: resourceclaim-controller
+comment: DRA; creates ResourceClaims from a pod's ResourceClaimTemplates and reserves them for the pod.
+provides:
+  - name: resource-claim-allocation
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: resourcepoolstatusrequest-controller
+comment: DRA; answers ResourcePoolStatusRequests with the state of a device pool.
+provides:
+  - name: resource-pool-status
+    conditions:
+      - kubernetes-api
+      - resource-claim-allocation
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: resourcequota-controller
+comment: recomputes ResourceQuota.status.used; the ResourceQuota admission plugin enforces against it.
+provides:
+  - name: resource-quota-enforcement
+    conditions:
+      - kubernetes-api
+      - openapi-and-discovery
+      - admission-control
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: root-ca-certificate-publisher-controller
+comment: writes the kube-root-ca.crt ConfigMap into every namespace from --root-ca-file.
+provides:
+  - name: root-ca-configmap-publication
+    conditions:
+      - kubernetes-api
+      - cluster-ca-certificate
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: selinux-warning-controller
+comment: DISABLED BY DEFAULT. Emits events when two pods on one node mount the same volume with conflicting SELinux labels.
+provides:
+  - name: selinux-conflict-warnings
+    conditions:
+      - kubernetes-api
+      - controller-events
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: service-cidr-controller
+comment: maintains the default ServiceCIDR object and its finalizer against the IPAddress objects in use.
+provides:
+  - name: service-cidr-management
+    conditions:
+      - service-cluster-ip-allocation
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: serviceaccount-controller
+comment: creates the default ServiceAccount in every namespace.
+provides:
+  - name: default-service-accounts
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: serviceaccount-token-controller
+comment: legacy secret-based tokens; only active when --service-account-private-key-file is set.
+provides:
+  - name: legacy-service-account-token-secrets
+    conditions:
+      - kubernetes-api
+      - service-account-signing-key
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: statefulset-controller
+comment: ordered, stable-identity pods with a PVC per volumeClaimTemplate and a headless Service for DNS.
+provides:
+  - name: statefulset-rollouts
+    conditions:
+      - kubernetes-api
+      - persistent-volume-binding
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: storage-version-migrator-controller
+comment: rewrites stored objects to the current storage version on request (StorageVersionMigration).
+provides:
+  - name: storage-version-migration
+    conditions:
+      - kubernetes-api
+      - cluster-state-storage
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: storageversion-garbage-collector-controller
+comment: drops StorageVersion entries for apiservers whose identity lease has expired.
+provides:
+  - name: storage-version-cleanup
+    conditions:
+      - kubernetes-api
+      - apiserver-identity-lease
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: taint-eviction-controller
+comment: evicts pods from nodes carrying NoExecute taints they do not tolerate, after tolerationSeconds (300s by default via DefaultTolerationSeconds).
+provides:
+  - name: taint-based-eviction
+    conditions:
+      - node-condition-taints
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: token-cleaner-controller
+comment: DISABLED BY DEFAULT. Deletes expired bootstrap token Secrets from kube-system.
+provides:
+  - name: expired-bootstrap-token-cleanup
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: ttl-after-finished-controller
+comment: deletes Jobs ttlSecondsAfterFinished after they complete or fail.
+provides:
+  - name: finished-job-cleanup
+    conditions:
+      - kubernetes-api
+      - job-execution
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: ttl-controller
+comment: sets node.alpha.kubernetes.io/ttl on Nodes, scaled by cluster size, to tune kubelet secret/configmap cache TTL.
+provides:
+  - name: node-ttl-annotation
+    conditions:
+      - kubernetes-api
+      - node-registration
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: validatingadmissionpolicy-status-controller
+comment: type-checks CEL expressions in ValidatingAdmissionPolicies against the schema and reports warnings in status.
+provides:
+  - name: validating-admission-policy-type-checking
+    conditions:
+      - kubernetes-api
+      - openapi-and-discovery
+      - controller-manager-leadership
+      - shared-informer-cache
+
+---
+kind: Agent
+name: volumeattributesclass-protection-controller
+comment: finalizer keeping a VolumeAttributesClass around while PVs or PVCs reference it.
+provides:
+  - name: volume-attributes-class-protection
+    conditions:
+      - kubernetes-api
+      - controller-manager-leadership
+      - shared-informer-cache

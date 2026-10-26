@@ -199,7 +199,14 @@ impl ManifestList {
                 Ok(e) => e,
                 Err(e) => return Err(e),
             };
-            match entry.path().to_str() {
+            // A directory is walked the way the API server scans one: only
+            // contract files are taken, and dot-files are left alone. A file
+            // named on the command line is taken as given.
+            let entry_path = entry.path();
+            if entry_path.is_file() && !is_contract_file(&entry_path) {
+                continue;
+            }
+            match entry_path.to_str() {
                 Some(p) => self.add(p)?,
                 None => {
                     return Err(std::io::Error::new(
@@ -211,6 +218,19 @@ impl ManifestList {
         }
         Ok(())
     }
+}
+
+/// True for a `.yaml` or `.yml` file whose name does not start with a dot.
+fn is_contract_file(path: &std::path::Path) -> bool {
+    let hidden = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'));
+    let yaml = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e == "yaml" || e == "yml");
+    yaml && !hidden
 }
 
 pub fn check_file(path: &str) -> Result<Vec<Item>, AddError> {
@@ -253,6 +273,33 @@ mod tests {
             .collect::<Result<Vec<Item>, serde_yaml::Error>>()
             .expect_err("expected a parse failure");
         AddError::yaml("contracts.yaml", e, contents).to_string()
+    }
+
+    #[test]
+    fn a_directory_walk_takes_only_contract_files() {
+        let dir = std::env::temp_dir().join(format!("pt-manifest-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for name in ["a.yaml", "b.yml", "README.md", ".hidden.yaml", "sub/c.yaml"] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        let list = ManifestList::new(&vec![dir.to_str().unwrap().to_string()]).unwrap();
+        let mut names: Vec<String> = list
+            .files
+            .iter()
+            .map(|f| f.strip_prefix(dir.to_str().unwrap()).unwrap().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["/a.yaml", "/b.yml", "/sub/c.yaml"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_named_outright_is_taken_whatever_it_is_called() {
+        let path = std::env::temp_dir().join(format!("pt-manifest-{}.md", std::process::id()));
+        std::fs::write(&path, "").unwrap();
+        let list = ManifestList::new(&vec![path.to_str().unwrap().to_string()]).unwrap();
+        assert_eq!(list.files.len(), 1);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

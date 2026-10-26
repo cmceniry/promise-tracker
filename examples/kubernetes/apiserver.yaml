@@ -1,0 +1,132 @@
+# kube-apiserver: the front end of the control plane. Everything else in the
+# cluster couples through it, so most promises elsewhere in this directory
+# condition on kubernetes-api or list-watch-streams.
+# Sources:
+#   https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+#   https://kubernetes.io/docs/concepts/architecture/leases/
+
+kind: Agent
+name: kube-apiserver
+comment: >-
+  Stateless REST server over etcd. Designed to scale horizontally; HA copies
+  are instantiated in cluster.yaml.
+provides:
+  # --- the core promise ---------------------------------------------------
+  - name: kubernetes-api
+    comment: authenticated, authorized, admitted REST access to every resource.
+    conditions:
+      - cluster-state-storage
+      - request-authentication
+      - request-authorization
+      - admission-control
+      - request-flow-control
+      - apiserver-serving-certificate
+
+  # --- the request pipeline, each stage its own promise ------------------
+  - name: request-authentication
+    comment: >-
+      client certificates (--client-ca-file), service account JWTs,
+      bootstrap tokens (--enable-bootstrap-token-auth), OIDC (--oidc-issuer-url),
+      token webhook, and front-proxy request headers for aggregated requests.
+    conditions:
+      - cluster-ca-certificate
+      - service-account-token-verification-key
+      - front-proxy-ca-certificate
+  - name: request-authorization
+    comment: "--authorization-mode: Node,RBAC in practice; ABAC, Webhook, AlwaysAllow, AlwaysDeny also exist."
+  - name: admission-control
+    comment: >-
+      default-enabled plugins: NamespaceLifecycle, LimitRanger, ServiceAccount,
+      TaintNodesByCondition, PodSecurity, Priority, DefaultTolerationSeconds,
+      DefaultStorageClass, StorageObjectInUseProtection, PodGroupProtection,
+      PersistentVolumeClaimResize, RuntimeClass, CertificateApproval,
+      CertificateSigning, ClusterTrustBundleAttest, CertificateSubjectRestriction,
+      DefaultIngressClass, PodTopologyLabels, NodeDeclaredFeatureValidator,
+      PodResizeValidator, MutatingAdmissionPolicy, MutatingAdmissionWebhook,
+      ValidatingAdmissionPolicy, ValidatingAdmissionWebhook, ResourceQuota.
+      NodeRestriction is what confines a kubelet to its own Node object.
+  - name: request-flow-control
+    comment: API Priority and Fairness (--enable-priority-and-fairness, --max-requests-inflight 400).
+  - name: audit-logging
+    comment: --audit-policy-file with log or webhook backends.
+    conditions:
+      - kubernetes-api
+
+  # --- behaviours clients lean on beyond plain CRUD ----------------------
+  - name: list-watch-streams
+    comment: >-
+      list + watch with resourceVersion semantics, served from the watch cache
+      (--watch-cache) which is itself fed by etcd watches.
+    conditions:
+      - kubernetes-api
+      - key-watch-notifications
+  - name: openapi-and-discovery
+    comment: /openapi/v3 and aggregated discovery; GC, namespace and quota controllers need it to find every resource type.
+    conditions:
+      - kubernetes-api
+  - name: pod-binding
+    comment: the pods/binding subresource the scheduler posts to.
+    conditions:
+      - kubernetes-api
+  - name: api-initiated-eviction
+    comment: pods/eviction subresource; refuses when a PodDisruptionBudget would be violated.
+    conditions:
+      - kubernetes-api
+      - pod-disruption-budget-status
+  - name: leader-election-leases
+    comment: coordination.k8s.io Leases in kube-system used by controller-manager, scheduler and CCM.
+    conditions:
+      - kubernetes-api
+  - name: node-heartbeat-leases
+    comment: one Lease per Node in kube-node-lease, renewed by the kubelet.
+    conditions:
+      - kubernetes-api
+  - name: apiserver-identity-lease
+    comment: apiserver-<hash> Lease in kube-system; lets peers count live apiservers.
+    conditions:
+      - kubernetes-api
+  - name: event-recording
+    comment: events.k8s.io; every component reports through it.
+    conditions:
+      - kubernetes-api
+  - name: service-account-token-issuance
+    comment: TokenRequest API; bound, audience-scoped JWTs (--service-account-issuer).
+    conditions:
+      - kubernetes-api
+      - service-account-signing-key
+  - name: certificate-signing-request-api
+    comment: certificates.k8s.io CSRs; the kubelet's TLS bootstrap and rotation go through it.
+    conditions:
+      - kubernetes-api
+  - name: service-cluster-ip-allocation
+    comment: ClusterIP assignment out of --service-cluster-ip-range, recorded in storage.
+    conditions:
+      - cluster-state-storage
+  - name: api-aggregation
+    comment: kube-aggregator proxying to APIServices such as metrics.k8s.io.
+    conditions:
+      - kubernetes-api
+      - aggregator-proxy-client-certificate
+  - name: kubelet-api-proxy
+    comment: logs, exec, attach and port-forward proxied to the node's kubelet on 10250.
+    conditions:
+      - kubernetes-api
+      - kubelet-api
+      - kubelet-client-certificate
+  - name: secrets-encryption-at-rest
+    comment: --encryption-provider-config; aescbc, aesgcm, secretbox or KMS.
+    conditions:
+      - encryption-provider-configuration
+      - cluster-state-storage
+wants:
+  - name: cluster-state-storage
+  - name: key-watch-notifications
+  - name: etcd-client-certificate
+  - name: apiserver-serving-certificate
+  - name: cluster-ca-certificate
+  - name: service-account-signing-key
+  - name: service-account-token-verification-key
+  - name: aggregator-proxy-client-certificate
+  - name: front-proxy-ca-certificate
+  - name: kubelet-client-certificate
+  - name: encryption-provider-configuration

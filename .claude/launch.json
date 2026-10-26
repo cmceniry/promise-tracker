@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api-kubernetes",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "-p", "api", "--", "--dev", "--base-dir", "examples/kubernetes"],
+      "port": 8080
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd frontend && trunk serve"],
+      "port": 3000
+    }
+  ]
+}

@@ -1,7 +1,9 @@
 pub mod components;
 pub mod diagram;
+pub mod fold;
 pub mod network_diagram;
 pub mod promise_graph;
+pub mod trace;
 
 use components::Agent;
 use components::BaseKind;
@@ -411,6 +413,70 @@ impl Tracker {
             }
         }
         Some(ret)
+    }
+
+    /// The agents a collective is built from, flattened through any
+    /// collectives among them, in declaration order without repeats. None
+    /// when nothing declares a collective by that name.
+    pub fn collective_members(&self, name: &str) -> Option<Vec<String>> {
+        if !self
+            .available_superagents
+            .iter()
+            .any(|sa| sa.get_name() == name)
+        {
+            return None;
+        }
+        let mut out: Vec<String> = vec![];
+        let mut visiting: HashSet<String> = HashSet::new();
+        self.collect_members(name, &mut visiting, &mut out);
+        Some(out)
+    }
+
+    fn collect_members(&self, name: &str, visiting: &mut HashSet<String>, out: &mut Vec<String>) {
+        if !visiting.insert(name.to_string()) {
+            return;
+        }
+        let members: Vec<String> = self
+            .available_superagents
+            .iter()
+            .filter(|sa| sa.get_name() == name)
+            .flat_map(|sa| sa.get_agent_names())
+            .collect();
+        for member in members {
+            let is_collective = self
+                .available_superagents
+                .iter()
+                .any(|sa| sa.get_name() == &member);
+            if is_collective {
+                self.collect_members(&member, visiting, out);
+            } else if !out.contains(&member) {
+                out.push(member);
+            }
+        }
+    }
+
+    /// The comment on a working agent, if it has one. An instance carries
+    /// its base's comment; a collective's members keep their own.
+    pub fn get_agent_comment(&self, agent_name: &str) -> Option<String> {
+        let agents = self.working_agents.get(agent_name)?;
+        agents
+            .iter()
+            .map(|a| a.get_comment())
+            .find(|c| !c.is_empty())
+            .map(str::to_string)
+    }
+
+    /// The comment on one of an agent's promises, if the promise is written
+    /// with one.
+    pub fn get_behavior_comment(&self, agent_name: &str, behavior_name: &str) -> Option<String> {
+        let agents = self.working_agents.get(agent_name)?;
+        agents
+            .iter()
+            .flat_map(|a| a.provides().iter())
+            .filter(|b| b.get_name() == behavior_name)
+            .map(|b| b.get_comment())
+            .find(|c| !c.is_empty())
+            .map(str::to_string)
     }
 
     /// The parameterized promises this agent makes, as written.

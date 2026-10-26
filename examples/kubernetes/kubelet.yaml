@@ -1,0 +1,170 @@
+# kubelet: the node agent. Takes PodSpecs from the apiserver (or a manifest
+# directory, or a URL) and makes sure their containers are running and healthy.
+# Sources:
+#   https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/
+#   https://kubernetes.io/docs/concepts/architecture/nodes/
+#   https://kubernetes.io/docs/concepts/architecture/cri/
+
+kind: Agent
+name: kubelet
+comment: >-
+  Runs on every node, control plane included. One logical kubelet here; the
+  per-node copies come from the instances in cluster.yaml.
+provides:
+  # --- the headline promise ----------------------------------------------
+  - name: pod-execution
+    comment: the containers in each assigned PodSpec are running and healthy.
+    conditions:
+      - pod-spec-sources
+      - pod-sandbox-lifecycle
+      - container-lifecycle
+      - container-image-pulls
+      - pod-network-attachment
+      - volume-mounting
+      - pod-dns-configuration
+      - pod-cgroup-enforcement
+      - projected-service-account-tokens
+  - name: pod-spec-sources
+    comment: apiserver watch (--kubeconfig), static pods (--pod-manifest-path), and --manifest-url.
+    conditions:
+      - list-watch-streams
+      - static-pod-manifests
+  - name: static-pod-manifests
+    comment: /etc/kubernetes/manifests, polled every 20s; how kubeadm runs the control plane itself.
+    conditions:
+      - local-disk
+  - name: pod-status-reporting
+    comment: pod IPs, phase and conditions written back; what the endpoint controllers read.
+    conditions:
+      - kubernetes-api
+      - pod-execution
+  - name: pod-probes
+    comment: liveness, readiness and startup probes against running containers.
+    conditions:
+      - container-lifecycle
+
+  # --- node identity and health ------------------------------------------
+  - name: node-registration
+    comment: >-
+      --register-node (default true) creates the Node object; refuses if the
+      runtime does not speak CRI v1. With --cloud-provider=external the node
+      is tainted until the cloud node controller initializes it.
+    conditions:
+      - kubernetes-api
+      - kubelet-client-credentials
+      - container-runtime-service
+  - name: node-heartbeats
+    comment: NodeStatus every --node-status-update-frequency (10s) plus the Lease in kube-node-lease.
+    conditions:
+      - node-heartbeat-leases
+      - kubernetes-api
+  - name: node-status-conditions
+    comment: Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable.
+    conditions:
+      - node-heartbeats
+      - container-metrics-collection
+  - name: node-capacity-reporting
+    comment: capacity and allocatable after --kube-reserved, --system-reserved and eviction thresholds; --max-pods 110.
+    conditions:
+      - node-registration
+      - container-metrics-collection
+  - name: container-metrics-collection
+    comment: cAdvisor and CRI stats behind /stats/summary and /metrics/resource.
+    conditions:
+      - container-runtime-service
+      - linux-cgroups
+
+  # --- credentials: the TLS bootstrap chain ------------------------------
+  - name: kubelet-client-credentials
+    comment: >-
+      --bootstrap-kubeconfig presents a bootstrap token, files a CSR, and waits
+      for approval and signing; --rotate-certificates keeps it fresh.
+    conditions:
+      - kubelet-bootstrap-token
+      - certificate-signing-request-api
+      - kubelet-certificate-approval
+      - kubelet-client-certificate-signing
+  - name: kubelet-serving-certificate
+    comment: --rotate-server-certificates; otherwise self-signed in --cert-dir.
+    conditions:
+      - certificate-signing-request-api
+      - kubelet-serving-certificate-signing
+
+  # --- the kubelet's own API --------------------------------------------
+  - name: kubelet-api
+    comment: >-
+      port 10250: logs, exec, attach, port-forward, /pods, /metrics. Authenticates
+      with --client-ca-file or a token webhook, authorizes with SubjectAccessReview.
+    conditions:
+      - kubelet-serving-certificate
+      - cluster-ca-certificate
+      - request-authorization
+  - name: kubelet-plugin-registration
+    comment: /var/lib/kubelet/plugins_registry; CSI node drivers and device plugins register here.
+    conditions:
+      - local-disk
+
+  # --- node-local resource management ------------------------------------
+  - name: pod-cgroup-enforcement
+    comment: QoS cgroups, cpu/memory/topology managers, --pod-max-pids.
+    conditions:
+      - linux-cgroups
+      - swap-disabled
+  - name: node-pressure-eviction
+    comment: --eviction-hard / --eviction-soft against memory, nodefs, imagefs, pid.
+    conditions:
+      - container-metrics-collection
+  - name: image-garbage-collection
+    conditions:
+      - container-image-service
+  - name: container-garbage-collection
+    conditions:
+      - container-runtime-service
+  - name: container-log-management
+    comment: --container-log-max-size 10Mi, --container-log-max-files 5.
+    conditions:
+      - local-disk
+  - name: graceful-node-shutdown
+    comment: shutdownGracePeriod via a systemd inhibitor lock.
+    conditions:
+      - systemd-inhibitor-locks
+
+  # --- plumbing a pod needs -----------------------------------------------
+  - name: pod-network-attachment
+    comment: sandbox network setup delegated to the runtime's CNI invocation.
+    conditions:
+      - cni-network-plugin
+  - name: pod-dns-configuration
+    comment: >-
+      writes each pod's resolv.conf from --cluster-dns / --cluster-domain for
+      dnsPolicy ClusterFirst. Only the address is needed here; whether CoreDNS
+      answers is the kubelet's separate want for cluster-dns. Making it a
+      condition would be circular, since CoreDNS records come from pod status.
+    conditions:
+      - host-dns-resolver
+  - name: volume-mounting
+    comment: waits for VolumeAttachment, then NodeStage/NodePublish through the CSI node plugin.
+    conditions:
+      - persistent-volume-binding
+      - volume-attachment
+      - csi-node-volume-operations
+      - local-disk
+  - name: projected-service-account-tokens
+    comment: bound tokens mounted into pods, refreshed via TokenRequest.
+    conditions:
+      - service-account-token-issuance
+wants:
+  - name: list-watch-streams
+  - name: kubernetes-api
+  - name: node-heartbeat-leases
+  - name: event-recording
+  - name: container-runtime-service
+  - name: container-image-service
+  - name: cni-network-plugin
+  - name: cluster-dns
+  - name: linux-cgroups
+  - name: systemd-inhibitor-locks
+  - name: local-disk
+  - name: swap-disabled
+  - name: kubelet-bootstrap-token
+  - name: cluster-ca-certificate
