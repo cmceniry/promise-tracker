@@ -1,7 +1,8 @@
+use gloo_storage::{LocalStorage, Storage};
 use gloo_timers::callback::Timeout;
 use leptos::prelude::*;
 use promise_tracker::components::Item;
-use promise_tracker::fold::{fold, FoldOptions};
+use promise_tracker::fold::{fold, FoldOptions, GroupSpec};
 use promise_tracker::promise_graph::promise_graph;
 use promise_tracker::Tracker;
 use serde::Deserialize;
@@ -20,6 +21,8 @@ use super::promise_graph_view::PromiseGraphView;
 use super::simplify_panel::SimplifyPanel;
 use super::simulation_controls::SimulationControls;
 use super::trace_view::TraceView;
+
+const GROUPS_STORAGE_KEY: &str = "scratch_groups";
 
 /// Build a Tracker from contract contents
 fn build_tracker_from_contracts(contracts: &[Contract], filter_sims: Option<&str>) -> Tracker {
@@ -77,8 +80,21 @@ pub fn ContractGrapher(
     // The other folding rules for the overview graph. Self promises are the
     // display toggle above, so the options handed to the graph are composed.
     let (fold_options, set_fold_options) = signal(FoldOptions::default());
+
+    // Scratch groups the reader drew on the overview. They are how the reader
+    // is looking, not what the contract says, so they live in this browser.
+    let (groups, set_groups) =
+        signal::<Vec<GroupSpec>>(LocalStorage::get(GROUPS_STORAGE_KEY).unwrap_or_default());
+    Effect::new(move |_| {
+        if let Err(e) = LocalStorage::set(GROUPS_STORAGE_KEY, groups.get()) {
+            web_sys::console::error_1(&format!("Failed to save scratch groups: {:?}", e).into());
+        }
+    });
+    let on_groups_change = Callback::new(move |next: Vec<GroupSpec>| set_groups.set(next));
+
     let effective_fold = Signal::derive(move || FoldOptions {
         own_inside: !show_self_promises.get(),
+        groups: groups.get(),
         ..fold_options.get()
     });
 
@@ -375,6 +391,8 @@ pub fn ContractGrapher(
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
                                                 fold_options=effective_fold
+                                                groups=groups
+                                                on_groups_change=on_groups_change
                                                 sim_label=sim_for_graph.clone()
                                                 on_edge_select=on_edge_select
                                             />

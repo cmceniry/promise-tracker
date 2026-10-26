@@ -487,16 +487,22 @@
             }
             const nodeLabelHeight = n => 14 * ((n.data('label') || '').split('\n').length);
 
+            function groupName(id) {
+                return id.startsWith('group:') ? id.slice('group:'.length) : id;
+            }
+
             // What a node says under its name: the folds that happened to it.
             function nodeLabel(n) {
                 const lines = [n.label];
                 if (n.kind === 'collective') lines.push(n.members.length + ' inside');
                 if (n.kind === 'hub') lines.push('hub \u00b7 ' + n.incoming + ' in');
+                // A folded group keeps saying so even once it counts as a hub.
+                if (n.id.startsWith('group:')) lines.push(n.members.length + ' inside \u00b7 scratch group');
                 if (n.own > 0) {
                     lines.push('+' + n.own + ' own' + (n.own_unsatisfied ? ' (' + n.own_unsatisfied + '\u2717)' : ''));
                 }
                 (n.badges || []).forEach(b => {
-                    lines.push('\u21b3 ' + b.hub + (b.satisfied ? '' : ' \u2717'));
+                    lines.push('\u21b3 ' + groupName(b.hub) + (b.satisfied ? '' : ' \u2717'));
                 });
                 return lines.join('\n');
             }
@@ -526,6 +532,34 @@
                 { selector: 'node.hub', style: {
                     'shape': 'rectangle',
                     'background-color': '#1F2A37',
+                }},
+                // A reader's group: dashed accent, open as a container around
+                // its members or folded to one node. Not part of the contract.
+                { selector: 'node.scratch', style: {
+                    'shape': 'round-rectangle',
+                    'background-color': '#EEF2FD',
+                    'background-opacity': 0.7,
+                    'border-width': 2,
+                    'border-style': 'dashed',
+                    'border-color': '#2458D6',
+                    'color': '#1A43A8',
+                    'font-weight': 'bold',
+                    'text-valign': 'top',
+                    'text-halign': 'center',
+                    'text-margin-y': -4,
+                    'padding': '18px',
+                }},
+                { selector: 'node.scratch-folded', style: {
+                    'background-color': '#EEF2FD',
+                    'border-width': 2,
+                    'border-style': 'dashed',
+                    'border-color': '#2458D6',
+                    'color': '#1A43A8',
+                }},
+                { selector: 'node:selected', style: {
+                    'overlay-color': '#2458D6',
+                    'overlay-opacity': 0.2,
+                    'overlay-padding': 5,
                 }},
                 { selector: 'node.badge-broken', style: {
                     'border-width': 2,
@@ -597,7 +631,7 @@
             // shape is unchanged. Satisfaction is deliberately excluded so a
             // status flip recolors edges without discarding the user's layout.
             function signatureOf(nodes, edges) {
-                const n = nodes.map(x => x.id).sort().join(PAIR_SEP);
+                const n = nodes.map(x => x.id + '@' + (x.group || '')).sort().join(PAIR_SEP);
                 const e = edges.map(x => x.source + '>' + x.target + ':'
                         + x.promises.map(p => p.behavior + '/' + p.kind).join(','))
                     .sort().join(PAIR_SEP);
@@ -627,9 +661,33 @@
             // several promises inside draws as one bundled edge until the pair
             // has been expanded by a tap.
             function buildElements(nodes, edges, expandedPairs) {
-                const els = nodes.map(n => ({
-                    data: { id: n.id, label: nodeLabel(n), kind: n.kind, members: n.members || [] },
+                const els = [];
+                // Containers for the open groups, before their members.
+                const containers = new Map();
+                nodes.forEach(n => {
+                    if (n.group && !containers.has(n.group)) containers.set(n.group, 0);
+                    if (n.group) containers.set(n.group, containers.get(n.group) + 1);
+                });
+                containers.forEach((count, id) => els.push({
+                    data: {
+                        id: id,
+                        label: groupName(id) + ' \u00b7 scratch group \u00b7 ' + count + ' nodes',
+                        kind: 'scratch',
+                        members: [],
+                    },
+                    classes: 'scratch',
+                    selectable: false,
+                }));
+                nodes.forEach(n => els.push({
+                    data: {
+                        id: n.id,
+                        label: nodeLabel(n),
+                        kind: n.kind,
+                        members: n.members || [],
+                        parent: n.group || undefined,
+                    },
                     classes: (n.kind === 'missing' ? 'ghost' : n.kind)
+                        + (n.id.startsWith('group:') ? ' scratch-folded' : '')
                         + ((n.badges || []).some(b => !b.satisfied) ? ' badge-broken' : ''),
                 }));
                 edges.forEach(e => {
@@ -669,6 +727,83 @@
                 return els;
             }
 
+            // Dagre knows nothing of compound nodes, so with an open group the
+            // layout runs on a stand-in graph: each group is one node sized to
+            // hold its members stacked, laid out headless, and the members are
+            // then stacked into the space it was given. Returns a positions map,
+            // or null when the plain layout will do.
+            function groupedPositions(nodes, edges, expandedPairs) {
+                if (!nodes.some(n => n.group)) return null;
+                measureCtx.font = NODE_FONT;
+                const PAD = 16, GAP = 12, INNER = 24;
+                const size = n => {
+                    const lines = nodeLabel(n).split('\n');
+                    return {
+                        w: Math.ceil(Math.max(...lines.map(l => measureCtx.measureText(l).width))) + 4 + PAD,
+                        h: 14 * lines.length + PAD,
+                    };
+                };
+                const stacks = new Map();
+                nodes.forEach(n => {
+                    if (!n.group) return;
+                    if (!stacks.has(n.group)) stacks.set(n.group, []);
+                    stacks.get(n.group).push(n);
+                });
+                const standIns = [];
+                stacks.forEach((members, id) => {
+                    const sizes = members.map(size);
+                    standIns.push({ data: {
+                        id: id,
+                        w: Math.max(...sizes.map(s => s.w)) + 2 * INNER,
+                        h: sizes.reduce((a, s) => a + s.h, 0) + GAP * (sizes.length - 1) + 2 * INNER + 14,
+                    }});
+                });
+                nodes.forEach(n => {
+                    if (n.group) return;
+                    const s = size(n);
+                    standIns.push({ data: { id: n.id, w: s.w, h: s.h } });
+                });
+                const alias = id => {
+                    const n = nodes.find(x => x.id === id);
+                    return n && n.group ? n.group : id;
+                };
+                const seen = new Set();
+                edges.forEach((e, i) => {
+                    const a = alias(e.source), b = alias(e.target);
+                    if (a === b || seen.has(a + PAIR_SEP + b)) return;
+                    seen.add(a + PAIR_SEP + b);
+                    standIns.push({ data: { id: 'si:' + i, source: a, target: b } });
+                });
+                const head = cytoscape({
+                    headless: true,
+                    styleEnabled: true,
+                    elements: standIns,
+                    style: [{ selector: 'node', style: { 'width': 'data(w)', 'height': 'data(h)' }}],
+                });
+                head.layout(Object.assign({}, LAYOUT, { fit: false })).run();
+                const positions = {};
+                head.nodes().forEach(n => { positions[n.id()] = { x: n.position('x'), y: n.position('y') }; });
+                head.destroy();
+                stacks.forEach((members, id) => {
+                    const box = positions[id];
+                    const sizes = members.map(size);
+                    const total = sizes.reduce((a, s) => a + s.h, 0) + GAP * (sizes.length - 1);
+                    let y = box.y - total / 2 + 7;
+                    members.forEach((m, i) => {
+                        positions[m.id] = { x: box.x, y: y + sizes[i].h / 2 };
+                        y += sizes[i].h + GAP;
+                    });
+                });
+                return positions;
+            }
+
+            function layoutFor(nodes, edges, expandedPairs) {
+                const positions = groupedPositions(nodes, edges, expandedPairs);
+                return positions
+                    ? { name: 'preset', positions: n => positions[n.id()], fit: true, padding: 30 }
+                    : LAYOUT;
+            }
+
             // Re-derive elements from the raw data. Bundling only changes edges,
             // so preservePositions keeps node positions and the viewport instead
             // of re-running dagre and refitting.
@@ -691,7 +826,7 @@
                 } else {
                     g.cy.elements().remove();
                     g.cy.add(buildElements(g.rawNodes, g.rawEdges, g.expandedPairs));
-                    g.cy.layout(LAYOUT).run();
+                    g.cy.layout(layoutFor(g.rawNodes, g.rawEdges, g.expandedPairs)).run();
                 }
             }
 
@@ -729,9 +864,11 @@
                     container: container,
                     elements: buildElements(nodes, edges, expandedPairs),
                     style: STYLE,
+                    // Each tap toggles a node in the selection, for grouping.
+                    selectionType: 'additive',
                     layout: restorable
                         ? { name: 'preset', positions: n => saved.positions[n.id()], fit: false }
-                        : LAYOUT,
+                        : layoutFor(nodes, edges, expandedPairs),
                 });
                 if (restorable) {
                     cy.zoom(saved.zoom);
@@ -740,6 +877,7 @@
 
                 cy.on('tap', 'node', evt => {
                     const n = evt.target;
+                    if (n.isParent()) return;
                     const closure = n.closedNeighborhood().union(n.successors()).union(n.predecessors());
                     cy.elements().addClass('dimmed').removeClass('highlighted');
                     closure.removeClass('dimmed').addClass('highlighted');
@@ -874,7 +1012,16 @@
                 return g ? { nodes: g.rawNodes, edges: g.rawEdges } : null;
             }
 
-            return { create, destroy, reset, focus, refit, snapshot };
+            // The agents the reader has selected, for making a group.
+            function selected(containerId) {
+                const g = activeGraphs.get(containerId);
+                if (!g) return [];
+                return g.cy.nodes(':selected')
+                    .filter(n => !n.isParent() && n.data('kind') !== 'missing' && n.data('kind') !== 'group')
+                    .map(n => n.id());
+            }
+
+            return { create, destroy, reset, focus, refit, snapshot, selected };
         }
 
         const RT = promiseGraphRuntime({ navigate: true });
@@ -883,6 +1030,7 @@
         window.reset_promise_graph = RT.reset;
         window.focus_promise_graph = RT.focus;
         window.refit_promise_graph = RT.refit;
+        window.selected_promise_graph_nodes = RT.selected;
 
         // Connectors for the Trace view: arrows between the cards of a trail,
         // drawn into an SVG laid over the columns. Positions are measured

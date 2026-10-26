@@ -17,8 +17,28 @@ use crate::Tracker;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
+/// A group a reader drew around some agents: part of how they are looking,
+/// not part of the contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupSpec {
+    pub name: String,
+    /// Node ids. Names that are not in the graph are ignored.
+    pub members: Vec<String>,
+    /// Drawn as one node, with the members' lines rerouted to it. Open, the
+    /// members keep their own nodes inside a container.
+    pub folded: bool,
+}
+
+impl GroupSpec {
+    /// The node id a folded group draws as, and the container an open one
+    /// draws in.
+    pub fn node_id(&self) -> String {
+        format!("group:{}", self.name)
+    }
+}
+
 /// Which rules to apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldOptions {
     /// Mark a collective's node as one and count its members. The tracker
     /// folds a collective before resolving, so this is a labeling rule: there
@@ -32,6 +52,10 @@ pub struct FoldOptions {
     pub bundle: bool,
     /// Promises an agent makes to itself stay inside the node as a count.
     pub own_inside: bool,
+    /// Groups the reader drew. A folded one becomes a node before hubs are
+    /// found, so a group of hubs is one hub.
+    #[serde(default)]
+    pub groups: Vec<GroupSpec>,
 }
 
 impl Default for FoldOptions {
@@ -41,6 +65,7 @@ impl Default for FoldOptions {
             hub_threshold: Some(15),
             bundle: true,
             own_inside: true,
+            groups: vec![],
         }
     }
 }
@@ -52,6 +77,8 @@ pub enum FoldedNodeKind {
     Collective,
     Hub,
     Missing,
+    /// A reader's group, folded to one node.
+    Group,
 }
 
 /// A hub this node leans on, in place of the lines that used to say so.
@@ -67,8 +94,11 @@ pub struct FoldedNode {
     pub id: String,
     pub label: String,
     pub kind: FoldedNodeKind,
-    /// A collective's members, flattened through nested collectives.
+    /// A collective's members, flattened through nested collectives; a
+    /// folded group's member nodes.
     pub members: Vec<String>,
+    /// The open group this node is drawn inside, by its container id.
+    pub group: Option<String>,
     /// Promises this node makes to itself, folded inside.
     pub own: usize,
     /// How many of those are not kept.
@@ -183,6 +213,7 @@ pub fn fold(graph: &PromiseGraphData, tracker: &Tracker, options: FoldOptions) -
                     PromiseNodeKind::Agent => FoldedNodeKind::Agent,
                 },
                 members,
+                group: None,
                 own: 0,
                 own_unsatisfied: 0,
                 incoming: 0,
@@ -190,17 +221,64 @@ pub fn fold(graph: &PromiseGraphData, tracker: &Tracker, options: FoldOptions) -
             }
         })
         .collect();
+
+    // Rule: the reader's groups. A folded group replaces its members with
+    // one node and reroutes their lines; an open group only marks them.
+    // Edge endpoints are mapped through `alias` from here on.
+    let mut alias: HashMap<String, String> = HashMap::new();
+    for spec in &options.groups {
+        let present: Vec<String> = spec
+            .members
+            .iter()
+            .filter(|m| {
+                nodes
+                    .iter()
+                    .any(|n| &n.id == *m && n.kind != FoldedNodeKind::Missing)
+            })
+            .cloned()
+            .collect();
+        if present.is_empty() {
+            continue;
+        }
+        let container = spec.node_id();
+        if spec.folded {
+            nodes.retain(|n| !present.contains(&n.id));
+            for m in &present {
+                alias.insert(m.clone(), container.clone());
+            }
+            nodes.push(FoldedNode {
+                id: container.clone(),
+                label: spec.name.clone(),
+                kind: FoldedNodeKind::Group,
+                members: present,
+                group: None,
+                own: 0,
+                own_unsatisfied: 0,
+                incoming: 0,
+                badges: vec![],
+            });
+        } else {
+            for n in nodes.iter_mut() {
+                if present.contains(&n.id) {
+                    n.group = Some(container.clone());
+                }
+            }
+        }
+    }
+
     let index: HashMap<String, usize> = nodes
         .iter()
         .enumerate()
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
+    let resolve =
+        |id: &String| -> Option<usize> { index.get(alias.get(id).unwrap_or(id)).copied() };
 
     // Rule: own promises inside. Count every self promise on its node, and
     // drop it from the lines when the rule is on.
     let mut lines: Vec<(usize, usize, FoldedPromise)> = vec![];
     for e in &graph.edges {
-        let (Some(&s), Some(&t)) = (index.get(&e.source), index.get(&e.target)) else {
+        let (Some(s), Some(t)) = (resolve(&e.source), resolve(&e.target)) else {
             continue;
         };
         let promise = FoldedPromise {
@@ -372,6 +450,7 @@ mod tests {
                 hub_threshold: None,
                 bundle: false,
                 own_inside: false,
+                groups: vec![],
             },
         );
         assert_eq!(g.edges.len(), raw.edges.len());
@@ -504,6 +583,91 @@ mod tests {
         );
         assert_eq!(node(&g, "missing:nothing").kind, FoldedNodeKind::Missing);
         assert!(g.edges.iter().any(|e| e.target == "missing:nothing"));
+    }
+
+    #[test]
+    fn a_folded_group_is_one_node_with_its_lines_rerouted() {
+        let t = sample();
+        let group = GroupSpec {
+            name: "pair".into(),
+            members: vec!["c1".into(), "c4".into(), "nobody".into()],
+            folded: true,
+        };
+        let g = fold(
+            &promise_graph(&t),
+            &t,
+            FoldOptions {
+                hub_threshold: None,
+                groups: vec![group],
+                ..FoldOptions::default()
+            },
+        );
+        assert!(g.nodes.iter().all(|n| n.id != "c1" && n.id != "c4"));
+        let pair = node(&g, "group:pair");
+        assert_eq!(pair.kind, FoldedNodeKind::Group);
+        assert_eq!(pair.members, vec!["c1".to_string(), "c4".to_string()]);
+        // c1 -> p (1) and c4 -> p (2) become one bundle from the group.
+        let e = edge(&g, "group:pair", "p");
+        assert_eq!(e.count(), 3);
+        assert!(g.edges.iter().all(|e| e.source != "c1" && e.source != "c4"));
+    }
+
+    #[test]
+    fn a_folded_group_can_be_a_hub_and_keeps_inside_lines_as_own() {
+        let t = sample();
+        let group = GroupSpec {
+            name: "providers".into(),
+            members: vec!["p".into(), "c5".into()],
+            folded: true,
+        };
+        let g = fold(
+            &promise_graph(&t),
+            &t,
+            FoldOptions {
+                hub_threshold: Some(5),
+                groups: vec![group],
+                ..FoldOptions::default()
+            },
+        );
+        let node_g = node(&g, "group:providers");
+        assert_eq!(node_g.kind, FoldedNodeKind::Hub);
+        // p's self promise plus c5 -> p are now inside the group.
+        assert_eq!(node_g.own, 2);
+        assert_eq!(g.stats.own_folded, 2);
+        assert_eq!(node(&g, "c1").badges[0].hub, "group:providers");
+    }
+
+    #[test]
+    fn an_open_group_only_marks_its_members() {
+        let t = sample();
+        let group = GroupSpec {
+            name: "pair".into(),
+            members: vec!["c1".into(), "c4".into()],
+            folded: false,
+        };
+        let raw = promise_graph(&t);
+        let plain = fold(
+            &raw,
+            &t,
+            FoldOptions {
+                hub_threshold: None,
+                ..FoldOptions::default()
+            },
+        );
+        let g = fold(
+            &raw,
+            &t,
+            FoldOptions {
+                hub_threshold: None,
+                groups: vec![group],
+                ..FoldOptions::default()
+            },
+        );
+        assert_eq!(g.edges, plain.edges);
+        assert_eq!(node(&g, "c1").group.as_deref(), Some("group:pair"));
+        assert_eq!(node(&g, "c4").group.as_deref(), Some("group:pair"));
+        assert_eq!(node(&g, "c2").group, None);
+        assert!(g.nodes.iter().all(|n| n.kind != FoldedNodeKind::Group));
     }
 
     #[test]

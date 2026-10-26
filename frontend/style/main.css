@@ -620,3 +620,47 @@ body {
     font-size: 0.85em;
     color: #666;
 }
+
+/* Scratch groups strip over the overview graph */
+.scratch-groups {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.75rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.85em;
+}
+
+.scratch-groups-head {
+    font-weight: bold;
+    color: #1A43A8;
+}
+
+.scratch-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.2rem 0.1rem 0.6rem;
+    border: 2px dashed #2458D6;
+    border-radius: 6px;
+    background: #EEF2FD;
+}
+
+.scratch-group-name {
+    font-weight: 600;
+    color: #1A43A8;
+}
+
+.scratch-group-count {
+    color: #666;
+}
+
+.scratch-group .btn-link {
+    padding: 0 0.3rem;
+    font-size: inherit;
+    text-decoration: none;
+}
+
+.scratch-groups-note {
+    color: #666;
+}
