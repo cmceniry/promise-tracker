@@ -20,39 +20,122 @@ pub struct DiagramOptions {
     /// arrow. Its conditions are still drawn, so whatever the hidden provider
     /// needs from *other* agents stays visible.
     pub show_self_promises: bool,
+    /// When true, every promise from one participant to another becomes one
+    /// arrow, labelled with all of them; see [`bundle`].
+    pub bundle: bool,
 }
 
 impl Default for DiagramOptions {
-    /// Everything is drawn. Written out rather than derived, since the derived
-    /// `false` would be the opposite of the long-standing behavior.
+    /// Everything is drawn, one arrow per promise. Written out rather than
+    /// derived, since the derived `false` would be the opposite of the
+    /// long-standing behavior.
     fn default() -> Self {
         DiagramOptions {
             show_self_promises: true,
+            bundle: false,
         }
     }
 }
 
-/// The lines for one offer: its arrow, unless hidden, then its conditions.
-fn offer_lines(
+/// The diagram as a tree, before it is written out as Mermaid.
+#[derive(Debug, Clone, PartialEq)]
+enum Step {
+    /// A group of offers. With a color it is drawn inside a rect, green when
+    /// `held`; without one its body is spliced in where the rect would be.
+    Group { rect: Option<bool>, body: Vec<Step> },
+    /// One arrow, carrying one promise or a bundle of them.
+    Arrow {
+        from: String,
+        to: String,
+        promises: Vec<(String, bool)>,
+    },
+    /// Nobody provides the behavior.
+    Missing { who: String, behavior: String },
+}
+
+const HELD: &str = "rgb(0,255,0)";
+const BROKEN: &str = "rgb(255,0,0)";
+
+impl Step {
+    fn is_empty_group(&self) -> bool {
+        matches!(self, Step::Group { body, .. } if body.is_empty())
+    }
+
+    /// Lines at this depth; a group's body is always indented one step,
+    /// whether or not its rect is drawn.
+    fn render(&self, indent: usize, out: &mut Vec<String>) {
+        let pad = " ".repeat(indent);
+        match self {
+            Step::Group { rect, body } => {
+                if let Some(held) = rect {
+                    out.push(format!("{}rect {}", pad, if *held { HELD } else { BROKEN }));
+                }
+                for step in body {
+                    step.render(indent + 4, out);
+                }
+                if rect.is_some() {
+                    out.push(format!("{}end", pad));
+                }
+            }
+            Step::Arrow { from, to, promises } => {
+                out.push(format!(
+                    "{}{} ->> {}: {}",
+                    pad,
+                    from,
+                    to,
+                    arrow_label(promises)
+                ));
+            }
+            Step::Missing { who, behavior } => {
+                out.push(format!("{}{} -X {}: {}", pad, who, who, behavior));
+            }
+        }
+    }
+}
+
+/// One promise names itself; a bundle names them all, marks the broken
+/// ones, and counts.
+fn arrow_label(promises: &[(String, bool)]) -> String {
+    match promises {
+        [(behavior, _)] => behavior.clone(),
+        many => format!(
+            "{} \u{00d7}{}",
+            many.iter()
+                .map(|(b, held)| if *held {
+                    b.clone()
+                } else {
+                    format!("{} \u{2717}", b)
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            many.len()
+        ),
+    }
+}
+
+/// The steps for one offer: its arrow, unless hidden, then its conditions.
+fn offer_steps(
     component: &str,
     behavior: &str,
     offer: &Offer,
+    held: bool,
     options: DiagramOptions,
-) -> Vec<String> {
+) -> Vec<Step> {
     let agent_name = offer.get_agent_name();
     let hidden = !options.show_self_promises && component == agent_name;
 
     let mut ret = Vec::new();
     if !hidden {
-        ret.push(format!(
-            "    {} ->> {}: {}",
-            component, agent_name, behavior
-        ));
+        ret.push(Step::Arrow {
+            from: component.to_string(),
+            to: agent_name.to_string(),
+            promises: vec![(behavior.to_string(), held)],
+        });
     }
 
     // Recursively process nested conditions
     for condition in offer.get_resolved_conditions() {
-        let child_lines = generate_lines(
+        ret.extend(generate_steps(
             DiagramInput {
                 component: agent_name,
                 behavior: condition.get_behavior_name(),
@@ -60,19 +143,12 @@ fn offer_lines(
                 unsatisfied: condition.get_unsatisfying_offers(),
             },
             options,
-        );
-        // Indent child lines
-        for line in child_lines {
-            ret.push(format!("    {}", line));
-        }
+        ));
     }
 
     ret
 }
 
-/// Recursively generate diagram lines for a resolution.
-///
-/// Returns a vector of diagram lines (without the leading indentation for the sequenceDiagram block).
 /// Whether every offer in a group comes from the agent that needs it.
 fn only_self_offers(component: &str, offers: &[Offer], options: DiagramOptions) -> bool {
     !options.show_self_promises
@@ -81,35 +157,33 @@ fn only_self_offers(component: &str, offers: &[Offer], options: DiagramOptions) 
             .all(|offer| offer.get_agent_name() == component)
 }
 
-/// One group of offers: their lines inside a colored rect.
+/// One group of offers, inside a colored rect.
 ///
-/// The body is built first, so a rect is never opened around nothing. A group
-/// whose offers were all hidden loses its rect too, rather than drawing an
-/// empty box where the hidden promise used to be; whatever those offers needed
-/// from other agents is still carried out, in its own rects.
-fn group_lines(
+/// A group whose offers were all hidden loses its rect, rather than drawing a
+/// box where the hidden promise used to be; whatever those offers needed from
+/// other agents is still carried out, in its own rects. A group with nothing
+/// left in it is dropped when the diagram is written out.
+fn group_step(
     component: &str,
     behavior: &str,
     offers: &[Offer],
-    color: &str,
+    held: bool,
     options: DiagramOptions,
-) -> Vec<String> {
-    let body: Vec<String> = offers
+) -> Step {
+    let body: Vec<Step> = offers
         .iter()
-        .flat_map(|offer| offer_lines(component, behavior, offer, options))
+        .flat_map(|offer| offer_steps(component, behavior, offer, held, options))
         .collect();
-
-    if body.is_empty() || only_self_offers(component, offers, options) {
-        return body;
-    }
-
-    let mut ret = vec![format!("rect {}", color)];
-    ret.extend(body);
-    ret.push("end".to_string());
-    ret
+    let rect = if only_self_offers(component, offers, options) {
+        None
+    } else {
+        Some(held)
+    };
+    Step::Group { rect, body }
 }
 
-fn generate_lines(input: DiagramInput, options: DiagramOptions) -> Vec<String> {
+/// Recursively generate the steps for a resolution.
+fn generate_steps(input: DiagramInput, options: DiagramOptions) -> Vec<Step> {
     let DiagramInput {
         component,
         behavior,
@@ -117,37 +191,122 @@ fn generate_lines(input: DiagramInput, options: DiagramOptions) -> Vec<String> {
         unsatisfied,
     } = input;
 
-    let mut ret = Vec::new();
-
-    // Handle satisfied offers (green rectangle)
-    ret.extend(group_lines(
-        component,
-        behavior,
-        satisfied,
-        "rgb(0,255,0)",
-        options,
-    ));
-
-    // Handle unsatisfied offers (red rectangle)
-    ret.extend(group_lines(
-        component,
-        behavior,
-        unsatisfied,
-        "rgb(255,0,0)",
-        options,
-    ));
+    let mut ret = vec![
+        group_step(component, behavior, satisfied, true, options),
+        group_step(component, behavior, unsatisfied, false, options),
+    ];
 
     // Handle case with no offers (error state - red rectangle with X).
     // Keyed off the original offers, not the rendered body: "nobody provides
     // this" is a different statement from "the only offer was hidden", and
     // this line's matching names are notation rather than a self promise.
     if satisfied.is_empty() && unsatisfied.is_empty() {
-        ret.push("rect rgb(255,0,0)".to_string());
-        ret.push(format!("    {} -X {}: {}", component, component, behavior));
-        ret.push("end".to_string());
+        ret.push(Step::Group {
+            rect: Some(false),
+            body: vec![Step::Missing {
+                who: component.to_string(),
+                behavior: behavior.to_string(),
+            }],
+        });
     }
 
     ret
+}
+
+/// Drop groups left with nothing inside, innermost first, so a rect is never
+/// opened around nothing.
+fn prune(steps: &mut Vec<Step>) {
+    for step in steps.iter_mut() {
+        if let Step::Group { body, .. } = step {
+            prune(body);
+        }
+    }
+    steps.retain(|s| !s.is_empty_group());
+}
+
+/// Every promise from one participant to another, merged into the first
+/// arrow between them, each distinct behavior once.
+///
+/// The later arrows go, and whatever their conditions led to stays where it
+/// was. A bundle with a broken promise inside never sits in a green rect
+/// looking held: it gets a red rect of its own there.
+fn bundle(steps: &mut Vec<Step>) {
+    /// A pair of participants, and every promise between them in order.
+    type Pair = ((String, String), Vec<(String, bool)>);
+
+    fn collect(steps: &[Step], into: &mut Vec<Pair>) {
+        for step in steps {
+            match step {
+                Step::Group { body, .. } => collect(body, into),
+                Step::Arrow { from, to, promises } => {
+                    let key = (from.clone(), to.clone());
+                    let at = match into.iter().position(|(k, _)| *k == key) {
+                        Some(at) => at,
+                        None => {
+                            into.push((key, vec![]));
+                            into.len() - 1
+                        }
+                    };
+                    // The tree repeats a shared condition under each step
+                    // that needs it; it is still one promise, held only if
+                    // every time it is reached it is.
+                    let all = &mut into[at].1;
+                    for (behavior, held) in promises {
+                        match all.iter_mut().find(|(b, _)| b == behavior) {
+                            Some((_, h)) => *h &= *held,
+                            None => all.push((behavior.clone(), *held)),
+                        }
+                    }
+                }
+                Step::Missing { .. } => {}
+            }
+        }
+    }
+
+    fn rewrite(
+        steps: &mut Vec<Step>,
+        in_held_rect: bool,
+        bundles: &[Pair],
+        placed: &mut Vec<(String, String)>,
+    ) {
+        let old = std::mem::take(steps);
+        for step in old {
+            match step {
+                Step::Group { rect, mut body } => {
+                    let held = rect.unwrap_or(in_held_rect);
+                    rewrite(&mut body, held, bundles, placed);
+                    steps.push(Step::Group { rect, body });
+                }
+                Step::Arrow { from, to, .. } => {
+                    let key = (from.clone(), to.clone());
+                    if placed.contains(&key) {
+                        continue;
+                    }
+                    let promises = bundles
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, p)| p.clone())
+                        .unwrap_or_default();
+                    let broken = promises.iter().any(|(_, held)| !held);
+                    placed.push(key);
+                    let arrow = Step::Arrow { from, to, promises };
+                    if broken && in_held_rect {
+                        steps.push(Step::Group {
+                            rect: Some(false),
+                            body: vec![arrow],
+                        });
+                    } else {
+                        steps.push(arrow);
+                    }
+                }
+                missing => steps.push(missing),
+            }
+        }
+    }
+
+    let mut bundles = vec![];
+    collect(steps, &mut bundles);
+    rewrite(steps, false, &bundles, &mut vec![]);
 }
 
 /// Generate a Mermaid sequence diagram DSL string from resolution data.
@@ -172,7 +331,7 @@ pub fn diagram_with(
     resolution: &Resolution,
     options: DiagramOptions,
 ) -> String {
-    let lines = generate_lines(
+    let mut steps = generate_steps(
         DiagramInput {
             component,
             behavior,
@@ -181,10 +340,14 @@ pub fn diagram_with(
         },
         options,
     );
+    if options.bundle {
+        bundle(&mut steps);
+    }
+    prune(&mut steps);
 
     // Build the final diagram with proper indentation
     let mut result = vec!["sequenceDiagram".to_string()];
-    if lines.is_empty() {
+    if steps.is_empty() {
         // Only reachable with self promises hidden: every offer came from the
         // requirer itself and none of them had conditions. A bare
         // "sequenceDiagram" renders as a blank with no explanation.
@@ -193,8 +356,8 @@ pub fn diagram_with(
             component, behavior
         ));
     } else {
-        for line in lines {
-            result.push(format!("    {}", line));
+        for step in &steps {
+            step.render(4, &mut result);
         }
     }
 
@@ -222,6 +385,7 @@ mod tests {
     fn hide_self() -> DiagramOptions {
         DiagramOptions {
             show_self_promises: false,
+            ..DiagramOptions::default()
         }
     }
 
@@ -456,6 +620,139 @@ mod tests {
 
         assert!(result.contains("c1 ->> a1: b1"), "{}", result);
         assert!(!result.contains("a1 ->> a1: b2"), "{}", result);
+        assert_no_empty_rect(&result);
+    }
+
+    fn bundled() -> DiagramOptions {
+        DiagramOptions {
+            bundle: true,
+            ..DiagramOptions::default()
+        }
+    }
+
+    /// a1 keeps b1 on b2 and b3, both from a2; b3 rests on b4 from a3.
+    fn two_promises_one_pair() -> Tracker {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".to_string(), "b3".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b2"),
+            Behavior::build("b3").with_conditions(vec!["b4".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b4")]));
+        tracker
+    }
+
+    #[test]
+    fn test_bundle_merges_arrows_between_one_pair() {
+        let resolution = two_promises_one_pair().resolve("b1");
+        let plain = diagram("c1", "b1", &resolution);
+        assert!(plain.contains("a1 ->> a2: b2"), "{}", plain);
+        assert!(plain.contains("a1 ->> a2: b3"), "{}", plain);
+
+        let result = diagram_with("c1", "b1", &resolution, bundled());
+        assert_eq!(
+            result,
+            concat!(
+                "sequenceDiagram\n",
+                "    rect rgb(0,255,0)\n",
+                "        c1 ->> a1: b1\n",
+                "        rect rgb(0,255,0)\n",
+                "            a1 ->> a2: b2, b3 \u{00d7}2\n",
+                "        end\n",
+                "        rect rgb(0,255,0)\n",
+                "            rect rgb(0,255,0)\n",
+                "                a2 ->> a3: b4\n",
+                "            end\n",
+                "        end\n",
+                "    end",
+            )
+        );
+        assert_no_empty_rect(&result);
+    }
+
+    #[test]
+    fn test_bundle_with_nothing_to_merge_matches_the_plain_diagram() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        let resolution = tracker.resolve("b1");
+        assert_eq!(
+            diagram_with("c1", "b1", &resolution, bundled()),
+            diagram("c1", "b1", &resolution)
+        );
+    }
+
+    #[test]
+    fn test_bundle_never_shows_a_broken_promise_as_held() {
+        // a1 keeps b1 on b2 and b3 from a2, but b3 rests on b4 which nobody
+        // promises: the a1 -> a2 bundle is green for b2 and red for b3.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".to_string(), "b3".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b2"),
+            Behavior::build("b3").with_conditions(vec!["b4".to_string()]),
+        ]));
+        let resolution = tracker.resolve("b1");
+        let result = diagram_with("c1", "b1", &resolution, bundled());
+
+        assert!(
+            result.contains("a1 ->> a2: b2, b3 \u{2717} \u{00d7}2"),
+            "{}",
+            result
+        );
+        assert_eq!(result.matches("->> a2").count(), 1, "{}", result);
+        // The bundle sits where b2's green rect was, so it gets a red one.
+        let lines: Vec<&str> = result.lines().map(str::trim).collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("a1 ->> a2"))
+            .unwrap();
+        assert_eq!(lines[at - 1], "rect rgb(255,0,0)", "{}", result);
+        // The unmet condition is still drawn.
+        assert!(result.contains("a2 -X a2: b4"), "{}", result);
+        assert_no_empty_rect(&result);
+    }
+
+    #[test]
+    fn test_bundle_keeps_directions_apart() {
+        // c1 -> a1 for b1, a1 -> c1 for b2: two pairs, not one.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("c1").with_provides(vec![Behavior::build("b2")]));
+        let resolution = tracker.resolve("b1");
+        let result = diagram_with("c1", "b1", &resolution, bundled());
+        assert!(result.contains("c1 ->> a1: b1"), "{}", result);
+        assert!(result.contains("a1 ->> c1: b2"), "{}", result);
+    }
+
+    /// a1's b1 rests on b3 and b4 from a2; both rest on b5 from a3. The tree
+    /// reaches a2 -> a3: b5 twice, but it is one promise.
+    #[test]
+    fn test_bundle_counts_a_shared_condition_once() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b3".to_string(), "b4".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b3").with_conditions(vec!["b5".to_string()]),
+            Behavior::build("b4").with_conditions(vec!["b5".to_string()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b5")]));
+        let resolution = tracker.resolve("b1");
+        let result = diagram_with("c1", "b1", &resolution, bundled());
+
+        assert!(result.contains("a1 ->> a2: b3, b4 \u{00d7}2"), "{}", result);
+        assert!(result.contains("a2 ->> a3: b5\n"), "{}", result);
+        assert!(!result.contains("b5, b5"), "{}", result);
+        assert_eq!(result.matches("->> a3").count(), 1, "{}", result);
         assert_no_empty_rect(&result);
     }
 }

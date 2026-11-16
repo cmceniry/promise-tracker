@@ -2,8 +2,7 @@ use gloo_storage::{LocalStorage, Storage};
 use gloo_timers::callback::Timeout;
 use leptos::prelude::*;
 use promise_tracker::components::Item;
-use promise_tracker::fold::{fold, FoldOptions, GroupSpec};
-use promise_tracker::promise_graph::promise_graph;
+use promise_tracker::fold::{FoldOptions, GroupSpec};
 use promise_tracker::Tracker;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -16,17 +15,22 @@ use crate::models::Contract;
 use super::contract_graph::ContractGraph;
 use super::contract_text::ContractText;
 use super::cycle_banner::CycleBanner;
-use super::display_options::DisplayOptions;
+use super::display_options::{DisplayOptions, ViewOptions};
 use super::promise_graph_view::PromiseGraphView;
-use super::simplify_panel::SimplifyPanel;
 use super::simulation_controls::SimulationControls;
 use super::trace_view::TraceView;
 
 const GROUPS_STORAGE_KEY: &str = "scratch_groups";
 
-/// Build a Tracker from contract contents
-fn build_tracker_from_contracts(contracts: &[Contract], filter_sims: Option<&str>) -> Tracker {
+/// Build a Tracker from contract contents. `fold_collectives` chooses whether
+/// a SuperAgent stands as one agent or as its members.
+fn build_tracker_from_contracts(
+    contracts: &[Contract],
+    filter_sims: Option<&str>,
+    fold_collectives: bool,
+) -> Tracker {
     let mut tracker = Tracker::new();
+    tracker.set_fold_collectives(fold_collectives);
 
     for contract in contracts {
         // Skip contracts with errors
@@ -75,11 +79,12 @@ pub fn ContractGrapher(
     // Read these only inside the child components: reading one in the per-sim
     // closures below would rebuild every panel on a toggle, resetting each
     // one's inner tab and tearing down its graph.
-    let (show_self_promises, set_show_self_promises) = signal(true);
+    let (view_options, set_view_options) = signal(ViewOptions::default());
+    let view_options_signal: Signal<ViewOptions> = view_options.into();
 
-    // The other folding rules for the overview graph. Self promises are the
-    // display toggle above, so the options handed to the graph are composed.
-    let (fold_options, set_fold_options) = signal(FoldOptions::default());
+    // The SuperAgent switch changes how the trackers are built, so it is
+    // memoized apart: the other switches must not rebuild them.
+    let fold_collectives = Memo::new(move |_| view_options.get().collectives);
 
     // Scratch groups the reader drew on the overview. They are how the reader
     // is looking, not what the contract says, so they live in this browser.
@@ -92,10 +97,16 @@ pub fn ContractGrapher(
     });
     let on_groups_change = Callback::new(move |next: Vec<GroupSpec>| set_groups.set(next));
 
-    let effective_fold = Signal::derive(move || FoldOptions {
-        own_inside: !show_self_promises.get(),
-        groups: groups.get(),
-        ..fold_options.get()
+    // The overview's folding rules, read off the display options. Scratch
+    // groups are the reader's drawing, not an option, and ride along.
+    let effective_fold = Signal::derive(move || {
+        let o = view_options.get();
+        FoldOptions {
+            collectives: o.collectives,
+            bundle: o.bundle,
+            own_inside: o.fold_self,
+            groups: groups.get(),
+        }
     });
 
     // Selected component and behavior for detailed view
@@ -114,6 +125,7 @@ pub fn ContractGrapher(
     Effect::new(move |_| {
         let current_contracts = contracts.get();
         let sims = simulations.get();
+        let fold = fold_collectives.get();
 
         // Cancel any existing timeout
         if let Some(handle) = debounce_handle_clone.borrow_mut().take() {
@@ -137,13 +149,13 @@ pub fn ContractGrapher(
             }
 
             // Build main tracker (no simulation filter)
-            let main = build_tracker_from_contracts(&current_contracts, None);
+            let main = build_tracker_from_contracts(&current_contracts, None, fold);
             set_main_tracker.set(Some(main));
 
             // Build per-simulation trackers
             let mut sim_map = HashMap::new();
             for sim in &sims {
-                let tracker = build_tracker_from_contracts(&current_contracts, Some(sim));
+                let tracker = build_tracker_from_contracts(&current_contracts, Some(sim), fold);
                 sim_map.insert(sim.clone(), tracker);
             }
             set_sim_trackers.set(sim_map);
@@ -253,11 +265,6 @@ pub fn ContractGrapher(
         set_zoomed_sim.set(sim);
     });
 
-    // Display option callbacks
-    let on_toggle_self_promises = Callback::new(move |_: ()| {
-        set_show_self_promises.update(|v| *v = !*v);
-    });
-
     // Edge tap in the overview graph jumps to the Detailed view with the
     // component and behavior preselected. A per-sim edge may not exist in the
     // main tracker that drives the dropdowns, so validate before navigating.
@@ -283,13 +290,6 @@ pub fn ContractGrapher(
         set_d_behavior.set(behavior);
     });
 
-    // What the rules take off the main (unfiltered) graph, for the panel.
-    let fold_stats = Memo::new(move |_| {
-        main_tracker
-            .get()
-            .map(|t| fold(&promise_graph(&t), &t, effective_fold.get()).stats)
-    });
-
     view! {
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
@@ -304,10 +304,7 @@ pub fn ContractGrapher(
             />
 
             // Display option toggles, applying to every view below
-            <DisplayOptions
-                show_self_promises=show_self_promises
-                on_toggle_self_promises=on_toggle_self_promises
-            />
+            <DisplayOptions options=view_options set_options=set_view_options />
 
             // Bootstrap Nav Tabs
             <ul class="nav nav-tabs mb-3">
@@ -363,13 +360,6 @@ pub fn ContractGrapher(
                                 "This view shows all components and their promise relationships."
                             </p>
                         </div>
-                        <SimplifyPanel
-                            fold_options=fold_options
-                            set_fold_options=set_fold_options
-                            show_self_promises=show_self_promises
-                            on_toggle_self_promises=on_toggle_self_promises
-                            stats=fold_stats
-                        />
                         <div style="display: flex; gap: 1rem; margin-top: 1rem;">
                             {move || {
                                 visible_simulations()
@@ -521,7 +511,7 @@ pub fn ContractGrapher(
                                                     tracker=tracker_signal
                                                     selected_component=d_component
                                                     selected_behavior=d_behavior
-                                                    show_self_promises=show_self_promises
+                                                    options=view_options_signal
                                                     sim_label=sim_for_text.clone()
                                                 />
                                             </Show>
@@ -530,7 +520,7 @@ pub fn ContractGrapher(
                                                     tracker=tracker_signal
                                                     selected_component=d_component
                                                     selected_behavior=d_behavior
-                                                    show_self_promises=show_self_promises
+                                                    options=view_options_signal
                                                     sim_label=sim_for_sequence.clone()
                                                 />
                                             </Show>
@@ -573,7 +563,7 @@ pub fn ContractGrapher(
                                                 selected_component=d_component
                                                 selected_behavior=d_behavior
                                                 on_select=on_trace_select
-                                                show_self_promises=show_self_promises
+                                                options=view_options_signal
                                                 sim_label=sim_for_trace
                                             />
                                         </div>

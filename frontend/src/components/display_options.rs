@@ -1,76 +1,134 @@
 use leptos::prelude::*;
 
-/// Display option toggles for the contract views.
-///
-/// Icon-only buttons, so each one carries its meaning and its current state in
-/// the tooltip. The bar matches `SimulationControls` above it.
+/// How every view reads the contract. One value, so the overview, the
+/// detailed views and the trace never disagree about what is folded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewOptions {
+    /// Agents stand folded into their SuperAgent. Off, the tracker is built
+    /// with every member as an agent of its own.
+    pub collectives: bool,
+    /// Promises between the same two agents, in the same direction, are
+    /// shown as one.
+    pub bundle: bool,
+    /// Promises an agent makes to itself are folded away.
+    pub fold_self: bool,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        ViewOptions {
+            collectives: true,
+            bundle: true,
+            fold_self: false,
+        }
+    }
+}
+
+impl ViewOptions {
+    /// What is folded, for an export's subtitle.
+    pub fn describe(&self) -> String {
+        let mut folded: Vec<&str> = vec![];
+        if self.collectives {
+            folded.push("SuperAgents folded");
+        }
+        if self.bundle {
+            folded.push("parallel promises bundled");
+        }
+        if self.fold_self {
+            folded.push("self-fulfilling promises folded");
+        }
+        if folded.is_empty() {
+            "nothing folded".to_string()
+        } else {
+            folded.join(", ")
+        }
+    }
+}
+
+/// One toggle: an icon and a short name, with its meaning and state in the
+/// tooltip.
 #[component]
-pub fn DisplayOptions(
-    show_self_promises: ReadSignal<bool>,
-    on_toggle_self_promises: Callback<()>,
+fn OptionToggle(
+    #[prop(into)] on: Signal<bool>,
+    label: &'static str,
+    /// What the option does, for the tooltip
+    about: &'static str,
+    on_click: Callback<()>,
+    children: Children,
 ) -> impl IntoView {
     view! {
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 0.75rem; background: #f8f9fa; border-radius: 4px;">
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                <span style="font-weight: bold;">"Display:"</span>
-                <span style="color: #666;">
-                    {move || {
-                        if show_self_promises.get() {
-                            "showing self-fulfilling promises"
-                        } else {
-                            "self-fulfilling promises hidden"
-                        }
-                    }}
-                </span>
-            </div>
-            <div style="display: flex; gap: 0.5rem;">
-                <button
-                    type="button"
-                    class=move || {
-                        if show_self_promises.get() {
-                            "btn btn-sm btn-primary"
-                        } else {
-                            "btn btn-sm btn-outline-secondary"
-                        }
-                    }
-                    aria-pressed=move || if show_self_promises.get() { "true" } else { "false" }
-                    aria-label="Display self-fulfilling promises"
-                    title=move || {
-                        if show_self_promises.get() {
-                            "Self-fulfilling promises shown — click to hide promises an agent makes to itself"
-                        } else {
-                            "Self-fulfilling promises hidden — click to show promises an agent makes to itself"
-                        }
-                    }
-                    on:click=move |_| on_toggle_self_promises.run(())
-                >
-                    // A loop: the promise comes back to the agent that made it.
-                    // Struck through when the promises are hidden.
-                    <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="16"
-                        height="16"
-                        fill="currentColor"
-                        viewBox="0 0 16 16"
-                    >
-                        <path
-                            d="M8 3a5 5 0 1 0 5 5"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                        ></path>
-                        <path d="M8 0.5 5 3 8 5.5z"></path>
-                        <Show when=move || !show_self_promises.get()>
-                            <path
-                                d="M2 14 14 2"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="1.5"
-                            ></path>
-                        </Show>
-                    </svg>
-                </button>
-            </div>
+        <button
+            type="button"
+            class=move || {
+                if on.get() {
+                    "btn btn-sm btn-primary view-option"
+                } else {
+                    "btn btn-sm btn-outline-secondary view-option"
+                }
+            }
+            aria-pressed=move || if on.get() { "true" } else { "false" }
+            title=move || format!("{} ({}; click to turn {})", about,
+                if on.get() { "on" } else { "off" },
+                if on.get() { "off" } else { "on" })
+            on:click=move |_| on_click.run(())
+        >
+            {children()}
+            <span>{label}</span>
+        </button>
+    }
+}
+
+/// The display options, applying to every view below. Three switches of
+/// equal standing, on one line.
+#[component]
+pub fn DisplayOptions(
+    options: ReadSignal<ViewOptions>,
+    set_options: WriteSignal<ViewOptions>,
+) -> impl IntoView {
+    let collectives = Signal::derive(move || options.get().collectives);
+    let bundle = Signal::derive(move || options.get().bundle);
+    let fold_self = Signal::derive(move || options.get().fold_self);
+
+    view! {
+        <div class="view-options">
+            <span style="font-weight: bold;">"Fold:"</span>
+            <OptionToggle
+                on=collectives
+                label="SuperAgents"
+                about="Fold agents into their SuperAgent; off, every member is an agent of its own"
+                on_click=Callback::new(move |_| set_options.update(|o| o.collectives = !o.collectives))
+            >
+                // A box holding two: members inside their collective.
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <rect x="1" y="2" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"></rect>
+                    <rect x="4" y="5" width="3" height="6" rx="0.5"></rect>
+                    <rect x="9" y="5" width="3" height="6" rx="0.5"></rect>
+                </svg>
+            </OptionToggle>
+            <OptionToggle
+                on=bundle
+                label="Bundle"
+                about="Show promises between the same two agents, in the same direction, as one"
+                on_click=Callback::new(move |_| set_options.update(|o| o.bundle = !o.bundle))
+            >
+                // Three lines drawn together into one.
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16">
+                    <path d="M1 3 C5 3 6 8 9 8 M1 8 H9 M1 13 C5 13 6 8 9 8"></path>
+                    <path d="M9 8 H15" stroke-width="3"></path>
+                </svg>
+            </OptionToggle>
+            <OptionToggle
+                on=fold_self
+                label="Self promises"
+                about="Fold away promises an agent makes to itself"
+                on_click=Callback::new(move |_| set_options.update(|o| o.fold_self = !o.fold_self))
+            >
+                // A loop: the promise comes back to the agent that made it.
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M8 3a5 5 0 1 0 5 5" fill="none" stroke="currentColor" stroke-width="1.5"></path>
+                    <path d="M8 0.5 5 3 8 5.5z"></path>
+                </svg>
+            </OptionToggle>
         </div>
     }
 }

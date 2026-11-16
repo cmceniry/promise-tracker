@@ -495,15 +495,10 @@
             function nodeLabel(n) {
                 const lines = [n.label];
                 if (n.kind === 'collective') lines.push(n.members.length + ' inside');
-                if (n.kind === 'hub') lines.push('hub \u00b7 ' + n.incoming + ' in');
-                // A folded group keeps saying so even once it counts as a hub.
                 if (n.id.startsWith('group:')) lines.push(n.members.length + ' inside \u00b7 scratch group');
                 if (n.own > 0) {
                     lines.push('+' + n.own + ' own' + (n.own_unsatisfied ? ' (' + n.own_unsatisfied + '\u2717)' : ''));
                 }
-                (n.badges || []).forEach(b => {
-                    lines.push('\u21b3 ' + groupName(b.hub) + (b.satisfied ? '' : ' \u2717'));
-                });
                 return lines.join('\n');
             }
 
@@ -528,10 +523,6 @@
                     'color': '#1F2A37',
                     'border-width': 1,
                     'border-color': '#78909C',
-                }},
-                { selector: 'node.hub', style: {
-                    'shape': 'rectangle',
-                    'background-color': '#1F2A37',
                 }},
                 // A reader's group: dashed accent, open as a container around
                 // its members or folded to one node. Not part of the contract.
@@ -560,10 +551,6 @@
                     'overlay-color': '#2458D6',
                     'overlay-opacity': 0.2,
                     'overlay-padding': 5,
-                }},
-                { selector: 'node.badge-broken', style: {
-                    'border-width': 2,
-                    'border-color': '#C62828',
                 }},
                 { selector: 'node.ghost', style: {
                     'background-opacity': 0,
@@ -687,8 +674,7 @@
                         parent: n.group || undefined,
                     },
                     classes: (n.kind === 'missing' ? 'ghost' : n.kind)
-                        + (n.id.startsWith('group:') ? ' scratch-folded' : '')
-                        + ((n.badges || []).some(b => !b.satisfied) ? ' badge-broken' : ''),
+                        + (n.id.startsWith('group:') ? ' scratch-folded' : ''),
                 }));
                 edges.forEach(e => {
                     const k = pairKeyOf(e);
@@ -980,8 +966,8 @@
                     e.data('kind') === 'want'
                     && e.data('behavior') === behavior
                     && e.data('source') === agent);
-                // A want on a hub has no line of its own; the badge on the
-                // wanter is where it shows, so land on the wanter.
+                // A want folded out of sight (a self promise inside its node,
+                // or a line inside a folded scratch group) lands on the wanter.
                 if (sel.empty()) sel = cy.getElementById(agent);
                 if (sel.empty()) return;
                 cy.elements().addClass('dimmed').removeClass('highlighted');

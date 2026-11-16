@@ -25,6 +25,9 @@ pub struct Tracker {
     available_superagents: Vec<SuperAgent>,
     available_instances: Vec<Instance>,
     working_agents: HashMap<String, Vec<Agent>>,
+    /// Whether a collective stands as one merged agent. See
+    /// [`Tracker::set_fold_collectives`].
+    fold_collectives: bool,
 }
 
 // Need:
@@ -44,6 +47,50 @@ impl Tracker {
             available_superagents: vec![],
             available_instances: vec![],
             working_agents: HashMap::new(),
+            fold_collectives: true,
+        }
+    }
+
+    /// Whether collectives are folded into one working agent each. On by
+    /// default.
+    pub fn folds_collectives(&self) -> bool {
+        self.fold_collectives
+    }
+
+    /// Choose how a collective (SuperAgent) stands among the working agents,
+    /// and rebuild if that changes anything.
+    ///
+    /// Folded (the default): the collective is one working agent with its
+    /// members merged in and its internally-met conditions reduced away; the
+    /// members are templates and do not stand on their own.
+    ///
+    /// Unfolded: the collective is not a working agent. Every agent it
+    /// reaches, through any nesting, stands as its own working agent, so a
+    /// promise one member makes to another is an ordinary promise between two
+    /// agents and a want resolves against the members one by one.
+    ///
+    /// Instances are the exception. An instance is a copy of its base, and a
+    /// copy of a collective is a copy of the whole folded collective, so an
+    /// instance built on one is materialized exactly as in folded mode. A
+    /// collective that exists only to be copied (an instance base, or one
+    /// nested inside one) is a template, and so is an agent that nothing but
+    /// such collectives reaches: unfolding it as well would put its promises
+    /// on the board twice, once as itself and once inside every copy.
+    ///
+    /// Unfolding never loses a promise, though. An agent that any other
+    /// collective reaches, through any nesting, stands on its own even when
+    /// a copied collective also holds it, because folded it would stand
+    /// inside that other collective. The same goes for an agent that is
+    /// itself an instance base: folded into a collective it still counts
+    /// there, so unfolded it stands.
+    ///
+    /// Collectives that contain one another (see
+    /// [`Tracker::membership_cycles`]) leave nothing standing when folded;
+    /// unfolded, the agents the loop reaches stand on their own.
+    pub fn set_fold_collectives(&mut self, fold: bool) {
+        if self.fold_collectives != fold {
+            self.fold_collectives = fold;
+            self.rebuild();
         }
     }
 
@@ -94,20 +141,69 @@ impl Tracker {
         // from, are templates: they describe something rather than being it, so
         // they do not stand as working agents of their own.
         let mut templates: HashSet<String> = HashSet::new();
-        for sa in &self.available_superagents {
-            templates.extend(sa.get_agent_names());
-        }
         for instance in &self.available_instances {
             templates.insert(instance.get_base().name().clone());
         }
+        if self.fold_collectives {
+            for sa in &self.available_superagents {
+                templates.extend(sa.get_agent_names());
+            }
+        } else {
+            // Only what nothing but a copy reaches stays a template; see
+            // `set_fold_collectives`. First the collectives that exist only
+            // to be copied: instance bases, and what is nested inside them.
+            let mut copied: HashSet<String> = HashSet::new();
+            let mut queue: Vec<String> = self
+                .available_instances
+                .iter()
+                .filter_map(|i| self.collective_base(i))
+                .map(str::to_string)
+                .collect();
+            while let Some(name) = queue.pop() {
+                if !copied.insert(name.clone()) {
+                    continue;
+                }
+                for sa in self
+                    .available_superagents
+                    .iter()
+                    .filter(|sa| sa.get_name() == &name)
+                {
+                    for member in sa.get_agent_names() {
+                        if self
+                            .available_superagents
+                            .iter()
+                            .any(|other| other.get_name() == &member)
+                        {
+                            queue.push(member);
+                        }
+                    }
+                }
+            }
+            for name in &copied {
+                templates.extend(self.collective_members(name).unwrap_or_default());
+            }
+            // Then everything any other collective reaches stands, copied or
+            // not, since folded it would stand inside that collective.
+            let mut standing: HashSet<String> = HashSet::new();
+            for sa in &self.available_superagents {
+                if !copied.contains(sa.get_name()) {
+                    standing.extend(self.collective_members(sa.get_name()).unwrap_or_default());
+                }
+            }
+            templates.retain(|t| !standing.contains(t));
+        }
 
         // Collectives first, flattened: an instance built on one needs it
-        // whole before it can copy it.
-        let collective_names: Vec<String> = self
-            .available_superagents
-            .iter()
-            .map(|sa| sa.get_name().clone())
-            .collect();
+        // whole before it can copy it. Unfolded, none of them stands, and an
+        // instance flattens its own base in `find_base`.
+        let collective_names: Vec<String> = if self.fold_collectives {
+            self.available_superagents
+                .iter()
+                .map(|sa| sa.get_name().clone())
+                .collect()
+        } else {
+            vec![]
+        };
         let mut collectives: HashMap<String, Agent> = HashMap::new();
         for name in collective_names {
             if collectives.contains_key(&name) {
@@ -198,6 +294,22 @@ impl Tracker {
 
         visiting.remove(name);
         Some(stub)
+    }
+
+    /// The collective an instance is built on, when its base names one: a
+    /// base qualified as a SuperAgent, or an unqualified base that a
+    /// collective is declared under (the lookup [`Tracker::find_base`] makes).
+    fn collective_base<'a>(&self, instance: &'a Instance) -> Option<&'a str> {
+        let base = instance.get_base();
+        let name = base.name();
+        let declared = self
+            .available_superagents
+            .iter()
+            .any(|sa| sa.get_name() == name);
+        match base.kind() {
+            Some(BaseKind::SuperAgent) | None if declared => Some(name.as_str()),
+            _ => None,
+        }
     }
 
     /// What an instance is built from.
@@ -724,6 +836,7 @@ mod tests {
             available_superagents: vec![],
             available_instances: vec![],
             working_agents: HashMap::new(),
+            fold_collectives: true,
         };
         let mut a = Agent::new(String::from("abcd"));
         a.add_provide(Behavior::new_with_conditions(String::from("ba"), vec![]));
@@ -1772,5 +1885,203 @@ bindings:
             t.resolve("run/prod"),
             Resolution::new("run/prod").add_satisfying_offer(Offer::new("host-prod"))
         );
+    }
+
+    /// a1 keeps b1 on b2, which a2 promises; both sit in sa1, and c wants b1.
+    fn internal_promise_tracker() -> Tracker {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        t.add_agent(Agent::build("c").with_wants(vec![Behavior::build("b1")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        t
+    }
+
+    fn working(t: &Tracker) -> Vec<String> {
+        let mut names: Vec<String> = t.get_working_agent_names().into_iter().cloned().collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_collectives_fold_by_default() {
+        let t = internal_promise_tracker();
+        assert!(t.folds_collectives());
+        assert_eq!(working(&t), vec!["c", "sa1"]);
+        // The internal condition is reduced away inside the collective.
+        assert_eq!(
+            t.resolve("b1"),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("sa1"))
+        );
+    }
+
+    #[test]
+    fn test_unfolded_collective_members_stand_on_their_own() {
+        let mut t = internal_promise_tracker();
+        t.set_fold_collectives(false);
+        assert!(!t.folds_collectives());
+        assert_eq!(working(&t), vec!["a1", "a2", "c"]);
+        assert!(!t.has_agent(String::from("sa1")));
+        // The promise between members is an ordinary one now.
+        assert_eq!(
+            t.resolve("b1"),
+            Resolution::new("b1").add_satisfying_offer(Offer::new_conditional(
+                "a1",
+                vec![Resolution::new("b2").add_satisfying_offer(Offer::new("a2"))],
+            ))
+        );
+        // And back again.
+        t.set_fold_collectives(true);
+        assert_eq!(working(&t), vec!["c", "sa1"]);
+        assert_eq!(
+            t.resolve("b1"),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("sa1"))
+        );
+    }
+
+    #[test]
+    fn test_unfold_set_before_loading_matches_unfold_after() {
+        let mut before = Tracker::new();
+        before.set_fold_collectives(false);
+        before.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        before.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![String::from("b2")]),
+        ]));
+        before.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b2")]));
+        before.add_agent(Agent::build("c").with_wants(vec![Behavior::build("b1")]));
+
+        let mut after = internal_promise_tracker();
+        after.set_fold_collectives(false);
+        assert_eq!(working(&before), working(&after));
+        assert_eq!(before.resolve("b1"), after.resolve("b1"));
+    }
+
+    #[test]
+    fn test_unfolded_nested_collectives_unfold_all_the_way() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w1").with_wants(vec![Behavior::build("w")]));
+        t.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("w").with_conditions(vec![String::from("wa1")]),
+        ]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("wa1")]));
+        t.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("wa2")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("sa1")
+                .with_agent("a3"),
+        );
+        t.set_fold_collectives(false);
+        assert_eq!(working(&t), vec!["a1", "a2", "a3", "w1"]);
+        assert_eq!(
+            t.resolve("w"),
+            Resolution::new("w").add_satisfying_offer(Offer::new_conditional(
+                "a1",
+                vec![Resolution::new("wa1").add_satisfying_offer(Offer::new("a2"))],
+            ))
+        );
+    }
+
+    #[test]
+    fn test_unfolded_instance_still_copies_its_whole_collective() {
+        let mut t = internal_promise_tracker();
+        // sa1 is copied by i1, so it and its members stay templates; sa2 is
+        // copied by nothing and unfolds.
+        t.add_instance(Instance::new("i1", "SuperAgent/sa1"));
+        t.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b3")]));
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("a3"));
+        t.set_fold_collectives(false);
+
+        assert_eq!(working(&t), vec!["a3", "c", "i1"]);
+        // The copy is the folded collective, internal condition and all.
+        assert_eq!(
+            t.resolve("b1"),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("i1"))
+        );
+        assert_eq!(
+            t.resolve("b3"),
+            Resolution::new("b3").add_satisfying_offer(Offer::new("a3"))
+        );
+    }
+
+    #[test]
+    fn test_unfolded_membership_loop_leaves_its_agents_standing() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("w")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("wa1")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("sa2"),
+        );
+        t.add_superagent(
+            SuperAgent::new(String::from("sa2"))
+                .with_agent("a2")
+                .with_agent("sa1"),
+        );
+        t.set_fold_collectives(false);
+        assert_eq!(working(&t), vec!["a1", "a2"]);
+    }
+
+    /// a1 is in sa1, which is only copied, and in sa2, which is not: sa2's
+    /// share of a1 must not vanish when unfolded.
+    #[test]
+    fn test_unfold_keeps_an_agent_another_collective_holds() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("x")]));
+        t.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("y")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("a1")
+                .with_agent("a2"),
+        );
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("a1"));
+        t.add_instance(Instance::new("i1", "SuperAgent/sa1"));
+
+        let offers = |t: &Tracker, b: &str| -> Vec<String> {
+            let r = t.resolve(b);
+            let mut names: Vec<String> = r
+                .get_satisfying_offers()
+                .iter()
+                .chain(r.get_unsatisfying_offers())
+                .map(|o| o.get_agent_name().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(offers(&t, "x"), vec!["i1", "sa2"]);
+        assert_eq!(offers(&t, "y"), vec!["i1"]);
+
+        t.set_fold_collectives(false);
+        // a1 stands, for sa2; a2 is reached only through the copy.
+        assert_eq!(working(&t), vec!["a1", "i1"]);
+        assert_eq!(offers(&t, "x"), vec!["a1", "i1"]);
+        assert_eq!(offers(&t, "y"), vec!["i1"]);
+    }
+
+    /// An agent that is a plain instance base but also sits in a collective
+    /// stands unfolded, as it counts inside that collective folded.
+    #[test]
+    fn test_unfold_keeps_an_instance_base_another_collective_holds() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_provides(vec![Behavior::build("x")]));
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("a1"));
+        t.add_instance(Instance::new("i1", "Agent/a1"));
+        t.set_fold_collectives(false);
+        assert_eq!(working(&t), vec!["a1", "i1"]);
     }
 }

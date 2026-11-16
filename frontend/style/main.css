@@ -464,6 +464,18 @@ body {
     overflow-wrap: anywhere;
 }
 
+/* A bundle of one provider's promises in a column */
+.trail-card-promises {
+    list-style: none;
+    margin: 0.25rem 0 0;
+    padding: 0;
+    font-size: 0.85em;
+}
+
+.trail-card-promises li::before {
+    content: "\00b7  ";
+}
+
 .trail-needs {
     display: flex;
     flex-wrap: wrap;
@@ -559,66 +571,22 @@ body {
     font-weight: normal;
 }
 
-/* Simplify panel: the folding rules over the overview graph */
-.simplify-panel {
+/* Display options: the folds every view applies, on one line */
+.view-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
     margin-bottom: 1rem;
     padding: 0.75rem;
     background: #f8f9fa;
     border-radius: 4px;
-    font-size: 0.9em;
 }
 
-.simplify-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.5rem;
-}
-
-.simplify-summary {
-    color: #495057;
-}
-
-.simplify-rules {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 0.5rem 1rem;
-}
-
-.simplify-rule {
-    display: flex;
-    gap: 0.5rem;
-    align-items: flex-start;
-    cursor: pointer;
-}
-
-.simplify-rule input[type="checkbox"] {
-    margin-top: 0.2rem;
-    flex: none;
-}
-
-.simplify-rule-name {
-    display: block;
-    font-weight: 600;
-}
-
-.simplify-rule-note {
-    display: block;
-    font-size: 0.85em;
-    color: #666;
-}
-
-.simplify-threshold {
-    width: 4.5rem;
-    padding: 0 0.3rem;
-    font: inherit;
-}
-
-.simplify-foot {
-    margin-top: 0.5rem;
-    font-size: 0.85em;
-    color: #666;
+.view-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
 }
 
 /* Scratch groups strip over the overview graph */

@@ -3,8 +3,8 @@
 //! Agents are nodes; every promise is an agent-to-agent edge labeled with its
 //! behavior. Unresolvable behaviors appear as dashed "missing" ghost nodes.
 //! The folding rules in `promise_tracker::fold` run between the walk and the
-//! canvas: collectives and hubs are marked, parallel promises become one line,
-//! and self promises stay inside their node.
+//! canvas: collectives and scratch groups are marked, parallel promises become
+//! one line, and self promises stay inside their node.
 
 use leptos::prelude::*;
 use promise_tracker::fold::{fold, FoldOptions, GroupSpec};
@@ -86,13 +86,6 @@ fn PromiseGraphLegend() -> impl IntoView {
             <div class="promise-network-legend-item">
                 <span style="font-weight: bold;">"\u{00d7}n"</span>
                 <span>"Bundle (tap to expand)"</span>
-            </div>
-            <div class="promise-network-legend-item">
-                <span
-                    class="promise-network-legend-color"
-                    style="background-color: #1F2A37;"
-                ></span>
-                <span>"Hub (lines folded into \u{21b3} badges)"</span>
             </div>
             <div class="promise-network-legend-item">
                 <span
@@ -266,15 +259,15 @@ pub fn PromiseGraphView(
     let frame_title = Signal::derive(move || format!("Overview - Simulation {}", sim_for_title));
     let frame_subtitle = Signal::derive(move || {
         let opts = fold_options.get();
-        let mut rules: Vec<String> = vec![];
-        if opts.own_inside {
-            rules.push("self promises inside".to_string());
+        let mut rules: Vec<&str> = vec![];
+        if opts.collectives {
+            rules.push("SuperAgents folded");
         }
-        if let Some(n) = opts.hub_threshold {
-            rules.push(format!("hubs at {} in", n));
+        if opts.own_inside {
+            rules.push("self promises inside");
         }
         if opts.bundle {
-            rules.push("bundled".to_string());
+            rules.push("bundled");
         }
         let folded = if rules.is_empty() {
             "nothing folded".to_string()

@@ -54,6 +54,42 @@ pub struct TrailCard {
     pub agent: Option<String>,
     pub satisfied: bool,
     pub needs: Vec<Need>,
+    /// The promises a bundled card stands for, in trail order; see
+    /// [`Trail::bundled`]. Empty on a card that stands for one promise.
+    #[serde(default)]
+    pub promises: Vec<BundledPromise>,
+}
+
+/// One promise inside a bundled card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundledPromise {
+    pub behavior: String,
+    pub satisfied: bool,
+}
+
+impl TrailCard {
+    /// How many promises the card stands for: one, or a bundle's count.
+    pub fn count(&self) -> usize {
+        self.promises.len().max(1)
+    }
+
+    /// How many of those are not held.
+    pub fn unsatisfied(&self) -> usize {
+        if self.promises.is_empty() {
+            usize::from(!self.satisfied)
+        } else {
+            self.promises.iter().filter(|p| !p.satisfied).count()
+        }
+    }
+
+    /// The behaviors the card stands for.
+    pub fn behaviors(&self) -> Vec<&str> {
+        if self.promises.is_empty() {
+            vec![self.behavior.as_str()]
+        } else {
+            self.promises.iter().map(|p| p.behavior.as_str()).collect()
+        }
+    }
 }
 
 /// A want and everything it rests on, each promise placed once.
@@ -89,6 +125,132 @@ impl Trail {
             .iter()
             .filter(|c| c.kind != CardKind::Want && !c.satisfied)
             .collect()
+    }
+
+    /// Promises on the trail, past the want, counting inside bundles.
+    pub fn promise_count(&self) -> usize {
+        self.cards
+            .iter()
+            .filter(|c| c.kind != CardKind::Want)
+            .map(TrailCard::count)
+            .sum()
+    }
+
+    /// Promises on the trail that are not held, counting inside bundles.
+    pub fn broken_count(&self) -> usize {
+        self.cards
+            .iter()
+            .filter(|c| c.kind != CardKind::Want)
+            .map(TrailCard::unsatisfied)
+            .sum()
+    }
+
+    /// The trail with the promises one provider makes in one column merged
+    /// into a single card.
+    ///
+    /// The merged card lists its promises in [`TrailCard::promises`], names
+    /// them all in its behavior, and is held only when every one of them is:
+    /// a broken promise inside keeps the bundle broken. Its needs are the
+    /// union of its members', and two needs from one card that now land on
+    /// the same bundle become one need naming both behaviors. Want and missing
+    /// cards are never merged. Columns do not move, references are re-marked
+    /// in card order, and ids are positions again.
+    pub fn bundled(self) -> Trail {
+        // Which bundle each card falls in, bundles in order of first card.
+        let mut bundle_of: Vec<usize> = Vec::with_capacity(self.cards.len());
+        let mut bundles: Vec<Vec<usize>> = vec![];
+        let mut by_key: HashMap<(usize, &str), usize> = HashMap::new();
+        for card in &self.cards {
+            let key = match (card.kind, card.agent.as_deref()) {
+                (CardKind::Offer, Some(agent)) => Some((card.depth, agent)),
+                _ => None,
+            };
+            let at = match key.and_then(|k| by_key.get(&k).copied()) {
+                Some(at) => at,
+                None => {
+                    if let Some(k) = key {
+                        by_key.insert(k, bundles.len());
+                    }
+                    bundles.push(vec![]);
+                    bundles.len() - 1
+                }
+            };
+            bundles[at].push(card.id);
+            bundle_of.push(at);
+        }
+        if bundles.len() == self.cards.len() {
+            return self;
+        }
+
+        let mut referenced: HashSet<usize> = HashSet::new();
+        referenced.insert(0);
+        let mut cards: Vec<TrailCard> = Vec::with_capacity(bundles.len());
+        for (id, members) in bundles.iter().enumerate() {
+            let first = &self.cards[members[0]];
+
+            // Needs in member order, one per bundle reached.
+            let mut reached: Vec<(usize, bool, Vec<&str>)> = vec![];
+            for &m in members {
+                for need in &self.cards[m].needs {
+                    let target = bundle_of[need.card];
+                    if target == id {
+                        continue;
+                    }
+                    match reached.iter_mut().find(|(card, _, _)| *card == target) {
+                        Some((_, _, behaviors)) => {
+                            if !behaviors.contains(&need.behavior.as_str()) {
+                                behaviors.push(&need.behavior);
+                            }
+                        }
+                        None => reached.push((target, need.own, vec![&need.behavior])),
+                    }
+                }
+            }
+            let needs: Vec<Need> = reached
+                .into_iter()
+                .map(|(card, own, behaviors)| Need {
+                    behavior: behaviors.join(", "),
+                    card,
+                    reference: !referenced.insert(card),
+                    own,
+                })
+                .collect();
+
+            let mut card = TrailCard {
+                id,
+                depth: first.depth,
+                kind: first.kind,
+                behavior: first.behavior.clone(),
+                agent: first.agent.clone(),
+                satisfied: first.satisfied,
+                needs,
+                promises: vec![],
+            };
+            if members.len() > 1 {
+                card.promises = members
+                    .iter()
+                    .map(|&m| BundledPromise {
+                        behavior: self.cards[m].behavior.clone(),
+                        satisfied: self.cards[m].satisfied,
+                    })
+                    .collect();
+                card.satisfied = card.promises.iter().all(|p| p.satisfied);
+                card.behavior = card
+                    .promises
+                    .iter()
+                    .map(|p| p.behavior.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+            cards.push(card);
+        }
+
+        Trail {
+            agent: self.agent,
+            behavior: self.behavior,
+            satisfied: self.satisfied,
+            cards,
+        }
     }
 
     /// The trail with every promise an agent makes to itself folded away.
@@ -135,8 +297,8 @@ impl Trail {
         while let Some(id) = queue.pop_front() {
             let d = depth[&id];
             for need in &spliced[id] {
-                if !depth.contains_key(&need.card) {
-                    depth.insert(need.card, d + 1);
+                if let std::collections::hash_map::Entry::Vacant(e) = depth.entry(need.card) {
+                    e.insert(d + 1);
                     order.push(need.card);
                     queue.push_back(need.card);
                 }
@@ -173,6 +335,7 @@ impl Trail {
                 agent: source.agent.clone(),
                 satisfied: source.satisfied,
                 needs,
+                promises: source.promises.clone(),
             });
         }
 
@@ -251,6 +414,7 @@ impl TrailBuilder {
             agent: agent.map(str::to_string),
             satisfied,
             needs: vec![],
+            promises: vec![],
         });
         self.placed.insert(key, id);
         (id, false)
@@ -493,6 +657,111 @@ mod tests {
         assert_eq!(folded.cards.len(), 1);
         assert!(folded.cards[0].needs.is_empty());
         assert!(folded.satisfied);
+    }
+
+    /// a2 keeps b1 on b2, b3 and b4, all from a3; b3 and b4 rest on b5 by
+    /// a4, and b4 also on b6, which nobody promises.
+    fn one_provider_three_promises() -> Tracker {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".into(), "b3".into(), "b4".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("b2"),
+            Behavior::build("b3").with_conditions(vec!["b5".into()]),
+            Behavior::build("b4").with_conditions(vec!["b5".into(), "b6".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a4").with_provides(vec![Behavior::build("b5")]));
+        tracker
+    }
+
+    #[test]
+    fn bundling_merges_one_providers_cards_in_a_column() {
+        let t = trail(&one_provider_three_promises(), "a1", "b1");
+        assert_eq!(t.cards.len(), 7);
+        let b = t.clone().bundled();
+
+        // want, b1, the a3 bundle, b5, b6
+        assert_eq!(b.cards.len(), 5);
+        for (i, c) in b.cards.iter().enumerate() {
+            assert_eq!(c.id, i);
+        }
+        let bundle = card(&b, "b2, b3, b4", Some("a3"));
+        assert_eq!(bundle.depth, 2);
+        assert_eq!(bundle.count(), 3);
+        assert_eq!(bundle.behaviors(), vec!["b2", "b3", "b4"]);
+        // b4 is broken, so the bundle is too, and says which one.
+        assert!(!bundle.satisfied);
+        assert_eq!(bundle.unsatisfied(), 1);
+        assert_eq!(
+            bundle.promises[2],
+            BundledPromise {
+                behavior: "b4".into(),
+                satisfied: false
+            }
+        );
+
+        // b1 had three needs into a3; now one, naming all three.
+        let b1 = card(&b, "b1", Some("a2"));
+        assert_eq!(b1.needs.len(), 1);
+        assert_eq!(b1.needs[0].behavior, "b2, b3, b4");
+        assert_eq!(b1.needs[0].card, bundle.id);
+        assert!(!b1.needs[0].reference);
+
+        // b5 was needed by b3 and by b4; the bundle reaches it once.
+        let b5 = card(&b, "b5", Some("a4"));
+        let b6 = card(&b, "b6", None);
+        let targets: Vec<usize> = bundle.needs.iter().map(|n| n.card).collect();
+        assert_eq!(targets, vec![b5.id, b6.id]);
+        assert!(bundle.needs.iter().all(|n| !n.reference));
+
+        // Counts see inside the bundle.
+        assert_eq!(b.promise_count(), t.promise_count());
+        assert_eq!(b.promise_count(), 6);
+        assert_eq!(b.broken_count(), t.broken_count());
+        assert_eq!(b.broken().len(), 3);
+    }
+
+    #[test]
+    fn bundling_a_trail_with_nothing_to_merge_changes_nothing() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b2".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("b2")]));
+
+        let t = trail(&tracker, "a1", "b1");
+        assert_eq!(t.clone().bundled(), t);
+    }
+
+    #[test]
+    fn bundling_keeps_columns_apart_and_missing_cards_alone() {
+        // a2 promises b1 and, a column further on, b3; b2 and b4 are missing.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["b5".into()]),
+            Behavior::build("b3").with_conditions(vec!["b4".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("b5").with_conditions(vec!["b3".into(), "b2".into()]),
+        ]));
+
+        let t = trail(&tracker, "a1", "b1");
+        let b = t.clone().bundled();
+        assert_eq!(b, t);
+        assert!(b.cards.iter().all(|c| c.promises.is_empty()));
+    }
+
+    #[test]
+    fn bundling_after_folding_own_promises() {
+        let t = trail(&one_provider_three_promises(), "a1", "b1")
+            .without_own_promises()
+            .bundled();
+        assert_eq!(t.cards.len(), 5);
+        assert_eq!(card(&t, "b2, b3, b4", Some("a3")).count(), 3);
     }
 
     #[test]

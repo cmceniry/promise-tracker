@@ -3,6 +3,7 @@ use promise_tracker::diagram::{diagram_with, DiagramOptions};
 use promise_tracker::Tracker;
 use wasm_bindgen::prelude::*;
 
+use super::display_options::ViewOptions;
 use super::view_frame::ViewFrame;
 use crate::utils::{generated_at, html_document, slugify};
 
@@ -167,7 +168,9 @@ pub fn ContractGraph(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     selected_component: ReadSignal<String>,
     selected_behavior: ReadSignal<String>,
-    #[prop(into)] show_self_promises: Signal<bool>,
+    /// The display options shared by every view
+    #[prop(into)]
+    options: Signal<ViewOptions>,
     /// Which simulation this panel belongs to, for the export's header
     sim_label: String,
 ) -> impl IntoView {
@@ -213,14 +216,13 @@ pub fn ContractGraph(
 
         // Generate the actual diagram
         let resolution = pt.resolve(&behavior);
-        diagram_with(
-            &component,
-            &behavior,
-            &resolution,
+        diagram_with(&component, &behavior, &resolution, {
+            let o = options.get();
             DiagramOptions {
-                show_self_promises: show_self_promises.get(),
-            },
-        )
+                show_self_promises: !o.fold_self,
+                bundle: o.bundle,
+            }
+        })
     });
 
     let source_signal = Signal::derive(move || diagram_source.get());
@@ -233,12 +235,12 @@ pub fn ContractGraph(
             selected_component.get(),
             selected_behavior.get()
         );
-        let self_state = if show_self_promises.get() {
-            "self-fulfilling promises shown"
-        } else {
-            "self-fulfilling promises hidden"
-        };
-        format!("{} - {} - generated {}", focus, self_state, generated_at())
+        format!(
+            "{} - {} - generated {}",
+            focus,
+            options.get().describe(),
+            generated_at()
+        )
     });
     let frame_filename = Signal::derive(move || {
         format!(

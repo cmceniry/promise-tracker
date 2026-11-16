@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
 
+use super::display_options::ViewOptions;
 use super::view_frame::ViewFrame;
 use crate::utils::{escape_html, generated_at, html_document, slugify};
 
@@ -106,10 +107,19 @@ fn card_agent_line(card: &TrailCard) -> String {
     }
 }
 
+/// The behavior line of a card: a bundle counts its promises.
+fn card_behavior_line(card: &TrailCard) -> String {
+    if card.promises.is_empty() {
+        card.behavior.clone()
+    } else {
+        format!("{} \u{00d7}{}", card.behavior, card.count())
+    }
+}
+
 /// Everything the status strip says about a trail.
 fn trail_summary(trail: &Trail) -> String {
-    let promises = trail.cards.len().saturating_sub(1);
-    let broken = trail.broken().len();
+    let promises = trail.promise_count();
+    let broken = trail.broken_count();
     if trail.cards.len() <= 1 {
         return "Nothing to rest on.".to_string();
     }
@@ -143,14 +153,19 @@ fn needed_by(trail: &Trail, id: usize) -> Vec<&TrailCard> {
         .collect()
 }
 
-/// Other agents promising the same behavior as this card.
+/// Other agents promising a behavior this card promises.
 fn other_offers(trail: &Trail, card: &TrailCard) -> Vec<String> {
-    trail
+    let mine = card.behaviors();
+    let mut others: Vec<String> = trail
         .cards
         .iter()
-        .filter(|c| c.kind == CardKind::Offer && c.behavior == card.behavior && c.id != card.id)
+        .filter(|c| c.kind == CardKind::Offer && c.id != card.id && c.agent != card.agent)
+        .filter(|c| c.behaviors().iter().any(|b| mine.contains(b)))
         .filter_map(|c| c.agent.clone())
-        .collect()
+        .collect();
+    others.sort();
+    others.dedup();
+    others
 }
 
 /// The trail as static markup for the downloaded page: the same columns and
@@ -175,9 +190,25 @@ fn trail_html(trail: &Trail, summary: &str) -> String {
             out.push_str(&format!(
                 "<div class=\"trail-card {}\"><div class=\"trail-card-behavior\">{}</div><div class=\"trail-card-agent\">{}</div>",
                 card_status_class(card),
-                escape_html(&card.behavior),
+                escape_html(&card_behavior_line(card)),
                 escape_html(&card_agent_line(card))
             ));
+            if !card.promises.is_empty() {
+                out.push_str("<ul class=\"trail-card-promises\">");
+                for p in &card.promises {
+                    out.push_str(&format!(
+                        "<li{}>{}{}</li>",
+                        if p.satisfied {
+                            ""
+                        } else {
+                            " class=\"trail-text-broken\""
+                        },
+                        escape_html(&p.behavior),
+                        if p.satisfied { "" } else { " \u{2717}" }
+                    ));
+                }
+                out.push_str("</ul>");
+            }
             if !card.needs.is_empty() {
                 out.push_str("<div class=\"trail-needs\">");
                 for need in &card.needs {
@@ -219,7 +250,9 @@ pub fn TraceView(
     selected_behavior: ReadSignal<String>,
     /// Picks a want from the list
     on_select: Callback<(String, String)>,
-    #[prop(into)] show_self_promises: Signal<bool>,
+    /// The display options shared by every view
+    #[prop(into)]
+    options: Signal<ViewOptions>,
     /// Which simulation this panel belongs to, for the export's header
     sim_label: String,
 ) -> impl IntoView {
@@ -248,16 +281,22 @@ pub fn TraceView(
 
     let current_trail = Memo::new(move |_| {
         let t = full_trail.get()?;
-        Some(if show_self_promises.get() {
-            t
-        } else {
+        let o = options.get();
+        let t = if o.fold_self {
             t.without_own_promises()
-        })
+        } else {
+            t
+        };
+        Some(if o.bundle { t.bundled() } else { t })
     });
 
     // Card selection is by id, which changes with the trail, so it resets with it.
     let (selected_card, set_selected_card) = signal::<Option<usize>>(None);
     let (lit_card, set_lit_card) = signal::<Option<usize>>(None);
+    // Choosing the chosen card again lets it go, which also closes a bundle.
+    let toggle = move |id: usize| {
+        set_selected_card.update(|s| *s = if *s == Some(id) { None } else { Some(id) })
+    };
     Effect::new(move |_| {
         let _ = current_trail.get();
         set_selected_card.set(None);
@@ -311,12 +350,11 @@ pub fn TraceView(
         None => format!("Trace - Simulation {}", sim_for_title),
     });
     let frame_subtitle = Signal::derive(move || {
-        let self_state = if show_self_promises.get() {
-            "self-fulfilling promises shown"
-        } else {
-            "self-fulfilling promises folded"
-        };
-        format!("{} - generated {}", self_state, generated_at())
+        format!(
+            "{} - generated {}",
+            options.get().describe(),
+            generated_at()
+        )
     });
     let frame_filename = Signal::derive(move || match selection.get() {
         Some((agent, behavior)) => format!(
@@ -483,7 +521,9 @@ pub fn TraceView(
                                                 let id = card.id;
                                                 let status = card_status_class(&card);
                                                 let agent_line = card_agent_line(&card);
-                                                let behavior = card.behavior.clone();
+                                                let behavior = card_behavior_line(&card);
+                                                let promises = card.promises.clone();
+                                                let expandable = !promises.is_empty();
                                                 let needs = card.needs.clone();
                                                 // On the chain in front, or faded behind it.
                                                 let on_chain = move || {
@@ -493,21 +533,55 @@ pub fn TraceView(
                                                     chain.get().map(|c| !c.contains(&id)).unwrap_or(false)
                                                 };
                                                 view! {
-                                                    <button
-                                                        type="button"
+                                                    // A div acting as a button, not a <button>: a
+                                                    // bundle's promise list goes inside it.
+                                                    <div
+                                                        role="button"
+                                                        tabindex="0"
                                                         class=format!("trail-card {}", status)
                                                         data-card=id.to_string()
                                                         class:trail-card-selected=move || {
                                                             selected_card.get() == Some(id)
                                                         }
+                                                        aria-expanded=move || {
+                                                            expandable
+                                                                .then(|| (selected_card.get() == Some(id)).to_string())
+                                                        }
                                                         class:trail-card-lit=on_chain
                                                         class:trail-card-faded=off_chain
-                                                        on:click=move |_| set_selected_card.set(Some(id))
+                                                        on:click=move |_| toggle(id)
+                                                        on:keydown=move |ev| {
+                                                            if ev.key() == "Enter" || ev.key() == " " {
+                                                                ev.prevent_default();
+                                                                toggle(id);
+                                                            }
+                                                        }
                                                         on:mouseenter=move |_| set_lit_card.set(Some(id))
                                                         on:mouseleave=move |_| set_lit_card.set(None)
                                                     >
                                                         <span class="trail-card-behavior">{behavior}</span>
                                                         <span class="trail-card-agent">{agent_line}</span>
+                                                        // A bundle opens to its promises when chosen.
+                                                        {(!promises.is_empty()).then(|| {
+                                                            view! {
+                                                                <Show when=move || selected_card.get() == Some(id)>
+                                                                    <ul class="trail-card-promises">
+                                                                        {promises
+                                                                            .iter()
+                                                                            .map(|p| {
+                                                                                let broken = !p.satisfied;
+                                                                                view! {
+                                                                                    <li class:trail-text-broken=broken>
+                                                                                        {p.behavior.clone()}
+                                                                                        {if broken { " \u{2717}" } else { "" }}
+                                                                                    </li>
+                                                                                }
+                                                                            })
+                                                                            .collect::<Vec<_>>()}
+                                                                    </ul>
+                                                                </Show>
+                                                            }
+                                                        })}
                                                         {if needs.is_empty() {
                                                             None
                                                         } else {
@@ -547,7 +621,7 @@ pub fn TraceView(
                                                                 .collect::<Vec<_>>();
                                                             Some(view! { <span class="trail-needs">{chips}</span> })
                                                         }}
-                                                    </button>
+                                                    </div>
                                                 }
                                             })
                                             .collect::<Vec<_>>()}
@@ -573,6 +647,10 @@ pub fn TraceView(
                                 let kind_label = match card.kind {
                                     CardKind::Want => "Want",
                                     CardKind::Missing => "Missing",
+                                    CardKind::Offer if !card.promises.is_empty() && card.satisfied => {
+                                        "Promises, all held"
+                                    }
+                                    CardKind::Offer if !card.promises.is_empty() => "Promises, not all held",
                                     CardKind::Offer if card.satisfied => "Promise, held",
                                     CardKind::Offer => "Promise, not held",
                                 };
@@ -582,7 +660,7 @@ pub fn TraceView(
                                         let agent = card.agent.clone().unwrap_or_default();
                                         (
                                             tr.get_agent_comment(&agent),
-                                            if card.kind == CardKind::Offer {
+                                            if card.kind == CardKind::Offer && card.promises.is_empty() {
                                                 tr.get_behavior_comment(&agent, &card.behavior)
                                             } else {
                                                 None
@@ -610,7 +688,7 @@ pub fn TraceView(
                                 view! {
                                     <div class="trail-inspector">
                                         <div class="trail-inspector-kind">{kind_label}</div>
-                                        <div class="trail-inspector-title">{card.behavior.clone()}</div>
+                                        <div class="trail-inspector-title">{card_behavior_line(&card)}</div>
                                         <div class="trail-muted">{agent_line}</div>
                                         {behavior_comment.map(|c| view! { <p class="trail-inspector-comment">{c}</p> })}
                                         {agent_comment.map(|c| view! {

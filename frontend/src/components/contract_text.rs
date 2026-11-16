@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use promise_tracker::resolve::{Offer, Resolution};
 use promise_tracker::Tracker;
 
+use super::display_options::ViewOptions;
 use super::view_frame::ViewFrame;
 use crate::utils::{escape_html, generated_at, html_document, slugify};
 
@@ -14,6 +15,8 @@ struct Row {
     class: &'static str,
     label: String,
     children: Vec<Row>,
+    /// The provider, on a row that stands for an offer.
+    agent: Option<String>,
 }
 
 impl Row {
@@ -22,6 +25,7 @@ impl Row {
             class,
             label,
             children,
+            agent: None,
         }
     }
 
@@ -91,7 +95,10 @@ fn offer_rows(requirer: &str, offer: &Offer, is_satisfied: bool, show_self: bool
         .flat_map(|c| resolution_rows(&agent_name, c, show_self))
         .collect();
 
-    vec![Row::new(class, label, children)]
+    vec![Row {
+        agent: Some(agent_name),
+        ..Row::new(class, label, children)
+    }]
 }
 
 /// The rows for every offer, satisfying ones first.
@@ -188,6 +195,167 @@ fn contract_rows(component: &str, resolution: &Resolution, show_self: bool) -> V
     )]
 }
 
+/// A behavior row with a single offer under it: the provider, the
+/// behavior, whether it is held, and what the offer rests on.
+fn sole_provider(row: &Row) -> Option<(&str, &str, bool, &[Row])> {
+    if row.agent.is_some() {
+        return None;
+    }
+    match row.children.as_slice() {
+        [offer] => offer.agent.as_deref().map(|agent| {
+            (
+                agent,
+                row.label.as_str(),
+                offer.class == "contract-text-option",
+                offer.children.as_slice(),
+            )
+        }),
+        _ => None,
+    }
+}
+
+/// The tree with sibling needs met by the same provider grouped into one
+/// row per provider, at every level.
+///
+/// Only a need with a single offer is grouped: a need with alternatives
+/// keeps its own row, so the choice between providers stays readable. The
+/// grouped row is held only when every need in it is, names the ones that
+/// are not, and carries everything the grouped offers rest on.
+fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .map(|row| Row {
+            children: bundle_rows(row.children),
+            ..row
+        })
+        .collect();
+
+    // Providers with more than one distinct sole-provider need in this list.
+    // The tree repeats a shared condition under each need that rests on it,
+    // so the same behavior can come up twice; it is still one promise.
+    let mut seen: Vec<(&str, &str)> = vec![];
+    for row in &rows {
+        if let Some((agent, behavior, ..)) = sole_provider(row) {
+            if !seen.contains(&(agent, behavior)) {
+                seen.push((agent, behavior));
+            }
+        }
+    }
+    let counts: Vec<(String, usize)> =
+        seen.iter()
+            .fold(Vec::<(String, usize)>::new(), |mut acc, (agent, _)| {
+                match acc.iter_mut().find(|(a, _)| a == agent) {
+                    Some((_, n)) => *n += 1,
+                    None => acc.push((agent.to_string(), 1)),
+                }
+                acc
+            });
+    if counts.iter().all(|(_, n)| *n < 2) {
+        return rows;
+    }
+
+    /// One provider's needs, held in place of the first one grouped.
+    struct Group {
+        agent: String,
+        needs: Vec<(String, bool)>,
+        rests_on: Vec<Row>,
+    }
+
+    let mut out: Vec<Result<Row, Group>> = vec![];
+    for row in rows {
+        let grouped = sole_provider(&row)
+            .filter(|(agent, ..)| counts.iter().any(|(a, n)| a == agent && *n > 1))
+            .map(|(agent, behavior, held, rests_on)| {
+                (
+                    agent.to_string(),
+                    behavior.to_string(),
+                    held,
+                    rests_on.to_vec(),
+                )
+            });
+        let Some((agent, behavior, held, rests_on)) = grouped else {
+            out.push(Ok(row));
+            continue;
+        };
+        let existing = out.iter_mut().find_map(|r| match r {
+            Err(g) if g.agent == agent => Some(g),
+            _ => None,
+        });
+        match existing {
+            Some(g) => match g.needs.iter_mut().find(|(b, _)| *b == behavior) {
+                // The same promise reached again: held only if it always is,
+                // and what it rests on is already there.
+                Some((_, h)) => *h &= held,
+                None => {
+                    g.needs.push((behavior, held));
+                    // A condition two grouped needs share is shown once.
+                    for row in rests_on {
+                        if !g.rests_on.contains(&row) {
+                            g.rests_on.push(row);
+                        }
+                    }
+                }
+            },
+            None => out.push(Err(Group {
+                agent,
+                needs: vec![(behavior, held)],
+                rests_on,
+            })),
+        }
+    }
+
+    out.into_iter()
+        .map(|r| match r {
+            Ok(row) => row,
+            Err(Group {
+                agent,
+                needs,
+                rests_on,
+            }) => {
+                let held = needs.iter().all(|(_, h)| *h);
+                let names = needs
+                    .iter()
+                    .map(|(b, h)| {
+                        if *h {
+                            b.clone()
+                        } else {
+                            format!("{} \u{2717}", b)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Row {
+                    class: if held {
+                        "contract-text-option"
+                    } else {
+                        "contract-text-possible"
+                    },
+                    label: format!(
+                        "{}: {} \u{2014} {} \u{00d7}{}",
+                        if held { "OPTION" } else { "POSSIBLE" },
+                        agent,
+                        names,
+                        needs.len()
+                    ),
+                    // What the grouped offers rest on may group again.
+                    children: bundle_rows(rests_on),
+                    agent: Some(agent),
+                }
+            }
+        })
+        .collect()
+}
+
+/// The rows for the view: the resolution tree, with the view options applied.
+fn view_rows(component: &str, resolution: &Resolution, options: ViewOptions) -> Vec<Row> {
+    let rows = contract_rows(component, resolution, !options.fold_self);
+    if options.bundle {
+        bundle_rows(rows)
+    } else {
+        rows
+    }
+}
+
 /// The same tree `render_row` builds, as standalone markup.
 ///
 /// Kept beside `render_row`: a case added to one belongs in the other. Labels
@@ -229,6 +397,7 @@ fn render_row(row: Row) -> AnyView {
         class,
         label,
         children,
+        ..
     } = row;
 
     if children.is_empty() {
@@ -255,7 +424,9 @@ pub fn ContractText(
     #[prop(into)] tracker: Signal<Option<Tracker>>,
     selected_component: ReadSignal<String>,
     selected_behavior: ReadSignal<String>,
-    #[prop(into)] show_self_promises: Signal<bool>,
+    /// The display options shared by every view
+    #[prop(into)]
+    options: Signal<ViewOptions>,
     /// Which simulation this panel belongs to, for the export's header
     sim_label: String,
 ) -> impl IntoView {
@@ -271,11 +442,7 @@ pub fn ContractText(
         if component == "---" || behavior == "---" || !pt.has_ground_behavior(&behavior) {
             return None;
         }
-        let rows = contract_rows(
-            &component,
-            &pt.resolve(&behavior),
-            show_self_promises.get_untracked(),
-        );
+        let rows = view_rows(&component, &pt.resolve(&behavior), options.get_untracked());
         if rows.is_empty() {
             None
         } else {
@@ -290,12 +457,12 @@ pub fn ContractText(
             selected_component.get(),
             selected_behavior.get()
         );
-        let self_state = if show_self_promises.get() {
-            "self-fulfilling promises shown"
-        } else {
-            "self-fulfilling promises hidden"
-        };
-        format!("{} - {} - generated {}", focus, self_state, generated_at())
+        format!(
+            "{} - {} - generated {}",
+            focus,
+            options.get().describe(),
+            generated_at()
+        )
     });
     let frame_filename = Signal::derive(move || {
         format!(
@@ -371,7 +538,7 @@ pub fn ContractText(
 
         // Resolve the behavior and render the result
         let resolution = pt.resolve(&behavior);
-        let rows = contract_rows(&component, &resolution, show_self_promises.get());
+        let rows = view_rows(&component, &resolution, options.get());
 
         if rows.is_empty() {
             return view! {
@@ -627,5 +794,104 @@ mod tests {
                 show_self
             );
         }
+    }
+
+    fn bundled_options() -> ViewOptions {
+        ViewOptions {
+            bundle: true,
+            fold_self: false,
+            ..ViewOptions::default()
+        }
+    }
+
+    /// b wants pa from a, which rests on p1, p2 and p3 from c and on pd,
+    /// which d and e both offer; p3 rests on px, which nobody offers.
+    fn one_provider_tracker() -> Tracker {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("b").with_wants(vec![Behavior::build("pa")]));
+        tracker.add_agent(
+            Agent::build("a").with_provides(vec![behavior_with("pa", &["p1", "p2", "pd", "p3"])]),
+        );
+        tracker.add_agent(Agent::build("c").with_provides(vec![
+            Behavior::build("p1"),
+            behavior_with("p2", &["pe"]),
+            behavior_with("p3", &["px"]),
+        ]));
+        tracker.add_agent(Agent::build("d").with_provides(vec![Behavior::build("pd")]));
+        tracker.add_agent(
+            Agent::build("e").with_provides(vec![Behavior::build("pd"), Behavior::build("pe")]),
+        );
+        tracker
+    }
+
+    #[test]
+    fn bundling_groups_sibling_needs_per_provider() {
+        let tracker = one_provider_tracker();
+        let rows = view_rows("b", &tracker.resolve("pa"), bundled_options());
+        assert_eq!(
+            outline(&rows),
+            "b --> pa\n\
+             \x20   POSSIBLE: a\n\
+             \x20       POSSIBLE: c \u{2014} p1, p2, p3 \u{2717} \u{00d7}3\n\
+             \x20           pe\n\
+             \x20               OPTION: e\n\
+             \x20           px UNSATISFIED\n\
+             \x20       pd\n\
+             \x20           OPTION: d\n\
+             \x20           OPTION: e\n"
+        );
+        // The group is marked as not held, because p3 is not.
+        assert_eq!(
+            rows[0].children[0].children[0].class,
+            "contract-text-possible"
+        );
+    }
+
+    #[test]
+    fn bundling_off_leaves_the_tree_alone() {
+        let tracker = one_provider_tracker();
+        let resolution = tracker.resolve("pa");
+        let plain = contract_rows("b", &resolution, true);
+        let off = view_rows(
+            "b",
+            &resolution,
+            ViewOptions {
+                bundle: false,
+                ..bundled_options()
+            },
+        );
+        assert_eq!(off, plain);
+        // A tree with nothing to group comes out the same with it on.
+        let tracker = self_condition_tracker();
+        let resolution = tracker.resolve("pa");
+        assert_eq!(
+            view_rows("b", &resolution, bundled_options()),
+            contract_rows("b", &resolution, true)
+        );
+    }
+
+    /// a's pa rests on p3 and p4 from c; both rest on p5 from d. Grouped
+    /// under c, p5 is one need, not two.
+    #[test]
+    fn bundling_counts_a_shared_condition_once() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("b").with_wants(vec![Behavior::build("pa")]));
+        tracker
+            .add_agent(Agent::build("a").with_provides(vec![behavior_with("pa", &["p3", "p4"])]));
+        tracker.add_agent(Agent::build("c").with_provides(vec![
+            behavior_with("p3", &["p5"]),
+            behavior_with("p4", &["p5"]),
+        ]));
+        tracker.add_agent(Agent::build("d").with_provides(vec![Behavior::build("p5")]));
+
+        let rows = view_rows("b", &tracker.resolve("pa"), bundled_options());
+        assert_eq!(
+            outline(&rows),
+            "b --> pa\n\
+             \x20   OPTION: a\n\
+             \x20       OPTION: c \u{2014} p3, p4 \u{00d7}2\n\
+             \x20           p5\n\
+             \x20               OPTION: d\n"
+        );
     }
 }
