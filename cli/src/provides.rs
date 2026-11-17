@@ -16,6 +16,10 @@ pub struct Parameters {
     #[clap(long)]
     fold_self: bool,
 
+    /// Show each conditional provide's conditions, held or broken
+    #[clap(short, long)]
+    conditions: bool,
+
     /// The agent name to show actions for
     agent: String,
 }
@@ -30,6 +34,20 @@ pub fn command(parameters: &Parameters) {
         println!("Agent {} not found", parameters.agent);
         process::exit(1);
     };
+    if !parameters.conditions {
+        // One line per behavior and per pattern, as the CLI always printed.
+        let mut behaviors: Vec<&String> = provides.provides.iter().map(|r| &r.behavior).collect();
+        behaviors.dedup();
+        for behavior in behaviors {
+            println!("{}", behavior);
+        }
+        let mut patterns: Vec<&String> = provides.patterns.iter().map(|r| &r.pattern).collect();
+        patterns.dedup();
+        for pattern in patterns {
+            println!("{}\t(pattern)", pattern);
+        }
+        return;
+    }
     for row in provides.provides {
         if row.conditions.is_empty() {
             println!("{}", row.behavior);

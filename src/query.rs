@@ -191,8 +191,21 @@ pub fn agent_provides(
 
     let mut provides: Vec<ProvideRow> = vec![];
     let mut patterns: Vec<PatternProvideRow> = vec![];
+    let mut needed: Option<BTreeSet<String>> = None;
     for promise in &promises {
         if !promise.get_name_pattern().is_ground() {
+            // A pattern folds away when everything it keeps that anyone uses
+            // is a self-promise of this agent.
+            if options.fold_self {
+                let kept: Vec<&String> = needed
+                    .get_or_insert_with(|| index.needed_names(&mut resolver))
+                    .iter()
+                    .filter(|n| promise.match_goal(n).is_some())
+                    .collect();
+                if !kept.is_empty() && kept.iter().all(|n| index.is_self_promise(agent, n)) {
+                    continue;
+                }
+            }
             patterns.push(PatternProvideRow {
                 pattern: promise.get_name().clone(),
                 conditions: promise.get_conditions(),
@@ -232,13 +245,19 @@ pub fn behavior_use(
     }
     let index = Index::new(tracker);
     let mut resolver = Resolver::new(tracker);
+    // A self-promise folds away the whole behavior: its only user keeps it
+    // for itself, so whoever else promises it is not promising it to anyone.
+    let folded_away = options.fold_self && {
+        let users = index.users(behavior);
+        users.len() == 1 && users.iter().all(|a| index.provides(a, behavior))
+    };
 
     let mut providers: Vec<ProviderRow> = vec![];
     for (agent, promise) in index.promises() {
         let Some(bindings) = promise.match_goal(behavior) else {
             continue;
         };
-        if options.fold_self && index.is_self_promise(agent, behavior) {
+        if folded_away {
             continue;
         }
         let conditions = resolver.conditions(promise.instantiate(&bindings).get_conditions());
@@ -257,7 +276,9 @@ pub fn behavior_use(
     let mut consumers: Vec<ConsumerRow> = index
         .consumers(behavior)
         .into_iter()
-        .filter(|(agent, _)| !(options.fold_self && index.provides(agent, behavior)))
+        .filter(|(agent, _)| {
+            !folded_away && !(options.fold_self && index.provides(agent, behavior))
+        })
         .map(|(agent, kind)| ConsumerRow {
             agents: vec![agent],
             kind,
@@ -858,6 +879,32 @@ mod tests {
         let plain = behavior_use(&t, "x", PLAIN).unwrap();
         assert_eq!(plain.providers.len(), 1);
         assert_eq!(plain.consumers.len(), 1);
+    }
+
+    #[test]
+    fn behavior_use_with_self_folding_hides_other_providers_of_a_self_promise() {
+        // a is x's only user and keeps it itself; b's promise of x is to nobody.
+        let t = tracker(vec![
+            agent("a", vec![b("x")], &["x"]),
+            agent("b", vec![b("x")], &[]),
+        ]);
+        let folded = behavior_use(&t, "x", SELF).unwrap();
+        assert!(folded.providers.is_empty());
+        assert!(folded.consumers.is_empty());
+        assert_eq!(behavior_use(&t, "x", PLAIN).unwrap().providers.len(), 2);
+    }
+
+    #[test]
+    fn agent_provides_folds_a_pattern_used_only_by_its_provider() {
+        let t = tracker(vec![agent("a", vec![b("disk-{{d}}")], &["disk-a"])]);
+        assert!(agent_provides(&t, "a", SELF).unwrap().patterns.is_empty());
+        assert_eq!(agent_provides(&t, "a", PLAIN).unwrap().patterns.len(), 1);
+        // Used by someone else too: kept.
+        let t = tracker(vec![
+            agent("a", vec![b("disk-{{d}}")], &["disk-a"]),
+            agent("c", vec![], &["disk-b"]),
+        ]);
+        assert_eq!(agent_provides(&t, "a", SELF).unwrap().patterns.len(), 1);
     }
 
     #[test]
