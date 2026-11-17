@@ -394,6 +394,30 @@ pub fn ContractEditModal(
         on_hide.run(());
     };
 
+    // Nothing edited since the modal opened: a click outside the dialog may
+    // close it without losing work.
+    let is_unchanged = move || {
+        contract.with_untracked(|c| {
+            c.as_ref().map_or(true, |c| {
+                edited_filename.with(|f| *f == c.filename)
+                    && edited_content.with(|t| *t == c.content)
+            })
+        })
+    };
+    // Close only when both press and release land on the backdrop itself, so
+    // a text selection dragged out of the dialog doesn't close it.
+    let backdrop_press = StoredValue::new(false);
+    let on_backdrop_mousedown = move |ev: MouseEvent| {
+        backdrop_press.set_value(ev.target() == ev.current_target());
+    };
+    let on_backdrop_click = move |ev: MouseEvent| {
+        let pressed = backdrop_press.get_value();
+        backdrop_press.set_value(false);
+        if pressed && ev.target() == ev.current_target() && is_unchanged() {
+            on_hide.run(());
+        }
+    };
+
     // Keyboard shortcuts are handled via the modal's keydown event handler directly in the view
 
     // Collapse diff when there's no difference
@@ -447,6 +471,8 @@ pub fn ContractEditModal(
             style:display=move || if is_visible() { "block" } else { "none" }
             tabindex="-1"
             on:keydown=handle_keydown
+            on:mousedown=on_backdrop_mousedown
+            on:click=on_backdrop_click
             node_ref=modal_ref
         >
             <div class="modal-dialog modal-lg">
