@@ -49,6 +49,7 @@ fn build_tracker_from_contracts(
     let mut tracker = Tracker::new();
     tracker.set_fold_collectives(fold_collectives);
 
+    let mut items = Vec::new();
     for contract in contracts {
         // Skip contracts with errors (a followed card in error has no good
         // version to show; one with a pending bad copy still has `content`)
@@ -63,10 +64,9 @@ fn build_tracker_from_contracts(
             }
         }
 
-        for item in graphable_items(&contract.content) {
-            tracker.add_item(item);
-        }
+        items.extend(graphable_items(&contract.content));
     }
+    tracker.add_items(items);
 
     tracker
 }
@@ -149,8 +149,9 @@ pub fn ContractGrapher(
             drop(handle);
         }
 
-        // Create new debounced timeout
-        let handle = Timeout::new(500, move || {
+        // A short debounce only to coalesce bursts (a followed directory
+        // landing many cards at once); a rebuild itself is cheap.
+        let handle = Timeout::new(50, move || {
             // If no contracts, clear everything
             if current_contracts.is_empty() {
                 set_main_tracker.set(None);

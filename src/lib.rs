@@ -99,41 +99,72 @@ impl Tracker {
     }
 
     pub fn add_agent(&mut self, a: Agent) {
-        for existing in &self.available_agents {
-            if existing == &a {
-                return;
-            }
+        if self.push_agent(a) {
+            self.rebuild();
         }
-        let _ = &self.available_agents.push(a.clone());
-        self.rebuild();
     }
 
     pub fn add_superagent(&mut self, sa: SuperAgent) {
-        for existing in &self.available_superagents {
-            if existing == &sa {
-                return;
-            }
+        if self.push_superagent(sa) {
+            self.rebuild();
         }
-        let _ = &self.available_superagents.push(sa.clone());
-        self.rebuild();
     }
 
     pub fn add_instance(&mut self, i: Instance) {
-        for existing in &self.available_instances {
-            if existing == &i {
-                return;
-            }
+        if self.push_instance(i) {
+            self.rebuild();
         }
-        let _ = &self.available_instances.push(i.clone());
-        self.rebuild();
     }
 
     pub fn add_item(&mut self, i: Item) {
-        match i {
-            Item::Agent(a) => self.add_agent(a),
-            Item::SuperAgent(sa) => self.add_superagent(sa),
-            Item::Instance(i) => self.add_instance(i),
+        if self.push_item(i) {
+            self.rebuild();
         }
+    }
+
+    /// Add many items and rebuild once at the end. Adding them one at a time
+    /// rebuilds after each, which is quadratic in the size of the contracts.
+    pub fn add_items<I: IntoIterator<Item = Item>>(&mut self, items: I) {
+        let mut changed = false;
+        for i in items {
+            changed |= self.push_item(i);
+        }
+        if changed {
+            self.rebuild();
+        }
+    }
+
+    /// Record an item without rebuilding; false when it was already there.
+    fn push_item(&mut self, i: Item) -> bool {
+        match i {
+            Item::Agent(a) => self.push_agent(a),
+            Item::SuperAgent(sa) => self.push_superagent(sa),
+            Item::Instance(i) => self.push_instance(i),
+        }
+    }
+
+    fn push_agent(&mut self, a: Agent) -> bool {
+        if self.available_agents.contains(&a) {
+            return false;
+        }
+        self.available_agents.push(a);
+        true
+    }
+
+    fn push_superagent(&mut self, sa: SuperAgent) -> bool {
+        if self.available_superagents.contains(&sa) {
+            return false;
+        }
+        self.available_superagents.push(sa);
+        true
+    }
+
+    fn push_instance(&mut self, i: Instance) -> bool {
+        if self.available_instances.contains(&i) {
+            return false;
+        }
+        self.available_instances.push(i);
+        true
     }
 
     pub fn rebuild(&mut self) {
@@ -1533,6 +1564,65 @@ mod tests {
                 "sa3".to_string()
             ]]
         );
+    }
+
+    #[test]
+    fn add_items_matches_adding_one_at_a_time() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kubernetes");
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+            .collect();
+        paths.sort();
+        let texts: Vec<String> = paths
+            .into_iter()
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect();
+        // Every file twice over, so duplicates are skipped the same way by both.
+        let items = || {
+            let mut items = Vec::new();
+            for text in texts.iter().chain(texts.iter()) {
+                for document in serde_yaml::Deserializer::from_str(text) {
+                    items.push(<Item as serde::Deserialize>::deserialize(document).unwrap());
+                }
+            }
+            items
+        };
+
+        for fold in [true, false] {
+            let mut one_by_one = Tracker::new();
+            one_by_one.set_fold_collectives(fold);
+            for item in items() {
+                one_by_one.add_item(item);
+            }
+            let mut batched = Tracker::new();
+            batched.set_fold_collectives(fold);
+            batched.add_items(items());
+
+            assert!(!batched.is_empty());
+            // Same inputs kept, and the same working agents built from them
+            // (compared in name order: working_agents is a HashMap).
+            let view = |t: &Tracker| {
+                let mut working: Vec<String> = t
+                    .working_agents
+                    .iter()
+                    .map(|(name, agents)| format!("{name}: {agents:?}"))
+                    .collect();
+                working.sort();
+                (
+                    format!("{:?}", t.available_agents),
+                    format!("{:?}", t.available_superagents),
+                    format!("{:?}", t.available_instances),
+                    working,
+                )
+            };
+            assert_eq!(view(&batched), view(&one_by_one));
+            assert_eq!(
+                promise_graph::promise_graph(&batched),
+                promise_graph::promise_graph(&one_by_one)
+            );
+        }
     }
 
     #[test]

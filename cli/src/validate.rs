@@ -27,9 +27,7 @@ pub fn command(parameters: &Parameters) {
                     problems += 1;
                     eprintln!("{}: {}", file, problem);
                 }
-                for item in items {
-                    tracker.add_item(item);
-                }
+                tracker.add_items(items);
             }
             Err(e) => cli::abort(e),
         }
