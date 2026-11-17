@@ -201,3 +201,32 @@ review.
 
 - Server-wide follow mode / flags.
 - Tracking renames.
+
+## Implementation notes
+
+Choices made where the design was silent (commit 3):
+
+- **Adopt Cancel excludes.** When following a directory, cancelling the
+  discard confirm for a differing card leaves it as it is *and* adds it to
+  `follow_exclusions`, so a later re-list never adopts it behind the user's
+  back.
+- **Exclusion rule, generalized.** Any card whose path a followed directory
+  controls (contains, not excluded) is excluded when it stops following or is
+  deleted — `ViaDir` (confirmed), and also a `Direct` card inside a followed
+  directory (silently).
+- **Following inside a followed directory is `ViaDir`.** Turning follow on
+  from a card, a browser file row, or loading a path from the browser yields
+  `ViaDir` when a followed directory contains it, `Direct` otherwise; any
+  exclusion is lifted first. Pre-existing `Direct` cards are never downgraded.
+- **Removal is confirmed.** A `removed` event for a `ViaDir` card refetches
+  it; the card is dropped only on a 404, so a remove racing a re-create never
+  loses a live card. The same path drops cards whose files vanished while
+  disconnected (every open refetches all followed cards).
+- **Re-list on every open** walks each followed directory: creates cards for
+  new unexcluded files with no card, and prunes exclusions under it whose
+  files are gone (only when the whole walk succeeded). It never adopts.
+- An unfollowed card at an unexcluded path inside a followed directory (e.g.
+  pushed there) is left alone: no duplicate card is created for it.
+- The root is followable from a "/ (everything on the server)" row in the
+  browser; its chip reads `/`. Overlapping directories name the innermost one
+  in tooltips ("via `sub/inner/`").

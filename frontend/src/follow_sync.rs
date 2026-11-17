@@ -18,25 +18,32 @@
 //!   (or after a short timeout). The graph does not build until then, so it
 //!   never draws the persisted copies only to redraw them a moment later.
 //!
-//! Directory following adds `followed_dirs` to the follow-set memo and new
-//! arms to the event handler (new cards for `added`, removing `ViaDir` cards
-//! on `removed`); the connection handling stays as it is.
+//! - Followed directories (`followed_dirs`) and the global exclusion list
+//!   (`exclusions`) live here too, persisted by `App`. Every open also
+//!   re-lists each followed directory, to pick up files added while the
+//!   stream was down and to prune exclusions whose files are gone; `ViaDir`
+//!   cards whose files vanished drop out through the refetch (a 404 removes
+//!   them).
 
 use gloo_timers::callback::Timeout;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{EventSource, MessageEvent};
 
+use crate::components::collect_contracts_under;
 use crate::follow::{
-    apply_server_text, begin_direct_follow, end_follow, follow_set, followed_paths,
-    needs_discard_confirm, plan_event, ApplyMode, ChangeEvent, FetchStatus,
+    add_exclusion, apply_server_text, begin_follow, controlling_dir, dir_controls, dir_label,
+    end_follow, excluded_without_card, exclusion_on_release, follow_mode_for, follow_set,
+    followed_card, followed_paths, needs_discard_confirm, normalize_dir, plan_dir_listing,
+    plan_event, prune_exclusions_listed, prune_exclusions_to_dirs, release_uncovered,
+    remove_exclusion, remove_vanished, ApplyMode, ChangeEvent, FetchStatus,
 };
-use crate::models::{Contract, FollowState};
+use crate::models::{generate_id, Contract, FollowState};
 use crate::utils::fetch_server_contract;
 
 /// How long the first graph build waits on followed cards at most.
@@ -49,6 +56,14 @@ const BACKOFF_MAX_MS: u32 = 30_000;
 pub struct FollowSync {
     contracts: ReadSignal<Vec<Contract>>,
     set_contracts: WriteSignal<Vec<Contract>>,
+    /// New cards from a followed directory join every simulation.
+    simulations: ReadSignal<Vec<String>>,
+    /// Followed server directories (normalized; "" is the root).
+    pub followed_dirs: RwSignal<Vec<String>>,
+    /// Server paths excluded from every directory follow (sorted).
+    pub exclusions: RwSignal<Vec<String>>,
+    /// Directories being listed and loaded by a Follow click right now.
+    pub busy_dirs: RwSignal<HashSet<String>>,
     /// Per server path, what this session knows about the server copy.
     pub statuses: RwSignal<HashMap<String, FetchStatus>>,
     /// The event stream is open.
@@ -64,15 +79,36 @@ impl FollowSync {
     pub fn start(
         contracts: ReadSignal<Vec<Contract>>,
         set_contracts: WriteSignal<Vec<Contract>>,
+        simulations: ReadSignal<Vec<String>>,
+        followed_dirs: RwSignal<Vec<String>>,
+        exclusions: RwSignal<Vec<String>>,
     ) -> Self {
         let sync = FollowSync {
             contracts,
             set_contracts,
+            simulations,
+            followed_dirs,
+            exclusions,
+            busy_dirs: RwSignal::new(HashSet::new()),
             statuses: RwSignal::new(HashMap::new()),
             connected: RwSignal::new(false),
             ready: RwSignal::new(false),
             issued: StoredValue::new(HashMap::new()),
         };
+
+        // A `ViaDir` card no followed directory covers (storage edited, or
+        // saved mid-unfollow) is an ordinary card.
+        let dirs = followed_dirs.get_untracked();
+        if contracts
+            .get_untracked()
+            .iter()
+            .any(|c| c.follow == FollowState::ViaDir)
+        {
+            let mut list = contracts.get_untracked();
+            if release_uncovered(&mut list, &dirs) > 0 {
+                set_contracts.set(list);
+            }
+        }
 
         // Initial fetch of everything followed, before the graph builds.
         let startup = followed_paths(&contracts.get_untracked());
@@ -101,7 +137,7 @@ impl FollowSync {
         }
 
         // The stream follows the follow set.
-        let set = Memo::new(move |_| follow_set(&contracts.get(), &[]));
+        let set = Memo::new(move |_| follow_set(&contracts.get(), &followed_dirs.get()));
         let conn: Rc<RefCell<Conn>> = Rc::new(RefCell::new(Conn::default()));
         Effect::new(move |_| {
             let url = set.get().events_url();
@@ -189,11 +225,19 @@ impl FollowSync {
                         }
                     });
                 }
-                Ok(None) => self.set_status(&path, |s| {
-                    s.fetched = true;
-                    s.missing = true;
-                    s.fetch_error = None;
-                }),
+                Ok(None) => {
+                    // A file under a followed directory that is gone takes its
+                    // card with it; a directly followed one shows "missing".
+                    let mut list = self.contracts.get_untracked();
+                    if remove_vanished(&mut list, &path) {
+                        self.set_contracts.set(list);
+                    }
+                    self.set_status(&path, |s| {
+                        s.fetched = true;
+                        s.missing = true;
+                        s.fetch_error = None;
+                    });
+                }
                 Err(e) => self.set_status(&path, |s| s.fetch_error = Some(e)),
             }
         });
@@ -206,11 +250,106 @@ impl FollowSync {
         }
     }
 
+    /// Re-list every followed directory (on every stream open): add cards for
+    /// files that appeared while the stream was down, and prune exclusions
+    /// whose files are gone. Cards are not adopted here; that only happens
+    /// when the user follows a directory.
+    fn relist_dirs(self) {
+        for dir in self.followed_dirs.get_untracked() {
+            spawn_local(async move {
+                let (listing, errors) = collect_contracts_under(&dir).await;
+                if !errors.is_empty() {
+                    web_sys::console::warn_1(
+                        &format!("Could not list followed {}: {}", dir_label(&dir), errors.join("; "))
+                            .into(),
+                    );
+                    return;
+                }
+                if !self.followed_dirs.get_untracked().contains(&dir) {
+                    return;
+                }
+                self.exclusions
+                    .update(|e| prune_exclusions_listed(e, &dir, &listing));
+                let plan = plan_dir_listing(
+                    &self.contracts.get_untracked(),
+                    &listing,
+                    &self.exclusions.get_untracked(),
+                );
+                self.create_cards(plan.create).await;
+            });
+        }
+    }
+
+    /// Fetch each path and append a `ViaDir` card for it, in order, if it is
+    /// still dir-controlled and still has no card once its text is in hand
+    /// (so overlapping directories and racing events never duplicate).
+    async fn create_cards(self, paths: Vec<String>) {
+        let mut fetched = Vec::new();
+        for path in paths {
+            match self.fetch_latest(&path).await {
+                Ok(Some(text)) => fetched.push((path, text)),
+                Ok(None) => {}
+                Err(e) => web_sys::console::error_1(&format!("{}: {}", path, e).into()),
+            }
+        }
+        if fetched.is_empty() {
+            return;
+        }
+
+        let dirs = self.followed_dirs.get_untracked();
+        let exclusions = self.exclusions.get_untracked();
+        let sims = self.simulations.get_untracked();
+        let mut added = Vec::new();
+        self.set_contracts.update(|list| {
+            for (path, text) in &fetched {
+                let has_card = list
+                    .iter()
+                    .any(|c| c.server_path.as_deref() == Some(path.as_str()));
+                if has_card || !dir_controls(path, &dirs, &exclusions) {
+                    continue;
+                }
+                list.push(followed_card(
+                    generate_id(),
+                    path,
+                    text,
+                    &sims,
+                    FollowState::ViaDir,
+                ));
+                added.push(path.clone());
+            }
+        });
+        for path in added {
+            self.mark_fetched(&path, true);
+        }
+    }
+
+    /// A fetch reached the server and landed; `flash` if the card changed.
+    fn mark_fetched(self, path: &str, flash: bool) {
+        self.set_status(path, |s| {
+            s.fetched = true;
+            s.missing = false;
+            s.fetch_error = None;
+            s.updated_at = Some(now_hms());
+            if flash {
+                s.flash += 1;
+            }
+        });
+    }
+
     /// Act on one event from the stream.
     fn handle_event(self, event: &ChangeEvent) {
-        let plan = plan_event(&self.contracts.get_untracked(), event);
-        for path in plan.refetch {
+        let plan = plan_event(
+            &self.contracts.get_untracked(),
+            event,
+            &self.followed_dirs.get_untracked(),
+            &self.exclusions.get_untracked(),
+        );
+        // Gone `ViaDir` files are refetched; the 404 removes the cards.
+        for path in plan.refetch.into_iter().chain(plan.vanished) {
             self.refetch(path);
+        }
+        if !plan.create.is_empty() {
+            spawn_local(async move { self.create_cards(plan.create).await });
         }
         for path in plan.missing {
             self.set_status(&path, |s| {
@@ -226,6 +365,10 @@ impl FollowSync {
     }
 
     /// The follow button on a card: start or stop following its server path.
+    ///
+    /// Stopping a card a followed directory controls also excludes its path,
+    /// so the directory does not bring it straight back; for a `ViaDir` card
+    /// that is confirmed first.
     pub fn toggle(self, contract_id: String) {
         let Some(card) = self
             .contracts
@@ -243,9 +386,25 @@ impl FollowSync {
                 };
                 spawn_local(async move { self.begin(contract_id, path).await });
             }
-            // A `ViaDir` card's toggle becomes an exclusion with directory
-            // following; until then both kinds simply stop.
             FollowState::Direct | FollowState::ViaDir => {
+                let dirs = self.followed_dirs.get_untracked();
+                if card.follow == FollowState::ViaDir {
+                    let path = card.server_path.clone().unwrap_or_default();
+                    let file = path.rsplit('/').next().unwrap_or(&path).to_string();
+                    let dir = controlling_dir(&path, &dirs).unwrap_or("");
+                    let ok = web_sys::window()
+                        .expect("no global window exists")
+                        .confirm_with_message(&format!(
+                            "Stop following {} from {} so you can edit it locally?",
+                            file,
+                            dir_label(dir)
+                        ))
+                        .unwrap_or(false);
+                    if !ok {
+                        return;
+                    }
+                }
+                self.release(&card);
                 self.set_contracts.update(|list| {
                     if let Some(c) = list.iter_mut().find(|c| c.id == contract_id) {
                         end_follow(c);
@@ -253,6 +412,203 @@ impl FollowSync {
                 });
             }
         }
+    }
+
+    /// A card is about to stop following or be deleted: exclude its path if a
+    /// followed directory would otherwise bring it back.
+    pub fn release(self, card: &Contract) {
+        let dirs = self.followed_dirs.get_untracked();
+        if let Some(path) = exclusion_on_release(card, &dirs, &self.exclusions.get_untracked()) {
+            self.exclusions.update(|e| add_exclusion(e, &path));
+        }
+    }
+
+    /// A card was just loaded from the server browser. Loading an excluded
+    /// path lifts the exclusion, and anything a followed directory now
+    /// controls comes in following it.
+    pub fn loaded_from_server(self, card: &mut Contract) {
+        let Some(path) = card.server_path.clone() else {
+            return;
+        };
+        self.exclusions.update(|e| {
+            remove_exclusion(e, &path);
+        });
+        let dirs = self.followed_dirs.get_untracked();
+        if dir_controls(&path, &dirs, &self.exclusions.get_untracked()) {
+            card.filename = path.clone();
+            card.follow = FollowState::ViaDir;
+            self.mark_fetched(&path, false);
+        }
+    }
+
+    /// Follow from a server browser file row: follow its card if there is one,
+    /// else load it as a new followed card.
+    pub fn follow_file(self, path: String) {
+        let existing = self
+            .contracts
+            .get_untracked()
+            .into_iter()
+            .find(|c| c.server_path.as_deref() == Some(path.as_str()));
+        if let Some(card) = existing {
+            if card.follow == FollowState::Off {
+                spawn_local(async move { self.begin(card.id, path).await });
+            }
+            return;
+        }
+
+        spawn_local(async move {
+            let window = web_sys::window().expect("no global window exists");
+            let text = match self.fetch_latest(&path).await {
+                Ok(Some(text)) => text,
+                Ok(None) => {
+                    let _ = window.alert_with_message(&format!("{} is not on the server.", path));
+                    return;
+                }
+                Err(e) => {
+                    let _ = window.alert_with_message(&format!("Could not follow {}: {}", path, e));
+                    return;
+                }
+            };
+            self.exclusions.update(|e| {
+                remove_exclusion(e, &path);
+            });
+            let mode = follow_mode_for(&path, &self.followed_dirs.get_untracked());
+            let sims = self.simulations.get_untracked();
+            let mut added = false;
+            self.set_contracts.update(|list| {
+                if list
+                    .iter()
+                    .any(|c| c.server_path.as_deref() == Some(path.as_str()))
+                {
+                    return;
+                }
+                list.push(followed_card(generate_id(), &path, &text, &sims, mode));
+                added = true;
+            });
+            if added {
+                self.mark_fetched(&path, true);
+            }
+        });
+    }
+
+    /// Follow a server directory: a `ViaDir` card for every contract under it,
+    /// adopting unfollowed cards of the same path (with the discard confirm;
+    /// Cancel leaves the card as it is and excludes it, so it is not adopted
+    /// behind the user's back later).
+    pub fn follow_dir(self, dir: String) {
+        let dir = normalize_dir(&dir);
+        if self.followed_dirs.get_untracked().contains(&dir)
+            || self.busy_dirs.get_untracked().contains(&dir)
+        {
+            return;
+        }
+        self.busy_dirs.update(|b| {
+            b.insert(dir.clone());
+        });
+
+        spawn_local(async move {
+            let window = web_sys::window().expect("no global window exists");
+            let (listing, errors) = collect_contracts_under(&dir).await;
+            if !errors.is_empty() {
+                let _ = window.alert_with_message(&format!(
+                    "Some of {} could not be listed; following the rest.\n\n{}",
+                    dir_label(&dir),
+                    errors.join("\n")
+                ));
+            }
+
+            let plan = plan_dir_listing(
+                &self.contracts.get_untracked(),
+                &listing,
+                &self.exclusions.get_untracked(),
+            );
+
+            for (id, path) in plan.adopt {
+                let text = match self.fetch_latest(&path).await {
+                    Ok(Some(text)) => text,
+                    _ => continue,
+                };
+                let Some(card) = self
+                    .contracts
+                    .get_untracked()
+                    .into_iter()
+                    .find(|c| c.id == id)
+                else {
+                    continue;
+                };
+                if card.follow != FollowState::Off {
+                    continue;
+                }
+                if needs_discard_confirm(&card, &text) {
+                    let ok = window
+                        .confirm_with_message(&format!(
+                            "Discard local changes to {} and follow the server?\n\nCancel keeps your copy and leaves it out of {}.",
+                            path,
+                            dir_label(&dir)
+                        ))
+                        .unwrap_or(false);
+                    if !ok {
+                        self.exclusions.update(|e| add_exclusion(e, &path));
+                        continue;
+                    }
+                }
+                let mut landed = false;
+                self.set_contracts.update(|list| {
+                    if let Some(c) = list.iter_mut().find(|c| c.id == id) {
+                        landed = begin_follow(c, &text, FollowState::ViaDir).landed();
+                    }
+                });
+                self.mark_fetched(&path, landed);
+            }
+
+            // Followed from here on, so the new cards are dir-controlled.
+            self.followed_dirs.update(|d| {
+                if !d.contains(&dir) {
+                    d.push(dir.clone());
+                    d.sort();
+                }
+            });
+            if errors.is_empty() {
+                self.exclusions
+                    .update(|e| prune_exclusions_listed(e, &dir, &listing));
+            }
+            self.create_cards(plan.create).await;
+            self.busy_dirs.update(|b| {
+                b.remove(&dir);
+            });
+        });
+    }
+
+    /// Stop following a directory: its `ViaDir` cards stay as editable local
+    /// copies (unless another followed directory still covers them), `Direct`
+    /// cards keep following, and exclusions outside every remaining followed
+    /// directory are dropped.
+    pub fn unfollow_dir(self, dir: String) {
+        self.followed_dirs.update(|d| d.retain(|x| *x != dir));
+        let remaining = self.followed_dirs.get_untracked();
+        let mut list = self.contracts.get_untracked();
+        if release_uncovered(&mut list, &remaining) > 0 {
+            self.set_contracts.set(list);
+        }
+        self.exclusions
+            .update(|e| prune_exclusions_to_dirs(e, &remaining));
+    }
+
+    /// Whether a card for this server path is following (tracked).
+    pub fn path_following(self, path: &str) -> bool {
+        self.contracts.with(|list| {
+            list.iter()
+                .any(|c| c.follow != FollowState::Off && c.server_path.as_deref() == Some(path))
+        })
+    }
+
+    /// Excluded paths with no card, for the server browser (tracked).
+    pub fn excluded_without_card(self) -> HashSet<String> {
+        let exclusions = self.exclusions.get();
+        self.contracts
+            .with(|list| excluded_without_card(list, &exclusions))
+            .into_iter()
+            .collect()
     }
 
     async fn begin(self, contract_id: String, path: String) {
@@ -296,21 +652,19 @@ impl FollowSync {
             }
         }
 
+        // Following again lifts any exclusion; inside a followed directory the
+        // card follows through it, elsewhere directly.
+        self.exclusions.update(|e| {
+            remove_exclusion(e, &path);
+        });
+        let mode = follow_mode_for(&path, &self.followed_dirs.get_untracked());
         let mut landed = false;
         self.set_contracts.update(|list| {
             if let Some(c) = list.iter_mut().find(|c| c.id == contract_id) {
-                landed = begin_direct_follow(c, &text).landed();
+                landed = begin_follow(c, &text, mode).landed();
             }
         });
-        self.set_status(&path, |s| {
-            s.fetched = true;
-            s.missing = false;
-            s.fetch_error = None;
-            s.updated_at = Some(now_hms());
-            if landed {
-                s.flash += 1;
-            }
-        });
+        self.mark_fetched(&path, landed);
     }
 }
 
@@ -367,6 +721,7 @@ fn open_stream(conn: Rc<RefCell<Conn>>, sync: FollowSync) {
             drop(c);
             sync.connected.set(true);
             sync.refetch_all();
+            sync.relist_dirs();
         })
     };
 

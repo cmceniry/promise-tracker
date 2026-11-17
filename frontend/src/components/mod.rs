@@ -14,7 +14,9 @@ mod trace_view;
 mod view_frame;
 
 pub use contract_browser::ContractBrowser;
+pub(crate) use contract_browser::collect_contracts_under;
 pub use contract_card::{ContractCard, DiffStatus, FollowView};
+pub(crate) use contract_card::broadcast_icon;
 pub use contract_carder::ContractCarder;
 pub use contract_edit_modal::ContractEditModal;
 pub use contract_grapher::ContractGrapher;

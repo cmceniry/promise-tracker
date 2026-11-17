@@ -3,7 +3,11 @@ use leptos::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlElement, KeyboardEvent};
+use web_sys::{HtmlElement, KeyboardEvent, MouseEvent};
+
+use crate::components::broadcast_icon;
+use crate::follow::dir_label;
+use crate::follow_sync::FollowSync;
 
 /// Directory entry from the API
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -419,6 +423,17 @@ pub fn ContractBrowser(
                         // Tree view
                         <Show when=move || !loading.get()>
                             <ul class="list-group">
+                                // The server root: following it follows everything.
+                                <li
+                                    class="list-group-item"
+                                    style="display: flex; align-items: center; gap: 0.5rem; padding-left: 8px;"
+                                >
+                                    <span style="flex-shrink: 0;">"🗂"</span>
+                                    <span class="text-muted" style="flex-grow: 1;">
+                                        "/ (everything on the server)"
+                                    </span>
+                                    <DirFollowButton dir=String::new() />
+                                </li>
                                 {move || {
                                     let entries = root_entries.get();
                                     if entries.is_empty() {
@@ -512,9 +527,13 @@ pub fn ContractBrowser(
 // directory first pushes that selection down onto the children the tree knows.
 // ---------------------------------------------------------------------------
 
-/// Path of `name` inside `dir`.
+/// Path of `name` inside `dir` ("" being the root).
 fn child_path(dir: &str, name: &str) -> String {
-    format!("{}/{}", dir, name)
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", dir, name)
+    }
 }
 
 /// Ancestor directory paths of `path`, innermost first.
@@ -735,7 +754,9 @@ fn filter_addable(
 ///
 /// The server refuses to list a path that loops back on itself, so this cannot
 /// spin; the depth cap is a backstop against a server that forgets to.
-async fn collect_contracts_under(root: &str) -> (Vec<String>, Vec<String>) {
+///
+/// `root` may be "" for the whole server. Following a directory uses this too.
+pub(crate) async fn collect_contracts_under(root: &str) -> (Vec<String>, Vec<String>) {
     const MAX_DEPTH: usize = 32;
 
     let mut contracts = Vec::new();
@@ -765,6 +786,55 @@ async fn collect_contracts_under(root: &str) -> (Vec<String>, Vec<String>) {
     (contracts, errors)
 }
 
+/// Follow button for a directory row (or the root, `dir` = ""). A directory
+/// already followed reads "Following"; unfollowing is on its chip.
+#[component]
+fn DirFollowButton(dir: String) -> impl IntoView {
+    let follow = expect_context::<FollowSync>();
+    let stored_dir = StoredValue::new(dir);
+    let is_followed = move || {
+        let dirs = follow.followed_dirs.get();
+        stored_dir.try_get_value().is_some_and(|d| dirs.contains(&d))
+    };
+    let is_busy = move || {
+        let busy = follow.busy_dirs.get();
+        stored_dir.try_get_value().is_some_and(|d| busy.contains(&d))
+    };
+
+    view! {
+        <button
+            type="button"
+            class=move || if is_followed() { "btn btn-sm btn-info" } else { "btn btn-sm btn-outline-info" }
+            style="flex-shrink: 0;"
+            disabled=move || is_followed() || is_busy()
+            title=move || {
+                let label = stored_dir.try_get_value().map(|d| dir_label(&d)).unwrap_or_default();
+                if is_followed() {
+                    format!("Following {} (unfollow from its chip above the cards)", label)
+                } else {
+                    format!("Follow every contract under {} on the server, live", label)
+                }
+            }
+            on:click=move |ev: MouseEvent| {
+                // Keep the click off the row, which would expand or collapse.
+                ev.stop_propagation();
+                if let Some(d) = stored_dir.try_get_value() {
+                    follow.follow_dir(d);
+                }
+            }
+        >
+            {broadcast_icon()}
+            {move || if is_busy() {
+                " Following…"
+            } else if is_followed() {
+                " Following"
+            } else {
+                " Follow"
+            }}
+        </button>
+    }
+}
+
 /// Recursive tree node component
 #[component]
 fn TreeNode(
@@ -783,6 +853,7 @@ fn TreeNode(
 ) -> impl IntoView {
     let is_directory = entry.entry_type == "directory";
     let entry_name = entry.name.clone();
+    let follow = expect_context::<FollowSync>();
 
     let indent = level * 20;
 
@@ -1006,6 +1077,55 @@ fn TreeNode(
             <Show when=move || is_loading() || is_downloading()>
                 <span class="spinner-border spinner-border-sm" style="margin-left: 0.5rem;"></span>
             </Show>
+
+            // Follow: the whole directory, or this one file
+            {if is_directory {
+                view! { <DirFollowButton dir=path.clone() /> }.into_any()
+            } else {
+                let is_following = move || {
+                    stored_path
+                        .try_get_value()
+                        .is_some_and(|p| follow.path_following(&p))
+                };
+                // Excluded from directory following and not in the carder:
+                // loading or following it here brings it back.
+                let is_excluded = move || {
+                    let excluded = follow.excluded_without_card();
+                    stored_path
+                        .try_get_value()
+                        .is_some_and(|p| excluded.contains(&p))
+                };
+                view! {
+                    <Show when=is_excluded>
+                        <span
+                            class="badge bg-secondary"
+                            title="Excluded from directory following. Load or follow it to bring it back."
+                        >
+                            "excluded"
+                        </span>
+                    </Show>
+                    <button
+                        type="button"
+                        class=move || if is_following() { "btn btn-sm btn-info" } else { "btn btn-sm btn-outline-info" }
+                        style="flex-shrink: 0;"
+                        disabled=is_following
+                        title=move || if is_following() {
+                            "Following this file".to_string()
+                        } else {
+                            "Load this file and follow it on the server".to_string()
+                        }
+                        on:click=move |ev: MouseEvent| {
+                            ev.stop_propagation();
+                            if let Some(p) = stored_path.try_get_value() {
+                                follow.follow_file(p);
+                            }
+                        }
+                    >
+                        {broadcast_icon()}
+                        {move || if is_following() { " Following" } else { " Follow" }}
+                    </button>
+                }.into_any()
+            }}
         </li>
 
         // Children (for expanded directories)
@@ -1262,6 +1382,12 @@ mod tests {
                 "root.yaml".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn child_paths_of_the_root_have_no_leading_slash() {
+        assert_eq!(child_path("", "a.yaml"), "a.yaml");
+        assert_eq!(child_path("sub", "a.yaml"), "sub/a.yaml");
     }
 
     #[test]

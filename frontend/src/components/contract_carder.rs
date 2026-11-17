@@ -8,7 +8,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{Event, FileReader, HtmlElement, HtmlInputElement, KeyboardEvent};
 
 use crate::components::{ContractBrowser, ContractCard, ContractEditModal, DiffStatus, FollowView};
-use crate::follow::{card_state, card_tooltip};
+use crate::follow::{card_state, card_tooltip, controlling_dir, dir_label, exclusions_under};
 use crate::follow_sync::FollowSync;
 use crate::models::{Contract, FollowState};
 use crate::utils::{
@@ -218,6 +218,8 @@ pub fn ContractCarder(
             let mut contract = Contract::with_default_sims(filename.clone(), content, &sims);
             contract.server_path = Some(contract_id);
             contract.err = err;
+            // Loading an excluded path brings it back under its directory.
+            follow.loaded_from_server(&mut contract);
             set_contracts.update(|c| c.push(contract));
             // Modal will stay open - user can close it manually
         },
@@ -225,6 +227,15 @@ pub fn ContractCarder(
 
     // Delete a contract
     let delete_contract = Callback::new(move |contract_id: String| {
+        // A card a followed directory controls is excluded on delete, or the
+        // directory would bring it back on the next refetch.
+        if let Some(card) = contracts
+            .get_untracked()
+            .iter()
+            .find(|c| c.id == contract_id)
+        {
+            follow.release(card);
+        }
         set_contracts.update(|c| c.retain(|contract| contract.id != contract_id));
     });
 
@@ -316,6 +327,65 @@ pub fn ContractCarder(
 
     view! {
         <div style="height: 100vh; overflow-y: auto;">
+            // Followed server directories
+            <Show when=move || !follow.followed_dirs.get().is_empty()>
+                <div class="d-flex flex-wrap gap-1 mb-2">
+                    <For
+                        each=move || follow.followed_dirs.get()
+                        key=|dir| dir.clone()
+                        children=move |dir| {
+                            let label = dir_label(&dir);
+                            let dir_for_count = dir.clone();
+                            let excluded = Memo::new(move |_| {
+                                exclusions_under(&follow.exclusions.get(), &dir_for_count)
+                                    .into_iter()
+                                    .map(str::to_string)
+                                    .collect::<Vec<_>>()
+                            });
+                            let live = move || follow.connected.get();
+                            let label_for_title = label.clone();
+                            let label_for_close = label.clone();
+                            let dir_for_close = dir.clone();
+                            view! {
+                                <span
+                                    class=move || if live() {
+                                        "badge bg-info text-dark d-inline-flex align-items-center gap-1"
+                                    } else {
+                                        "badge bg-secondary d-inline-flex align-items-center gap-1"
+                                    }
+                                    title=move || format!(
+                                        "Following every contract under {} on the server · {}",
+                                        label_for_title,
+                                        if live() { "live" } else { "stale: reconnecting to the server" }
+                                    )
+                                >
+                                    "📡 " {label.clone()} " · " {move || if live() { "live" } else { "stale" }}
+                                    <Show when=move || !excluded.get().is_empty()>
+                                        <span
+                                            class="badge bg-light text-dark"
+                                            title=move || format!(
+                                                "Not followed (restore from Load from Server):\n{}",
+                                                excluded.get().join("\n")
+                                            )
+                                        >
+                                            {move || format!("{} excluded", excluded.get().len())}
+                                        </span>
+                                    </Show>
+                                    <button
+                                        type="button"
+                                        class="btn-close"
+                                        style="font-size: 0.55em;"
+                                        aria-label=format!("Stop following {}", label_for_close)
+                                        title=format!("Stop following {} (its cards stay, as local copies)", label_for_close)
+                                        on:click=move |_| follow.unfollow_dir(dir_for_close.clone())
+                                    ></button>
+                                </span>
+                            }
+                        }
+                    />
+                </div>
+            </Show>
+
             // Contract cards list - iterate in panel_order to maintain drag order
             // The column_ref must be attached to the container for drag reorder to work
             <div node_ref=column_ref>
@@ -413,9 +483,15 @@ pub fn ContractCarder(
                             let statuses = follow.statuses.get();
                             let status = statuses.get(&path);
                             let state = card_state(c, status, follow.connected.get());
+                            let dirs = follow.followed_dirs.get();
+                            let via = if c.follow == FollowState::ViaDir {
+                                controlling_dir(&path, &dirs)
+                            } else {
+                                None
+                            };
                             Some(FollowView {
                                 state,
-                                tooltip: card_tooltip(&path, state, status),
+                                tooltip: card_tooltip(&path, via, state, status),
                                 flash: status.map(|s| s.flash).unwrap_or(0),
                                 pending_err: c.pending.as_ref().map(|p| p.err.clone()),
                             })

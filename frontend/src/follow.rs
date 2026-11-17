@@ -7,9 +7,10 @@
 //! the host with `cargo test -p promise_tracker_frontend`. The browser half
 //! (EventSource, fetches, signals) lives in `follow_sync.rs` and calls in here.
 //!
-//! Directory following extends this module: `FollowSet::dirs`,
-//! `FollowState::ViaDir`, and the `added` half of an event are already carried
-//! through so that only the planning rules need to grow.
+//! Directory following: a followed directory controls every contract file
+//! under it (recursively) unless that path is in the global exclusion list.
+//! Directory keys are `/`-trimmed server paths; the empty string is the root
+//! of the server's base dir.
 
 use serde::Deserialize;
 
@@ -62,11 +63,8 @@ pub fn follow_set(contracts: &[Contract], followed_dirs: &[String]) -> FollowSet
     files.sort();
     files.dedup();
 
-    let mut dirs: Vec<String> = followed_dirs
-        .iter()
-        .filter(|d| !d.trim().is_empty())
-        .cloned()
-        .collect();
+    // The empty directory is the server root, and is a real follow.
+    let mut dirs: Vec<String> = followed_dirs.iter().map(|d| normalize_dir(d)).collect();
     dirs.sort();
     dirs.dedup();
 
@@ -124,21 +122,38 @@ pub struct EventPlan {
     pub refetch: Vec<String>,
     /// Server paths whose directly followed cards are now missing.
     pub missing: Vec<String>,
+    /// New files under a followed directory, with no card yet: fetch each and
+    /// append a `ViaDir` card for it.
+    pub create: Vec<String>,
+    /// Paths of `ViaDir` cards the server says are gone. Each is refetched
+    /// first, and its cards are removed only if the server confirms a 404, so
+    /// a remove racing a re-create never drops a live card.
+    pub vanished: Vec<String>,
 }
 
 /// Plan the response to an event. Paths nobody follows are ignored, so a
 /// stale event racing a follow-set change does no harm.
-pub fn plan_event(contracts: &[Contract], event: &ChangeEvent) -> EventPlan {
+///
+/// A file saved through `PUT` reaches other browsers as `changed`, not
+/// `added`, so a `changed` path with no card under a followed directory is
+/// treated as new too.
+pub fn plan_event(
+    contracts: &[Contract],
+    event: &ChangeEvent,
+    followed_dirs: &[String],
+    exclusions: &[String],
+) -> EventPlan {
     let followed = |path: &String| {
         contracts
             .iter()
             .any(|c| c.follow != FollowState::Off && c.server_path.as_ref() == Some(path))
     };
-    let direct = |path: &String| {
+    let with_follow = |path: &String, state: FollowState| {
         contracts
             .iter()
-            .any(|c| c.follow == FollowState::Direct && c.server_path.as_ref() == Some(path))
+            .any(|c| c.follow == state && c.server_path.as_ref() == Some(path))
     };
+    let has_card = |path: &String| contracts.iter().any(|c| c.server_path.as_ref() == Some(path));
 
     let mut refetch: Vec<String> = event
         .added
@@ -147,19 +162,44 @@ pub fn plan_event(contracts: &[Contract], event: &ChangeEvent) -> EventPlan {
         .filter(|p| followed(p))
         .cloned()
         .collect();
-    refetch.sort();
-    refetch.dedup();
+    sort_dedup(&mut refetch);
+
+    let mut create: Vec<String> = event
+        .added
+        .iter()
+        .chain(event.changed.iter())
+        .filter(|p| !has_card(p) && dir_controls(p, followed_dirs, exclusions))
+        .cloned()
+        .collect();
+    sort_dedup(&mut create);
 
     let mut missing: Vec<String> = event
         .removed
         .iter()
-        .filter(|p| direct(p))
+        .filter(|p| with_follow(p, FollowState::Direct))
         .cloned()
         .collect();
-    missing.sort();
-    missing.dedup();
+    sort_dedup(&mut missing);
 
-    EventPlan { refetch, missing }
+    let mut vanished: Vec<String> = event
+        .removed
+        .iter()
+        .filter(|p| with_follow(p, FollowState::ViaDir))
+        .cloned()
+        .collect();
+    sort_dedup(&mut vanished);
+
+    EventPlan {
+        refetch,
+        missing,
+        create,
+        vanished,
+    }
+}
+
+fn sort_dedup(v: &mut Vec<String>) {
+    v.sort();
+    v.dedup();
 }
 
 /// How a fetched server text should land.
@@ -244,13 +284,14 @@ pub fn needs_discard_confirm(contract: &Contract, server_text: &str) -> bool {
     compare_contracts(&contract.content, server_text)
 }
 
-/// Turn direct following on, with the server's text already in hand.
-pub fn begin_direct_follow(contract: &mut Contract, server_text: &str) -> Applied {
+/// Turn following on (`Direct` or `ViaDir`), with the server's text already
+/// in hand.
+pub fn begin_follow(contract: &mut Contract, server_text: &str, state: FollowState) -> Applied {
     if let Some(path) = contract.server_path.clone() {
         // The filename is locked while following; it is the server's.
         contract.filename = path;
     }
-    contract.follow = FollowState::Direct;
+    contract.follow = state;
     contract.pending = None;
     apply_server_text(contract, server_text, ApplyMode::Adopt)
 }
@@ -260,6 +301,213 @@ pub fn begin_direct_follow(contract: &mut Contract, server_text: &str) -> Applie
 pub fn end_follow(contract: &mut Contract) {
     contract.follow = FollowState::Off;
     contract.pending = None;
+}
+
+// ---------------------------------------------------------------------------
+// Directory following
+// ---------------------------------------------------------------------------
+
+/// A directory as a follow key: no leading or trailing `/`; "" is the root.
+pub fn normalize_dir(dir: &str) -> String {
+    dir.trim_matches('/').to_string()
+}
+
+/// Whether `path` sits somewhere under `dir`. Segment-aware: `a` covers
+/// `a/x.yaml` and `a/b/y.yaml` but not `ab/x.yaml`; the root covers all.
+pub fn is_under_dir(path: &str, dir: &str) -> bool {
+    let dir = dir.trim_matches('/');
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return false;
+    }
+    if dir.is_empty() {
+        return true;
+    }
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.len() > 1 && rest.starts_with('/'))
+}
+
+/// The followed directory a path is followed through: the innermost one
+/// containing it, when overlapping directories both do.
+pub fn controlling_dir<'a>(path: &str, followed_dirs: &'a [String]) -> Option<&'a str> {
+    followed_dirs
+        .iter()
+        .filter(|d| is_under_dir(path, d))
+        .max_by_key(|d| normalize_dir(d).len())
+        .map(String::as_str)
+}
+
+/// Whether a path is dir-controlled: some followed directory contains it and
+/// it is not excluded.
+pub fn dir_controls(path: &str, followed_dirs: &[String], exclusions: &[String]) -> bool {
+    controlling_dir(path, followed_dirs).is_some() && !exclusions.iter().any(|e| e == path)
+}
+
+/// How a directory reads on a chip or tooltip: `sub/`, or `/` for the root.
+pub fn dir_label(dir: &str) -> String {
+    let dir = normalize_dir(dir);
+    if dir.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{}/", dir)
+    }
+}
+
+/// The follow state a card gets when someone turns following on for it (from
+/// its card or from the server browser): `ViaDir` inside a followed
+/// directory, `Direct` otherwise. The caller lifts any exclusion first.
+pub fn follow_mode_for(path: &str, followed_dirs: &[String]) -> FollowState {
+    if controlling_dir(path, followed_dirs).is_some() {
+        FollowState::ViaDir
+    } else {
+        FollowState::Direct
+    }
+}
+
+/// Add a path to a sorted exclusion list (no-op if present).
+pub fn add_exclusion(exclusions: &mut Vec<String>, path: &str) {
+    if let Err(at) = exclusions.binary_search_by(|e| e.as_str().cmp(path)) {
+        exclusions.insert(at, path.to_string());
+    }
+}
+
+/// Remove a path from the exclusion list. True if it was there.
+pub fn remove_exclusion(exclusions: &mut Vec<String>, path: &str) -> bool {
+    let before = exclusions.len();
+    exclusions.retain(|e| e != path);
+    exclusions.len() != before
+}
+
+/// What the cards need when a directory's contract listing is in hand.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirPlan {
+    /// Listed paths with no card and no exclusion: new `ViaDir` cards, in
+    /// listing (sorted) order.
+    pub create: Vec<String>,
+    /// `(card id, path)` of unfollowed, unexcluded cards to adopt as `ViaDir`
+    /// (each with the discard confirm). `Direct` and `ViaDir` cards are left
+    /// alone: adoption never downgrades `Direct`.
+    pub adopt: Vec<(String, String)>,
+}
+
+/// Plan following a directory (or re-listing a followed one) given every
+/// contract path under it on the server.
+pub fn plan_dir_listing(contracts: &[Contract], listing: &[String], exclusions: &[String]) -> DirPlan {
+    let mut paths: Vec<String> = listing.to_vec();
+    sort_dedup(&mut paths);
+
+    let mut plan = DirPlan::default();
+    for path in paths {
+        if exclusions.contains(&path) {
+            continue;
+        }
+        let cards: Vec<&Contract> = contracts
+            .iter()
+            .filter(|c| c.server_path.as_deref() == Some(path.as_str()))
+            .collect();
+        if cards.is_empty() {
+            plan.create.push(path);
+        } else {
+            plan.adopt.extend(
+                cards
+                    .iter()
+                    .filter(|c| c.follow == FollowState::Off)
+                    .map(|c| (c.id.clone(), path.clone())),
+            );
+        }
+    }
+    plan
+}
+
+/// A new card following `path`, holding the server's text, in every
+/// simulation.
+pub fn followed_card(
+    id: String,
+    path: &str,
+    server_text: &str,
+    simulations: &[String],
+    state: FollowState,
+) -> Contract {
+    let mut card = Contract {
+        id,
+        filename: path.to_string(),
+        content: String::new(),
+        err: String::new(),
+        sims: simulations.iter().cloned().collect(),
+        server_path: Some(path.to_string()),
+        follow: state,
+        pending: None,
+    };
+    apply_server_text(&mut card, server_text, ApplyMode::Adopt);
+    card
+}
+
+/// Drop the `ViaDir` cards of a path that is gone from the server. True if
+/// any went.
+pub fn remove_vanished(contracts: &mut Vec<Contract>, path: &str) -> bool {
+    let before = contracts.len();
+    contracts.retain(|c| !(c.follow == FollowState::ViaDir && c.server_path.as_deref() == Some(path)));
+    contracts.len() != before
+}
+
+/// `ViaDir` cards no followed directory contains any more become ordinary
+/// editable cards (`Off`), keeping content and `server_path`. `Direct` cards
+/// are untouched. Returns how many were released.
+pub fn release_uncovered(contracts: &mut [Contract], followed_dirs: &[String]) -> usize {
+    let mut released = 0;
+    for c in contracts.iter_mut().filter(|c| c.follow == FollowState::ViaDir) {
+        let covered = c
+            .server_path
+            .as_deref()
+            .is_some_and(|p| controlling_dir(p, followed_dirs).is_some());
+        if !covered {
+            end_follow(c);
+            released += 1;
+        }
+    }
+    released
+}
+
+/// After a directory is unfollowed: exclusions only mean something under a
+/// followed directory, so drop the rest.
+pub fn prune_exclusions_to_dirs(exclusions: &mut Vec<String>, followed_dirs: &[String]) {
+    exclusions.retain(|e| controlling_dir(e, followed_dirs).is_some());
+}
+
+/// After a full listing of `dir`: drop exclusions under it that are no longer
+/// on the server. Only call with a listing that had no errors.
+pub fn prune_exclusions_listed(exclusions: &mut Vec<String>, dir: &str, listing: &[String]) {
+    exclusions.retain(|e| !is_under_dir(e, dir) || listing.contains(e));
+}
+
+/// The exclusion to record when a card stops following or is deleted: its
+/// path, if a followed directory would otherwise bring it straight back.
+pub fn exclusion_on_release(
+    contract: &Contract,
+    followed_dirs: &[String],
+    exclusions: &[String],
+) -> Option<String> {
+    let path = contract.server_path.as_deref()?;
+    dir_controls(path, followed_dirs, exclusions).then(|| path.to_string())
+}
+
+/// Excluded paths that have no card: the server browser marks these, since
+/// that is the only place to bring them back.
+pub fn excluded_without_card(contracts: &[Contract], exclusions: &[String]) -> Vec<String> {
+    exclusions
+        .iter()
+        .filter(|e| !contracts.iter().any(|c| c.server_path.as_deref() == Some(e.as_str())))
+        .cloned()
+        .collect()
+}
+
+/// Exclusions a followed directory's chip counts: those under it.
+pub fn exclusions_under<'a>(exclusions: &'a [String], dir: &str) -> Vec<&'a str> {
+    exclusions
+        .iter()
+        .filter(|e| is_under_dir(e, dir))
+        .map(String::as_str)
+        .collect()
 }
 
 /// Whether a card's content goes into the graph. A followed card is in when
@@ -339,7 +587,16 @@ pub fn card_state(contract: &Contract, status: Option<&FetchStatus>, connected: 
 }
 
 /// The tooltip on a followed card's follow button and status badge.
-pub fn card_tooltip(path: &str, state: CardState, status: Option<&FetchStatus>) -> String {
+pub fn card_tooltip(
+    path: &str,
+    via_dir: Option<&str>,
+    state: CardState,
+    status: Option<&FetchStatus>,
+) -> String {
+    let path = match via_dir {
+        Some(dir) => format!("{} via {}", path, dir_label(dir)),
+        None => path.to_string(),
+    };
     let updated = status
         .and_then(|s| s.updated_at.as_deref())
         .map(|t| format!(" · updated {}", t))
@@ -437,7 +694,7 @@ mod tests {
             r#"{"added":[],"changed":["a.yaml","off.yaml","nobody.yaml"],"removed":["b.yaml","off.yaml"]}"#,
         )
         .unwrap();
-        let plan = plan_event(&cards, &ev);
+        let plan = plan_event(&cards, &ev, &[], &[]);
         assert_eq!(plan.refetch, vec!["a.yaml"]);
         assert_eq!(plan.missing, vec!["b.yaml"]);
     }
@@ -543,7 +800,7 @@ mod tests {
         let mut c = card("1", Some("a.yaml"), FollowState::Off, GOOD);
         c.filename = "renamed.yaml".to_string();
         assert!(needs_discard_confirm(&c, BAD));
-        assert_eq!(begin_direct_follow(&mut c, BAD), Applied::NoGoodVersion);
+        assert_eq!(begin_follow(&mut c, BAD, FollowState::Direct), Applied::NoGoodVersion);
         assert_eq!(c.follow, FollowState::Direct);
         assert_eq!(c.filename, "a.yaml");
         assert_eq!(c.content, BAD);
@@ -555,7 +812,7 @@ mod tests {
     fn follow_on_identical_is_silent_and_unchanged() {
         let mut c = card("1", Some("a.yaml"), FollowState::Off, GOOD);
         assert!(!needs_discard_confirm(&c, &format!("{}\n\n", GOOD)));
-        assert_eq!(begin_direct_follow(&mut c, GOOD), Applied::Unchanged);
+        assert_eq!(begin_follow(&mut c, GOOD, FollowState::Direct), Applied::Unchanged);
         assert_eq!(c.follow, FollowState::Direct);
     }
 
@@ -563,7 +820,7 @@ mod tests {
     fn follow_on_overwrites_local_edits() {
         let mut c = card("1", Some("a.yaml"), FollowState::Off, GOOD);
         assert!(needs_discard_confirm(&c, GOOD2));
-        assert_eq!(begin_direct_follow(&mut c, GOOD2), Applied::Updated);
+        assert_eq!(begin_follow(&mut c, GOOD2, FollowState::Direct), Applied::Updated);
         assert_eq!(c.content, GOOD2);
     }
 
@@ -599,7 +856,7 @@ mod tests {
 
         status.missing = true;
         assert_eq!(card_state(&c, Some(&status), true), CardState::Missing);
-        assert!(card_tooltip("a.yaml", CardState::Missing, Some(&status)).contains("missing"));
+        assert!(card_tooltip("a.yaml", None, CardState::Missing, Some(&status)).contains("missing"));
 
         // The file coming back is a `changed`, which refetches it.
         let ev = ChangeEvent {
@@ -607,7 +864,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            plan_event(std::slice::from_ref(&c), &ev).refetch,
+            plan_event(std::slice::from_ref(&c), &ev, &[], &[]).refetch,
             vec!["a.yaml"]
         );
         status.missing = false;
@@ -626,7 +883,7 @@ mod tests {
         };
         assert_eq!(card_state(&c, Some(&status), false), CardState::Stale);
         assert_eq!(
-            card_tooltip("a.yaml", CardState::Live, Some(&status)),
+            card_tooltip("a.yaml", None, CardState::Live, Some(&status)),
             "following a.yaml · updated 12:34:56"
         );
 
@@ -641,5 +898,214 @@ mod tests {
         let cards: Vec<Contract> = serde_json::from_str(json).unwrap();
         assert_eq!(cards[0].follow, FollowState::Off);
         assert!(cards[0].pending.is_none());
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn under_dir_is_segment_aware_and_handles_root_and_slashes() {
+        assert!(is_under_dir("a/x.yaml", "a"));
+        assert!(is_under_dir("a/b/x.yaml", "a/"));
+        assert!(is_under_dir("a/b/x.yaml", "/a/b/"));
+        assert!(!is_under_dir("ab/x.yaml", "a"));
+        assert!(!is_under_dir("ab/x.yaml", "a/"));
+        assert!(!is_under_dir("a", "a"));
+        assert!(!is_under_dir("a/", "a"));
+        assert!(!is_under_dir("x.yaml", "a"));
+        // The root holds everything.
+        assert!(is_under_dir("x.yaml", ""));
+        assert!(is_under_dir("a/b/x.yaml", "/"));
+        assert!(!is_under_dir("", ""));
+        assert_eq!(normalize_dir("/a/b/"), "a/b");
+        assert_eq!(dir_label(""), "/");
+        assert_eq!(dir_label("sub/"), "sub/");
+    }
+
+    #[test]
+    fn root_dir_is_kept_in_the_follow_set() {
+        let set = follow_set(&[], &strs(&["", "/sub/"]));
+        assert_eq!(set.dirs, vec!["", "sub"]);
+        assert_eq!(set.events_url().unwrap(), "/events?dir=&dir=sub");
+    }
+
+    #[test]
+    fn dir_control_needs_a_containing_dir_and_no_exclusion() {
+        let dirs = strs(&["a", "a/b"]);
+        assert!(dir_controls("a/x.yaml", &dirs, &[]));
+        assert!(!dir_controls("ab/x.yaml", &dirs, &[]));
+        assert!(!dir_controls("a/x.yaml", &dirs, &strs(&["a/x.yaml"])));
+        // Overlapping dirs: the innermost names the card.
+        assert_eq!(controlling_dir("a/b/y.yaml", &dirs), Some("a/b"));
+        assert_eq!(controlling_dir("a/y.yaml", &dirs), Some("a"));
+        assert_eq!(follow_mode_for("a/y.yaml", &dirs), FollowState::ViaDir);
+        assert_eq!(follow_mode_for("z.yaml", &dirs), FollowState::Direct);
+    }
+
+    #[test]
+    fn dir_follow_creates_adopts_and_never_downgrades_direct() {
+        let cards = vec![
+            card("off", Some("d/off.yaml"), FollowState::Off, GOOD),
+            card("direct", Some("d/direct.yaml"), FollowState::Direct, GOOD),
+            card("via", Some("d/via.yaml"), FollowState::ViaDir, GOOD),
+            card("excl", Some("d/excl.yaml"), FollowState::Off, GOOD),
+        ];
+        let listing = strs(&[
+            "d/new2.yaml",
+            "d/off.yaml",
+            "d/direct.yaml",
+            "d/via.yaml",
+            "d/excl.yaml",
+            "d/gone-excl.yaml",
+            "d/new1.yaml",
+            "d/new1.yaml",
+        ]);
+        let plan = plan_dir_listing(&cards, &listing, &strs(&["d/excl.yaml", "d/gone-excl.yaml"]));
+        assert_eq!(plan.create, vec!["d/new1.yaml", "d/new2.yaml"]);
+        assert_eq!(plan.adopt, vec![("off".to_string(), "d/off.yaml".to_string())]);
+    }
+
+    #[test]
+    fn adopting_follows_via_dir_with_the_server_text() {
+        let mut c = card("1", Some("d/a.yaml"), FollowState::Off, GOOD);
+        assert!(needs_discard_confirm(&c, GOOD2));
+        assert_eq!(begin_follow(&mut c, GOOD2, FollowState::ViaDir), Applied::Updated);
+        assert_eq!(c.follow, FollowState::ViaDir);
+        assert_eq!(c.content, GOOD2);
+
+        let sims = strs(&["A", "B"]);
+        let n = followed_card("n".into(), "d/n.yaml", GOOD, &sims, FollowState::ViaDir);
+        assert_eq!(n.follow, FollowState::ViaDir);
+        assert_eq!(n.filename, "d/n.yaml");
+        assert_eq!(n.server_path.as_deref(), Some("d/n.yaml"));
+        assert!(n.is_active_in("A") && n.is_active_in("B"));
+        assert!(n.err.is_empty());
+
+        let bad = followed_card("b".into(), "d/b.yaml", BAD, &sims, FollowState::ViaDir);
+        assert!(!bad.err.is_empty() && !in_graph(&bad));
+    }
+
+    #[test]
+    fn events_under_a_followed_dir_create_and_remove_cards() {
+        let dirs = strs(&["d"]);
+        let excl = strs(&["d/excluded.yaml"]);
+        let cards = vec![
+            card("via", Some("d/via.yaml"), FollowState::ViaDir, GOOD),
+            card("direct", Some("d/direct.yaml"), FollowState::Direct, GOOD),
+            card("off", Some("d/off.yaml"), FollowState::Off, GOOD),
+        ];
+        let ev = ChangeEvent {
+            added: strs(&["d/new.yaml", "d/excluded.yaml", "other/x.yaml"]),
+            // A PUT from elsewhere shows up as `changed`: still new here.
+            changed: strs(&["d/put.yaml", "d/via.yaml", "d/off.yaml", "dx/y.yaml"]),
+            removed: strs(&["d/via.yaml", "d/direct.yaml", "d/off.yaml"]),
+        };
+        let plan = plan_event(&cards, &ev, &dirs, &excl);
+        assert_eq!(plan.create, vec!["d/new.yaml", "d/put.yaml"]);
+        assert_eq!(plan.refetch, vec!["d/via.yaml"]);
+        assert_eq!(plan.vanished, vec!["d/via.yaml"]);
+        assert_eq!(plan.missing, vec!["d/direct.yaml"]);
+
+        // Nothing under an unfollowed dir is created.
+        assert!(plan_event(&cards, &ev, &[], &excl).create.is_empty());
+        // The root follows everything.
+        assert_eq!(
+            plan_event(&cards, &ev, &strs(&[""]), &excl).create,
+            vec!["d/new.yaml", "d/put.yaml", "dx/y.yaml", "other/x.yaml"]
+        );
+    }
+
+    #[test]
+    fn vanished_removes_only_via_dir_cards() {
+        let mut cards = vec![
+            card("via", Some("d/a.yaml"), FollowState::ViaDir, GOOD),
+            card("direct", Some("d/b.yaml"), FollowState::Direct, GOOD),
+            card("off", Some("d/a.yaml"), FollowState::Off, GOOD),
+        ];
+        assert!(remove_vanished(&mut cards, "d/a.yaml"));
+        assert!(!remove_vanished(&mut cards, "d/b.yaml"));
+        let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["direct", "off"]);
+    }
+
+    #[test]
+    fn unfollowing_a_dir_releases_its_cards_and_prunes_exclusions() {
+        let mut cards = vec![
+            card("a", Some("a/x.yaml"), FollowState::ViaDir, GOOD),
+            card("ab", Some("a/b/y.yaml"), FollowState::ViaDir, GOOD),
+            card("direct", Some("a/z.yaml"), FollowState::Direct, GOOD),
+        ];
+        let mut excl = strs(&["a/b/e.yaml", "a/e.yaml"]);
+        // `a` goes; `a/b` stays followed.
+        let remaining = strs(&["a/b"]);
+        assert_eq!(release_uncovered(&mut cards, &remaining), 1);
+        prune_exclusions_to_dirs(&mut excl, &remaining);
+        assert_eq!(cards[0].follow, FollowState::Off);
+        assert_eq!(cards[0].content, GOOD);
+        assert_eq!(cards[0].server_path.as_deref(), Some("a/x.yaml"));
+        assert_eq!(cards[1].follow, FollowState::ViaDir);
+        assert_eq!(cards[2].follow, FollowState::Direct);
+        assert_eq!(excl, strs(&["a/b/e.yaml"]));
+
+        // Then `a/b` too.
+        assert_eq!(release_uncovered(&mut cards, &[]), 1);
+        prune_exclusions_to_dirs(&mut excl, &[]);
+        assert!(excl.is_empty());
+        assert_eq!(cards[2].follow, FollowState::Direct);
+    }
+
+    #[test]
+    fn listing_prunes_exclusions_whose_files_are_gone() {
+        let mut excl = strs(&["d/gone.yaml", "d/here.yaml", "other/gone.yaml"]);
+        prune_exclusions_listed(&mut excl, "d", &strs(&["d/here.yaml", "d/x.yaml"]));
+        assert_eq!(excl, strs(&["d/here.yaml", "other/gone.yaml"]));
+    }
+
+    #[test]
+    fn stopping_or_deleting_a_dir_card_excludes_it_and_following_again_lifts_it() {
+        let dirs = strs(&["d"]);
+        let mut excl: Vec<String> = Vec::new();
+        let mut c = card("1", Some("d/a.yaml"), FollowState::ViaDir, GOOD);
+
+        // Toggle off a ViaDir card: excluded, editable.
+        let e = exclusion_on_release(&c, &dirs, &excl).unwrap();
+        add_exclusion(&mut excl, &e);
+        add_exclusion(&mut excl, &e);
+        end_follow(&mut c);
+        assert_eq!(excl, strs(&["d/a.yaml"]));
+        assert_eq!(c.follow, FollowState::Off);
+        // Already excluded: nothing more to record.
+        assert_eq!(exclusion_on_release(&c, &dirs, &excl), None);
+        // An excluded file changing on the server does not bring a card back.
+        let ev = ChangeEvent {
+            changed: strs(&["d/a.yaml"]),
+            ..Default::default()
+        };
+        assert!(plan_event(&[], &ev, &dirs, &excl).create.is_empty());
+        assert_eq!(excluded_without_card(&[], &excl), strs(&["d/a.yaml"]));
+        assert!(excluded_without_card(std::slice::from_ref(&c), &excl).is_empty());
+
+        // Re-include: lift the exclusion, follow via the dir again.
+        assert!(remove_exclusion(&mut excl, "d/a.yaml"));
+        assert!(!remove_exclusion(&mut excl, "d/a.yaml"));
+        assert_eq!(follow_mode_for("d/a.yaml", &dirs), FollowState::ViaDir);
+
+        // Outside any followed dir there is nothing to exclude from.
+        let lone = card("2", Some("z.yaml"), FollowState::Direct, GOOD);
+        assert_eq!(exclusion_on_release(&lone, &dirs, &excl), None);
+        assert_eq!(exclusions_under(&strs(&["d/a.yaml", "da/b.yaml"]), "d"), vec!["d/a.yaml"]);
+    }
+
+    #[test]
+    fn tooltip_names_the_dir() {
+        assert_eq!(
+            card_tooltip("d/a.yaml", Some("d"), CardState::Syncing, None),
+            "following d/a.yaml via d/ · fetching"
+        );
+        assert_eq!(
+            card_tooltip("a.yaml", Some(""), CardState::Syncing, None),
+            "following a.yaml via / · fetching"
+        );
     }
 }

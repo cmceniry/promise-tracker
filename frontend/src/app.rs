@@ -7,6 +7,20 @@ use crate::models::Contract;
 
 const CONTRACTS_STORAGE_KEY: &str = "contracts";
 const SIMULATIONS_STORAGE_KEY: &str = "simulations";
+const FOLLOWED_DIRS_STORAGE_KEY: &str = "followed_dirs";
+const FOLLOW_EXCLUSIONS_STORAGE_KEY: &str = "follow_exclusions";
+
+/// Load a list of server paths from localStorage (empty if absent)
+fn load_paths_from_storage(key: &str) -> Vec<String> {
+    LocalStorage::get(key).unwrap_or_default()
+}
+
+/// Save a list of server paths to localStorage
+fn save_paths_to_storage(key: &str, paths: &[String]) {
+    if let Err(e) = LocalStorage::set(key, paths) {
+        web_sys::console::error_1(&format!("Failed to save {}: {:?}", key, e).into());
+    }
+}
 
 /// Load contracts from localStorage
 fn load_contracts_from_storage() -> Vec<Contract> {
@@ -49,8 +63,25 @@ pub fn App() -> impl IntoView {
 
     // Following server files: fetches followed cards now and keeps the event
     // stream open while anything is followed. Cards reach it through context.
-    let follow = FollowSync::start(contracts, set_contracts);
+    let followed_dirs = RwSignal::new(load_paths_from_storage(FOLLOWED_DIRS_STORAGE_KEY));
+    let follow_exclusions =
+        RwSignal::new(load_paths_from_storage(FOLLOW_EXCLUSIONS_STORAGE_KEY));
+    let follow = FollowSync::start(
+        contracts,
+        set_contracts,
+        simulations,
+        followed_dirs,
+        follow_exclusions,
+    );
     provide_context(follow);
+
+    // Persist followed directories and exclusions whenever they change
+    Effect::new(move |_| {
+        save_paths_to_storage(FOLLOWED_DIRS_STORAGE_KEY, &followed_dirs.get());
+    });
+    Effect::new(move |_| {
+        save_paths_to_storage(FOLLOW_EXCLUSIONS_STORAGE_KEY, &follow_exclusions.get());
+    });
 
     // Persist simulations to localStorage whenever they change
     Effect::new(move |_| {
