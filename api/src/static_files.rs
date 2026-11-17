@@ -36,7 +36,7 @@ impl StaticAssets {
         }
 
         // For SPA routing: if no file found and not an API route, return index.html
-        if !path.starts_with("/contracts") {
+        if !is_api_path(path) {
             if let Some(content) = Self::get("index.html") {
                 return Some((content.data, "text/html; charset=utf-8".to_string()));
             }
@@ -46,8 +46,26 @@ impl StaticAssets {
     }
 }
 
+/// The `/events` stream is served by the API itself; it never falls back to
+/// `index.html` or goes through the dev proxy (which buffers responses).
+fn is_events_path(path: &str) -> bool {
+    path == "/events" || path.starts_with("/events/")
+}
+
+/// Paths owned by the API, which never fall back to `index.html`.
+fn is_api_path(path: &str) -> bool {
+    path.starts_with("/contracts") || is_events_path(path)
+}
+
 /// Handler for serving static files or proxying to Trunk dev server
 pub async fn serve_static_or_proxy(uri: Uri, dev_mode: bool, dev_server_url: &str) -> Response {
+    if dev_mode && is_events_path(uri.path()) {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("Not Found"))
+            .unwrap();
+    }
+
     if dev_mode {
         // Proxy to Trunk dev server
         proxy_to_dev_server(&uri, dev_server_url).await

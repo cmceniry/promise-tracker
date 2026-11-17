@@ -6,6 +6,7 @@ mod server;
 mod static_files;
 mod storage;
 mod validation;
+mod watch;
 
 use server::{create_router, AppState};
 use storage::Storage;
@@ -96,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Serving {} valid contract(s)", valid_count);
 
     // Create app state
-    let app_state = AppState::new(storage, cli.dev, cli.dev_server_url.clone());
+    let app_state = AppState::new(storage, cli.dev, cli.dev_server_url.clone())?;
 
     // Create router
     let app = create_router(app_state);

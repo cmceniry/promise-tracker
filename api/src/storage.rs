@@ -34,11 +34,55 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with('.'))
 }
 
+/// True when any `/`-separated segment of a relative path is hidden, so the
+/// scanner would never have reached it.
+pub fn has_hidden_segment(relative: &str) -> bool {
+    relative.split('/').any(|segment| segment.starts_with('.'))
+}
+
+/// True when the file name carries a contract extension (`.yaml`/`.yml`).
+pub fn is_contract_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "yaml" || ext == "yml")
+}
+
+/// Reject a client-supplied contract path that could escape the base
+/// directory or name something the scanner deliberately ignores.
+pub fn validate_contract_path(contract_id: &str) -> Result<()> {
+    let contract_path = PathBuf::from(contract_id);
+    for component in contract_path.components() {
+        if matches!(component, std::path::Component::ParentDir)
+            || matches!(component, std::path::Component::CurDir)
+        {
+            anyhow::bail!("Path traversal not allowed: '..' is not permitted in contract paths");
+        }
+
+        // An absolute path would make `base_dir.join` throw the base away.
+        if matches!(
+            component,
+            std::path::Component::RootDir | std::path::Component::Prefix(_)
+        ) {
+            anyhow::bail!("Absolute paths not allowed: '{}'", contract_id);
+        }
+
+        // Writing a dot-file or dot-directory would create something the
+        // scanner and listings deliberately ignore.
+        if let std::path::Component::Normal(name) = component {
+            if name.to_str().is_some_and(|n| n.starts_with('.')) {
+                anyhow::bail!(
+                    "Hidden paths not allowed: '{}' starts with '.'",
+                    name.to_string_lossy()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Where `path` really lives, or `None` when it does not resolve (a broken
 /// symlink) or resolves outside the base directory.
 ///
 /// `base_dir` must already be canonical, which `Storage::new` guarantees.
-fn resolve_within(path: &Path, base_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_within(path: &Path, base_dir: &Path) -> Option<PathBuf> {
     let canonical = path.canonicalize().ok()?;
     canonical.starts_with(base_dir).then_some(canonical)
 }
@@ -96,7 +140,7 @@ impl Storage {
         self.contracts.clear();
         let base_dir = self.base_dir.clone();
         let mut visiting = HashSet::from([base_dir.clone()]);
-        self.scan_directory_recursive(&base_dir, &base_dir, &mut visiting)?;
+        Self::scan_directory_recursive(&base_dir, &base_dir, &mut visiting, &mut self.contracts)?;
         Ok(())
     }
 
@@ -107,10 +151,10 @@ impl Storage {
     /// is skipped; a symlink to a directory elsewhere in the tree is not a loop
     /// and is scanned under its own name, so listings and loads agree on it.
     fn scan_directory_recursive(
-        &mut self,
         current_dir: &Path,
         base_dir: &Path,
         visiting: &mut HashSet<PathBuf>,
+        found: &mut HashMap<String, PathBuf>,
     ) -> Result<()> {
         // Backstop for a chain of symlinked diamonds, which multiplies paths
         // without ever repeating one on the way down.
@@ -148,16 +192,12 @@ impl Storage {
                     warn!("Skipping symlink that loops back on itself: {:?}", path);
                     continue;
                 }
-                self.scan_directory_recursive(&path, base_dir, visiting)?;
+                Self::scan_directory_recursive(&path, base_dir, visiting, found)?;
                 visiting.remove(&canonical);
-            } else if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "yaml" || ext == "yml" {
-                        if let Ok(relative_path) = path.strip_prefix(base_dir) {
-                            let relative_str = relative_path.to_string_lossy().to_string();
-                            self.contracts.insert(relative_str, path);
-                        }
-                    }
+            } else if path.is_file() && is_contract_file(&path) {
+                if let Ok(relative_path) = path.strip_prefix(base_dir) {
+                    let relative_str = relative_path.to_string_lossy().to_string();
+                    found.insert(relative_str, path);
                 }
             }
         }
@@ -249,19 +289,15 @@ impl Storage {
                             .to_string(),
                         entry_type: EntryType::Directory,
                     });
-                } else if metadata.is_file() {
-                    if let Some(ext) = path.extension() {
-                        if ext == "yaml" || ext == "yml" {
-                            entries.push(DirectoryEntry {
-                                name: path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                entry_type: EntryType::Contract,
-                            });
-                        }
-                    }
+                } else if metadata.is_file() && is_contract_file(&path) {
+                    entries.push(DirectoryEntry {
+                        name: path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        entry_type: EntryType::Contract,
+                    });
                 }
             }
         }
@@ -292,27 +328,7 @@ impl Storage {
     /// Creates directories as needed
     pub fn save_contract(&mut self, contract_id: &str, content: &str) -> Result<()> {
         // Validate path before creating directories - reject any use of ..
-        let contract_path = PathBuf::from(contract_id);
-        for component in contract_path.components() {
-            if matches!(component, std::path::Component::ParentDir)
-                || matches!(component, std::path::Component::CurDir)
-            {
-                anyhow::bail!(
-                    "Path traversal not allowed: '..' is not permitted in contract paths"
-                );
-            }
-
-            // Writing a dot-file or dot-directory would create something the
-            // scanner and listings deliberately ignore.
-            if let std::path::Component::Normal(name) = component {
-                if name.to_str().is_some_and(|n| n.starts_with('.')) {
-                    anyhow::bail!(
-                        "Hidden paths not allowed: '{}' starts with '.'",
-                        name.to_string_lossy()
-                    );
-                }
-            }
-        }
+        validate_contract_path(contract_id)?;
 
         let target_path = self.base_dir.join(contract_id);
 
@@ -332,6 +348,151 @@ impl Storage {
         Ok(())
     }
 
+    /// The canonical base directory every contract path is relative to.
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    /// True when `contract_id` is in the path map.
+    pub fn knows_contract(&self, contract_id: &str) -> bool {
+        self.contracts.contains_key(contract_id)
+    }
+
+    /// True when `contract_id` is a file on disk the scanner would accept:
+    /// it resolves inside the base directory (so a symlink out is refused).
+    pub fn contract_exists(&self, contract_id: &str) -> bool {
+        let path = self.base_dir.join(contract_id);
+        path.is_file() && resolve_within(&path, &self.base_dir).is_some()
+    }
+
+    /// Add `contract_id` to the path map. Returns false if already there.
+    pub fn register_contract(&mut self, contract_id: &str) -> bool {
+        if self.contracts.contains_key(contract_id) {
+            return false;
+        }
+        let path = self.base_dir.join(contract_id);
+        self.contracts.insert(contract_id.to_string(), path);
+        true
+    }
+
+    /// Drop `contract_id` from the path map. Returns false if it was not there.
+    pub fn forget_contract(&mut self, contract_id: &str) -> bool {
+        self.contracts.remove(contract_id).is_some()
+    }
+
+    /// True when `contract_id` names a contract the startup scan would have
+    /// registered had it existed then: a valid, non-hidden `.yaml`/`.yml`
+    /// path to a file on disk that resolves inside the base directory and is
+    /// not reached through a symlink loop.
+    pub fn is_scannable_contract(&self, contract_id: &str) -> bool {
+        if contract_id.split('/').any(str::is_empty)
+            || validate_contract_path(contract_id).is_err()
+            || !is_contract_file(Path::new(contract_id))
+            || !self.contract_exists(contract_id)
+        {
+            return false;
+        }
+        let Some((dir, _)) = contract_id.rsplit_once('/') else {
+            return true;
+        };
+        // The scanner never walks through a directory twice on one way down.
+        let chain = canonical_chain(&self.base_dir, Some(dir));
+        let mut seen = HashSet::new();
+        chain.len() == dir.split('/').count() + 1 && chain.into_iter().all(|c| seen.insert(c))
+    }
+
+    /// Add `contract_id` to the path map if the scanner would have found it.
+    /// The map only follows the disk while something watches the file's
+    /// directory, so a file created at any other time is picked up here.
+    /// Returns whether the contract is now in the map.
+    pub fn adopt_contract(&mut self, contract_id: &str) -> bool {
+        if self.knows_contract(contract_id) {
+            return true;
+        }
+        if !self.is_scannable_contract(contract_id) {
+            return false;
+        }
+        self.register_contract(contract_id)
+    }
+
+    /// Drop every contract below directory `dir` (all of them for the base
+    /// directory, `""`), returning their ids.
+    pub fn forget_contracts_under(&mut self, dir: &str) -> Vec<String> {
+        let dir = dir.trim_end_matches('/');
+        let prefix = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", dir)
+        };
+        let gone: Vec<String> = self
+            .contracts
+            .keys()
+            .filter(|id| id.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for id in &gone {
+            self.contracts.remove(id);
+        }
+        gone
+    }
+
+    /// Drop contracts below directory `dir` that are no longer on disk,
+    /// returning their ids.
+    pub fn forget_missing_under(&mut self, dir: &str) -> Vec<String> {
+        let dir = dir.trim_end_matches('/');
+        let prefix = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", dir)
+        };
+        let gone: Vec<String> = self
+            .contracts
+            .keys()
+            .filter(|id| id.starts_with(&prefix) && !self.contract_exists(id))
+            .cloned()
+            .collect();
+        for id in &gone {
+            self.contracts.remove(id);
+        }
+        gone
+    }
+
+    /// Scan directory `dir` (relative) the way startup does and add any
+    /// contracts the path map does not have yet, returning their ids.
+    pub fn scan_new_under(&mut self, dir: &str) -> Vec<String> {
+        let path = self.base_dir.join(dir);
+        let Some(canonical) = resolve_within(&path, &self.base_dir) else {
+            return Vec::new();
+        };
+        if !canonical.is_dir() {
+            return Vec::new();
+        }
+
+        // Seed the loop guard with the way down to `dir`, exactly as the full
+        // scan would have arrived here; a `dir` that closes a loop is skipped.
+        let chain = canonical_chain(&self.base_dir, Some(dir));
+        if chain[..chain.len().saturating_sub(1)].contains(&canonical) {
+            return Vec::new();
+        }
+        let mut visiting: HashSet<PathBuf> = chain.into_iter().collect();
+
+        let mut found = HashMap::new();
+        if let Err(e) =
+            Self::scan_directory_recursive(&path, &self.base_dir, &mut visiting, &mut found)
+        {
+            warn!("Failed to scan {:?} for new contracts: {}", path, e);
+        }
+
+        let mut added = Vec::new();
+        for (id, path) in found {
+            if !self.contracts.contains_key(&id) {
+                self.contracts.insert(id.clone(), path);
+                added.push(id);
+            }
+        }
+        added.sort();
+        added
+    }
 }
 
 #[cfg(test)]
@@ -540,6 +701,72 @@ mod tests {
             .map(|entry| entry.name)
             .collect();
         assert_eq!(names, vec!["ok.yaml".to_string()]);
+    }
+
+    #[test]
+    fn a_contract_created_after_the_scan_is_adopted() {
+        let dir = TempDir::new();
+        dir.write("old.yaml", "kind: Agent\n");
+        let mut storage = Storage::new(&dir.0).expect("storage");
+
+        // Created while nothing watched: listed, but not in the path map.
+        dir.write("sub/new.yaml", "kind: Agent\nname: new\n");
+        assert!(storage.load_contract("sub/new.yaml").is_err());
+        assert!(storage.adopt_contract("sub/new.yaml"));
+        assert_eq!(
+            storage.load_contract("sub/new.yaml").unwrap(),
+            "kind: Agent\nname: new\n"
+        );
+
+        // What the scanner skips is not adopted either.
+        dir.write("notes.txt", "x");
+        dir.write(".hidden.yaml", "kind: Agent\n");
+        dir.write(".dir/x.yaml", "kind: Agent\n");
+        for id in [
+            "notes.txt",
+            ".hidden.yaml",
+            ".dir/x.yaml",
+            "../x.yaml",
+            "sub/../old.yaml",
+            "sub//new.yaml",
+            "missing.yaml",
+            "sub",
+        ] {
+            assert!(!storage.adopt_contract(id), "adopted {}", id);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn adoption_refuses_symlinks_out_and_loops() {
+        let dir = TempDir::new();
+        dir.write("base/sub/x.yaml", "kind: Agent\n");
+        dir.write("outside/secret.yaml", "kind: Agent\n");
+        let mut storage = Storage::new(dir.0.join("base")).expect("storage");
+
+        symlink(dir.0.join("outside/secret.yaml"), dir.0.join("base/escape.yaml"));
+        symlink("..", dir.0.join("base/sub/loop"));
+        dir.write("base/sub/y.yaml", "kind: Agent\n");
+
+        assert!(!storage.adopt_contract("escape.yaml"));
+        assert!(!storage.adopt_contract("sub/loop/sub/y.yaml"));
+        assert!(storage.adopt_contract("sub/y.yaml"));
+    }
+
+    #[test]
+    fn missing_contracts_are_forgotten_by_directory() {
+        let dir = TempDir::new();
+        dir.write("a.yaml", "kind: Agent\n");
+        dir.write("sub/b.yaml", "kind: Agent\n");
+        dir.write("sub/c.yaml", "kind: Agent\n");
+        let mut storage = Storage::new(&dir.0).expect("storage");
+
+        std::fs::remove_file(dir.0.join("sub/b.yaml")).unwrap();
+        std::fs::remove_file(dir.0.join("a.yaml")).unwrap();
+        assert_eq!(storage.forget_missing_under("sub"), vec!["sub/b.yaml".to_string()]);
+        assert_eq!(storage.forget_missing_under(""), vec!["a.yaml".to_string()]);
+        assert_eq!(storage.list_contracts(), vec!["sub/c.yaml".to_string()]);
+        assert_eq!(storage.forget_contracts_under(""), vec!["sub/c.yaml".to_string()]);
     }
 
     #[test]

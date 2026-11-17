@@ -48,7 +48,21 @@ just build-wasm       # Build legacy WASM package
 - `components/` - Domain models: `Agent`, `Behavior`, `SuperAgent`, `Item`
 
 ### API Server (`api/`)
-- REST endpoints: `GET /api/contracts`, `GET /api/contracts/{id}`
+- REST endpoints (served at the root, not under `/api`):
+  - `GET /contracts` - list the base directory (JSON, or HTML for browsers)
+  - `GET /contracts/{path}` - a contract's YAML, or a subdirectory listing
+  - `PUT /contracts/{path}` - validate and save a contract
+  - `GET /events?file=<path>&file=<path>&dir=<path>` - Server-Sent Events for
+    followed contracts (`file`/`dir` repeatable; paths relative to
+    `--base-dir`, `/`-separated, no `..`/`.`/dot-names; `dir=` alone follows
+    the whole base dir). One event per ~200 ms debounced batch, data:
+    `{"added":[...],"changed":[...],"removed":[...]}` (sorted relative paths;
+    `added` only for files under a followed `dir`). No history replay:
+    clients refetch via `GET /contracts/{path}` on (re)connect. Implemented in
+    `api/src/watch.rs` (notify + notify-debouncer-full; watches shared and
+    refcounted across clients).
+- Use following via http://localhost:8080 with `just run-dev`; the API serves
+  `/events` itself (Trunk's :3000 proxy for it is best-effort only).
 - Static file serving for frontend
 - Dev mode proxies to Trunk server (port 3000)
 

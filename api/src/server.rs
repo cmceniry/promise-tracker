@@ -1,33 +1,45 @@
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::{header, HeaderMap, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::get,
     Router,
 };
+use futures_util::StreamExt;
+use std::convert::Infallible;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use crate::static_files::serve_static_or_proxy;
 use crate::storage::{DirectoryEntry, EntryType, Storage};
 use crate::validation::validate_contract;
+use crate::watch::{FollowSet, WatchManager};
 
 /// Application state containing the storage
 #[derive(Clone)]
 pub struct AppState {
     storage: Arc<tokio::sync::RwLock<Storage>>,
+    watcher: WatchManager,
     dev_mode: bool,
     dev_server_url: Arc<String>,
 }
 
 impl AppState {
-    pub fn new(storage: Storage, dev_mode: bool, dev_server_url: String) -> Self {
-        Self {
-            storage: Arc::new(tokio::sync::RwLock::new(storage)),
+    /// Must be called inside a Tokio runtime (the watcher spawns a task).
+    pub fn new(storage: Storage, dev_mode: bool, dev_server_url: String) -> anyhow::Result<Self> {
+        let base_dir = storage.base_dir().to_path_buf();
+        let storage = Arc::new(tokio::sync::RwLock::new(storage));
+        let watcher = WatchManager::new(storage.clone(), base_dir)?;
+        Ok(Self {
+            storage,
+            watcher,
             dev_mode,
             dev_server_url: Arc::new(dev_server_url),
-        }
+        })
     }
 }
 
@@ -271,6 +283,7 @@ pub fn create_router(state: AppState) -> Router {
             "/contracts/*contract_id",
             get(get_contract).put(put_contract),
         )
+        .route("/events", get(follow_events))
         .layer(cors_layer)
         // Fallback to static files for non-API routes
         .fallback(static_file_handler)
@@ -280,6 +293,33 @@ pub fn create_router(state: AppState) -> Router {
 /// Handler for static files
 async fn static_file_handler(State(state): State<AppState>, uri: Uri) -> Response {
     serve_static_or_proxy(uri, state.dev_mode, &state.dev_server_url).await
+}
+
+/// GET /events?file=<path>&dir=<path> - Server-sent events for followed
+/// contracts. Each debounced batch of file changes is one event whose data is
+/// `{"added": [...], "changed": [...], "removed": [...]}`.
+async fn follow_events(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    let follow = match FollowSet::from_query(query.as_deref().unwrap_or("")) {
+        Ok(follow) => follow,
+        Err(msg) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(msg))
+                .unwrap();
+        }
+    };
+
+    // The subscription lives inside the stream, so the watches are released
+    // when the client disconnects and axum drops the response body.
+    let events = state.watcher.subscribe(follow).await.map(|batch| {
+        let data = serde_json::to_string(&batch).unwrap_or_default();
+        Ok::<_, Infallible>(Event::default().data(data))
+    });
+
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// GET /contracts - List contents of root directory (contracts and subdirectories)
@@ -334,6 +374,16 @@ async fn get_contract(
     let contract_id = urlencoding::decode(&contract_id)
         .map(|decoded| decoded.to_string())
         .unwrap_or(contract_id);
+
+    // The path map follows the disk only while a watch covers the file, so a
+    // contract created at any other time is listed but not yet in the map.
+    let adoptable = {
+        let storage = state.storage.read().await;
+        !storage.knows_contract(&contract_id) && storage.is_scannable_contract(&contract_id)
+    };
+    if adoptable {
+        state.storage.write().await.adopt_contract(&contract_id);
+    }
 
     let storage = state.storage.read().await;
     let wants_html = prefers_html(&headers);

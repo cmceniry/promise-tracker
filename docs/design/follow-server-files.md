@@ -46,6 +46,12 @@ This is a base API server capability, not a server mode. There is no flag.
   dropped when the last subscriber disconnects.
 - The storage path map is updated for anything the watcher observes
   (adds/removes), so newly created files in followed dirs don't 404.
+  - Files created while nothing watched them are still served: `GET` adopts
+    any path the startup scan would have accepted, and each new subscription
+    reconciles its followed files and directories with the disk.
+  - Removing a watched directory itself (often a single event for the whole
+    tree) reports `removed` for every known contract under it, so a
+    followed directory or a followed file's parent going away is not silent.
 - `PUT /contracts/*path` is unchanged.
 
 ## Frontend

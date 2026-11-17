@@ -17,3 +17,8 @@ backend = "http://127.0.0.1:8080/api/"
 [[proxy]]
 rewrite = "/contracts/"
 backend = "http://127.0.0.1:8080/contracts/"
+
+# Best-effort only: following is supported via the API on :8080 (`just run-dev`).
+[[proxy]]
+rewrite = "/events"
+backend = "http://127.0.0.1:8080/events"
