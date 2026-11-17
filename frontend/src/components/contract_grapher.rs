@@ -17,6 +17,7 @@ use super::contract_graph::ContractGraph;
 use super::contract_text::ContractText;
 use super::cycle_banner::CycleBanner;
 use super::display_options::{DisplayOptions, ViewOptions};
+use super::inventory_view::{InventoryState, InventoryView};
 use super::promise_graph_view::PromiseGraphView;
 use super::simulation_controls::SimulationControls;
 use super::trace_view::TraceView;
@@ -309,6 +310,32 @@ pub fn ContractGrapher(
         set_d_behavior.set(behavior);
     });
 
+    // The Inventory's inner tab and selection, shared by every panel.
+    let inventory = InventoryState::new();
+
+    // The agent selection follows the SuperAgents fold: on, a member moves
+    // to the SuperAgent folding it; off, it moves back. The main tracker is
+    // read before the rebuild lands, which is fine: what folds what does not
+    // depend on how the tracker was built.
+    Effect::new(move |previous: Option<bool>| {
+        let folded = fold_collectives.get();
+        if previous.is_some_and(|p| p != folded) {
+            main_tracker.with_untracked(|t| {
+                if let Some(t) = t {
+                    inventory.follow_fold(t, folded);
+                }
+            });
+        }
+        folded
+    });
+
+    // An Unsatisfied row's trace link opens the Trace tab on that want.
+    let on_inventory_trace = Callback::new(move |(component, behavior): (String, String)| {
+        set_d_component.set(component);
+        set_d_behavior.set(behavior);
+        set_active_view.set("trace".to_string());
+    });
+
     view! {
         <div class="contract-grapher">
             <h1 class="header">"Contract"</h1>
@@ -364,6 +391,19 @@ pub fn ContractGrapher(
                         }
                     >
                         "Trace"
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a
+                        class="nav-link"
+                        class:active=move || active_view.get() == "inventory"
+                        href="#"
+                        on:click=move |ev| {
+                            ev.prevent_default();
+                            set_active_view.set("inventory".to_string());
+                        }
+                    >
+                        "Inventory"
                     </a>
                 </li>
             </ul>
@@ -584,6 +624,45 @@ pub fn ContractGrapher(
                                                 on_select=on_trace_select
                                                 options=view_options_signal
                                                 sim_label=sim_for_trace
+                                            />
+                                        </div>
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                            }}
+                        </div>
+                    </div>
+                </Show>
+
+                // Inventory Tab
+                <Show when=move || active_view.get() == "inventory">
+                    <div style="margin-top: 1rem;">
+                        <div style="margin-bottom: 1rem;">
+                            <h3 style="margin: 0;">"Inventory"</h3>
+                            <p style="color: #666; font-size: 0.9em; margin-top: 0.25rem; margin-bottom: 0;">
+                                "What each agent provides, who provides and uses each behavior, which wants nobody keeps, and which promises nobody uses. Click a name for a summary."
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                            {move || {
+                                visible_simulations()
+                                    .iter()
+                                    .map(|sim| {
+                                    let tracker_signal = get_sim_tracker(sim);
+                                    let sim_display = sim.clone();
+                                    view! {
+                                        <div
+                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
+                                        >
+                                            <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
+                                                "Simulation " {sim_display}
+                                            </div>
+                                            <CycleBanner tracker=tracker_signal />
+                                            <InventoryView
+                                                tracker=tracker_signal
+                                                state=inventory
+                                                options=view_options_signal
+                                                on_trace=on_inventory_trace
                                             />
                                         </div>
                                     }

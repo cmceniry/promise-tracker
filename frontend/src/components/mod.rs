@@ -7,6 +7,7 @@ mod contract_grapher;
 mod contract_text;
 mod cycle_banner;
 mod display_options;
+mod inventory_view;
 mod promise_graph_view;
 mod promise_network_graph;
 mod simulation_controls;
@@ -30,6 +31,8 @@ pub(crate) use contract_text::ContractText;
 pub(crate) use cycle_banner::CycleBanner;
 #[allow(unused_imports)]
 pub(crate) use display_options::DisplayOptions;
+#[allow(unused_imports)]
+pub(crate) use inventory_view::InventoryView;
 #[allow(unused_imports)]
 pub(crate) use promise_graph_view::PromiseGraphView;
 #[allow(unused_imports)]
