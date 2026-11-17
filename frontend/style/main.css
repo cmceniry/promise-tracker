@@ -632,3 +632,24 @@ body {
 .scratch-groups-note {
     color: #666;
 }
+
+/* Followed cards: a brief glow when a server update lands. Two identical
+   animations, alternated by the card, so each update restarts it. The card
+   backgrounds are !important, so the glow is a shadow, not a fill. */
+@keyframes follow-flash-a {
+    from { box-shadow: 0 0 0 4px rgba(13, 202, 240, 0.85); }
+    to { box-shadow: 0 0 0 0 rgba(13, 202, 240, 0); }
+}
+
+@keyframes follow-flash-b {
+    from { box-shadow: 0 0 0 4px rgba(13, 202, 240, 0.85); }
+    to { box-shadow: 0 0 0 0 rgba(13, 202, 240, 0); }
+}
+
+.follow-flash-a {
+    animation: follow-flash-a 1.4s ease-out;
+}
+
+.follow-flash-b {
+    animation: follow-flash-b 1.4s ease-out;
+}

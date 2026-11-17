@@ -33,6 +33,8 @@ web-sys = { version = "0.3", features = [
     "BlobPropertyBag",
     "Url",
     "Event",
+    "EventSource",
+    "MessageEvent",
     "InputEvent",
     "MouseEvent",
     "CustomEvent",

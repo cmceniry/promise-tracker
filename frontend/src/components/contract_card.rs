@@ -5,6 +5,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Blob, BlobPropertyBag, DragEvent, MouseEvent, Url};
 
+use crate::follow::CardState;
+
 /// Diff status for a contract comparing local vs server
 #[derive(Clone, Debug, Default)]
 pub struct DiffStatus {
@@ -12,6 +14,27 @@ pub struct DiffStatus {
     pub is_loading: bool,
     #[allow(dead_code)] // Will be used in Phase 6 for diff error display
     pub error: Option<String>,
+}
+
+/// How a followed card reads: its status word, tooltip, flash counter, and
+/// the error of a pending invalid server copy. None on an unfollowed card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowView {
+    pub state: CardState,
+    pub tooltip: String,
+    /// Bumped each time an update lands; the card flashes on a change.
+    pub flash: u32,
+    /// Set while the server copy is invalid and the card shows the last good.
+    pub pending_err: Option<String>,
+}
+
+/// The Bootstrap Icons `bi-broadcast` glyph, for the follow button.
+fn broadcast_icon() -> impl IntoView {
+    view! {
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0"/>
+        </svg>
+    }
 }
 
 /// Extract agents, superagents and instances from contract YAML content
@@ -32,34 +55,35 @@ pub fn extract_agents_and_superagents(
         return (agents, superagents, instances);
     }
 
-    // Parse multi-document YAML
+    // Parse multi-document YAML. Stop at the first error: after a syntax
+    // error serde_yaml's document iterator yields that same error forever.
     for document in serde_yaml::Deserializer::from_str(contract_text) {
         let value: Result<serde_yaml::Value, _> = Deserialize::deserialize(document);
-        if let Ok(doc) = value {
-            if let serde_yaml::Value::Mapping(map) = doc {
-                let kind = map
-                    .get(&serde_yaml::Value::String("kind".to_string()))
-                    .and_then(|v| v.as_str());
-                let name = map
-                    .get(&serde_yaml::Value::String("name".to_string()))
-                    .and_then(|v| v.as_str());
+        let Ok(doc) = value else { break };
+        let serde_yaml::Value::Mapping(map) = doc else {
+            continue;
+        };
+        let kind = map
+            .get(&serde_yaml::Value::String("kind".to_string()))
+            .and_then(|v| v.as_str());
+        let name = map
+            .get(&serde_yaml::Value::String("name".to_string()))
+            .and_then(|v| v.as_str());
 
-                if let Some(name) = name {
-                    match kind {
-                        Some("SuperAgent") | Some("Collective") => {
-                            superagents.push(name.to_string());
-                        }
-                        Some("Instance") => {
-                            instances.push(name.to_string());
-                        }
-                        Some("Agent") | Some("Component") | None => {
-                            agents.push(name.to_string());
-                        }
-                        _ => {
-                            // Unknown kind, treat as agent
-                            agents.push(name.to_string());
-                        }
-                    }
+        if let Some(name) = name {
+            match kind {
+                Some("SuperAgent") | Some("Collective") => {
+                    superagents.push(name.to_string());
+                }
+                Some("Instance") => {
+                    instances.push(name.to_string());
+                }
+                Some("Agent") | Some("Component") | None => {
+                    agents.push(name.to_string());
+                }
+                _ => {
+                    // Unknown kind, treat as agent
+                    agents.push(name.to_string());
                 }
             }
         }
@@ -101,7 +125,15 @@ pub fn ContractCard(
     #[prop(into)] simulations: Signal<Vec<String>>,
     card_class_name: String,
     #[prop(into)] diff_status: Signal<DiffStatus>,
+    /// Where the card came from on the server; the follow button needs one
+    #[prop(into)]
+    contract_server_path: Signal<Option<String>>,
+    /// Follow status, None when the card is not following
+    #[prop(into)]
+    follow_view: Signal<Option<FollowView>>,
+    #[prop(into)] on_toggle_follow: Callback<String>,
 ) -> impl IntoView {
+    let is_following = move || follow_view.with(|f| f.is_some());
     // Extract agents and superagents reactively
     let agents_and_superagents =
         Memo::new(move |_| extract_agents_and_superagents(&contract_content.get()));
@@ -126,6 +158,7 @@ pub fn ContractCard(
     let id_for_delete = contract_id.clone();
     let id_for_edit = contract_id.clone();
     let id_for_push = contract_id.clone();
+    let id_for_follow = contract_id.clone();
     let id_for_dragstart = contract_id.clone();
 
     // Handle card click for editing
@@ -166,10 +199,22 @@ pub fn ContractCard(
 
     view! {
         <div
-            class=format!("card mb-2 {}", card_class_name)
+            class=move || {
+                // Alternating between two identical animations restarts the
+                // flash on every update that lands.
+                let flash = match follow_view.with(|f| f.as_ref().map(|f| f.flash)) {
+                    Some(n) if n > 0 => if n % 2 == 0 { " follow-flash-a" } else { " follow-flash-b" },
+                    _ => "",
+                };
+                format!("card mb-2 {}{}", card_class_name, flash)
+            }
             style=move || format!(
                 "cursor: pointer; position: relative; {}{}",
-                if diff_status.get().is_different { "border: 3px solid #ffc107; background-color: rgba(255, 193, 7, 0.1);" } else { "" },
+                if is_following() {
+                    "border-left: 4px solid #0dcaf0;"
+                } else if diff_status.get().is_different {
+                    "border: 3px solid #ffc107; background-color: rgba(255, 193, 7, 0.1);"
+                } else { "" },
                 if is_dragging.get() { "opacity: 0.5;" } else { "" }
             )
             draggable="true"
@@ -202,10 +247,22 @@ pub fn ContractCard(
                         }}
                     </strong>
 
-                    // Loading spinner for diff check
+                    // Following status, or the loading spinner / diff badge
                     {move || {
                         let ds = diff_status.get();
-                        if ds.is_loading {
+                        if let Some(fv) = follow_view.get() {
+                            let class = match fv.state {
+                                CardState::Live => "badge bg-info text-dark",
+                                CardState::Syncing | CardState::Stale => "badge bg-secondary",
+                                CardState::Error => "badge bg-danger",
+                                CardState::Missing => "badge bg-warning text-dark",
+                            };
+                            view! {
+                                <span class=class title=fv.tooltip>
+                                    "following · " {fv.state.label()}
+                                </span>
+                            }.into_any()
+                        } else if ds.is_loading {
                             view! {
                                 <div class="spinner-border spinner-border-sm text-secondary" role="status">
                                     <span class="visually-hidden">"Loading..."</span>
@@ -228,7 +285,12 @@ pub fn ContractCard(
                     // Validation status badge
                     {move || {
                         let error = contract_error.get();
-                        if !error.is_empty() {
+                        let pending = follow_view.with(|f| f.as_ref().and_then(|f| f.pending_err.clone()));
+                        if let Some(pending) = pending {
+                            view! {
+                                <span class="badge bg-danger" title=pending>"Error"</span>
+                            }.into_any()
+                        } else if !error.is_empty() {
                             view! {
                                 <span class="badge bg-danger" title=error>"Error"</span>
                             }.into_any()
@@ -333,7 +395,7 @@ pub fn ContractCard(
                             let id_for_push_inner = id_for_push.clone();
                             move || {
                                 let id_push = id_for_push_inner.clone();
-                                if diff_status.get().is_different {
+                                if diff_status.get().is_different && !is_following() {
                                     view! {
                                         <button
                                             type="button"
@@ -354,6 +416,36 @@ pub fn ContractCard(
                                 } else {
                                     view! { <span></span> }.into_any()
                                 }
+                            }
+                        }
+
+                        // Follow toggle (only for cards that came from the server)
+                        {
+                            let id_for_follow_inner = id_for_follow.clone();
+                            move || {
+                                let id_follow = id_for_follow_inner.clone();
+                                contract_server_path.get().map(|path| {
+                                    let fv = follow_view.get();
+                                    let (class, title) = match &fv {
+                                        Some(fv) => ("btn btn-sm btn-info", fv.tooltip.clone()),
+                                        None => ("btn btn-sm btn-outline-info", format!("Follow {} on the server", path)),
+                                    };
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class=class
+                                            on:click=move |ev: MouseEvent| {
+                                                ev.stop_propagation();
+                                                on_toggle_follow.run(id_follow.clone());
+                                            }
+                                            aria-label=if fv.is_some() { "Stop following" } else { "Follow server file" }
+                                            aria-pressed=if fv.is_some() { "true" } else { "false" }
+                                            title=title
+                                        >
+                                            {broadcast_icon()}
+                                        </button>
+                                    }
+                                })
                             }
                         }
 
@@ -407,7 +499,15 @@ pub fn ContractCard(
                 // Error message
                 {move || {
                     let error = contract_error.get();
-                    if !error.is_empty() {
+                    let pending = follow_view.with(|f| f.as_ref().and_then(|f| f.pending_err.clone()));
+                    if let Some(pending) = pending {
+                        view! {
+                            <div class="alert alert-danger py-1 px-2 mb-0" style="margin-left: 32px; font-size: 0.85em;">
+                                <div><strong>"Server copy is invalid; showing the last good version."</strong></div>
+                                {pending}
+                            </div>
+                        }.into_any()
+                    } else if !error.is_empty() {
                         view! {
                             <div class="alert alert-danger py-1 px-2 mb-0" style="margin-left: 32px; font-size: 0.85em;">
                                 {error}
@@ -419,5 +519,22 @@ pub fn ContractCard(
                 }}
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_stops_at_a_syntax_error() {
+        assert_eq!(
+            extract_agents_and_superagents("kind: Agent\nname: [x\n"),
+            (vec![], vec![], vec![])
+        );
+        assert_eq!(
+            extract_agents_and_superagents("kind: Agent\nname: a\n---\nkind: Agent\nname: [x\n"),
+            (vec!["a".to_string()], vec![], vec![])
+        );
     }
 }

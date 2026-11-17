@@ -290,17 +290,37 @@ pub fn TraceView(
         Some(if o.bundle { t.bundled() } else { t })
     });
 
-    // Card selection is by id, which changes with the trail, so it resets with it.
+    // Card selection is by id, which changes with the trail. When the trail
+    // changes (a followed contract moved, an option flipped) the chosen card
+    // is found again by what it stands for; it is let go only if it is gone.
     let (selected_card, set_selected_card) = signal::<Option<usize>>(None);
     let (lit_card, set_lit_card) = signal::<Option<usize>>(None);
     // Choosing the chosen card again lets it go, which also closes a bundle.
     let toggle = move |id: usize| {
         set_selected_card.update(|s| *s = if *s == Some(id) { None } else { Some(id) })
     };
-    Effect::new(move |_| {
-        let _ = current_trail.get();
-        set_selected_card.set(None);
+    Effect::new(move |previous: Option<Option<Trail>>| {
+        let next = current_trail.get();
+        let carried = previous.flatten().and_then(|old| {
+            let next = next.as_ref()?;
+            // Another want is another trail: start it fresh.
+            if old.agent != next.agent || old.behavior != next.behavior {
+                return None;
+            }
+            let chosen = old.cards.get(selected_card.get_untracked()?)?;
+            next.cards
+                .iter()
+                .find(|c| {
+                    c.depth == chosen.depth
+                        && c.kind == chosen.kind
+                        && c.behavior == chosen.behavior
+                        && c.agent == chosen.agent
+                })
+                .map(|c| c.id)
+        });
+        set_selected_card.set(carried);
         set_lit_card.set(None);
+        next
     });
 
     // The chain in front: through the hovered card, else the selected one.

@@ -1,5 +1,7 @@
 mod app;
 mod components;
+mod follow;
+mod follow_sync;
 mod models;
 mod utils;
 

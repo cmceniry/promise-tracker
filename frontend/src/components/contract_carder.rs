@@ -7,8 +7,10 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, FileReader, HtmlElement, HtmlInputElement, KeyboardEvent};
 
-use crate::components::{ContractBrowser, ContractCard, ContractEditModal, DiffStatus};
-use crate::models::Contract;
+use crate::components::{ContractBrowser, ContractCard, ContractEditModal, DiffStatus, FollowView};
+use crate::follow::{card_state, card_tooltip};
+use crate::follow_sync::FollowSync;
+use crate::models::{Contract, FollowState};
 use crate::utils::{
     check_filename_diff, compare_contracts, fetch_server_contract,
     generate_unique_random_filename, push_contract_to_server, validate_contract_content,
@@ -27,6 +29,8 @@ pub fn ContractCarder(
     let (show_browser_modal, set_show_browser_modal) = signal(false);
     let (show_edit_modal, set_show_edit_modal) = signal(false);
     let (editing_contract, set_editing_contract) = signal::<Option<Contract>>(None);
+
+    let follow = expect_context::<FollowSync>();
 
     // Ref for focusing the upload modal
     let upload_modal_ref = NodeRef::<leptos::html::Div>::new();
@@ -242,6 +246,28 @@ pub fn ContractCarder(
         }
     });
 
+    // A followed card can change under an open (read-only) modal: keep the
+    // modal showing the card's current server copy.
+    Effect::new(move |_| {
+        let list = contracts.get();
+        if !show_edit_modal.get_untracked() {
+            return;
+        }
+        let Some(current) = editing_contract.get_untracked() else {
+            return;
+        };
+        if let Some(fresh) = list.iter().find(|c| c.id == current.id) {
+            let was_or_is_followed =
+                current.follow != FollowState::Off || fresh.follow != FollowState::Off;
+            if was_or_is_followed && *fresh != current {
+                set_editing_contract.set(Some(fresh.clone()));
+            }
+        }
+    });
+
+    // Follow toggle on a card
+    let toggle_follow = Callback::new(move |contract_id: String| follow.toggle(contract_id));
+
     // Close edit modal
     let close_edit_modal = Callback::new(move |_: ()| {
         set_show_edit_modal.set(false);
@@ -366,6 +392,35 @@ pub fn ContractCarder(
                                 .and_then(|c| c.server_path.clone())
                         });
 
+                        let contract_id_for_follow = contract.id.clone();
+                        let contract_follow_signal = Memo::new(move |_| {
+                            contracts
+                                .get()
+                                .iter()
+                                .find(|c| c.id == contract_id_for_follow)
+                                .map(|c| c.follow)
+                                .unwrap_or_default()
+                        });
+
+                        let contract_id_for_follow_view = contract.id.clone();
+                        let follow_view_signal = Memo::new(move |_| {
+                            let list = contracts.get();
+                            let c = list.iter().find(|c| c.id == contract_id_for_follow_view)?;
+                            if c.follow == FollowState::Off {
+                                return None;
+                            }
+                            let path = c.server_path.clone()?;
+                            let statuses = follow.statuses.get();
+                            let status = statuses.get(&path);
+                            let state = card_state(c, status, follow.connected.get());
+                            Some(FollowView {
+                                state,
+                                tooltip: card_tooltip(&path, state, status),
+                                flash: status.map(|s| s.flash).unwrap_or(0),
+                                pending_err: c.pending.as_ref().map(|p| p.err.clone()),
+                            })
+                        });
+
                         view! {
                             <DraggableContractCard
                                 contract_id=contract.id.clone()
@@ -375,6 +430,9 @@ pub fn ContractCarder(
                                 contract_error=contract_error_signal
                                 contract_sims=contract_sims_signal
                                 contract_server_path=contract_server_path_signal
+                                contract_follow=contract_follow_signal
+                                follow_view=follow_view_signal
+                                on_toggle_follow=toggle_follow
                                 on_delete=delete_contract
                                 on_toggle_sim=toggle_sim
                                 on_edit=open_edit
@@ -497,6 +555,9 @@ fn DraggableContractCard(
     #[prop(into)] contract_error: Signal<String>,
     #[prop(into)] contract_sims: Signal<HashSet<String>>,
     #[prop(into)] contract_server_path: Signal<Option<String>>,
+    #[prop(into)] contract_follow: Signal<FollowState>,
+    #[prop(into)] follow_view: Signal<Option<FollowView>>,
+    #[prop(into)] on_toggle_follow: Callback<String>,
     #[prop(into)] on_delete: Callback<String>,
     #[prop(into)] on_toggle_sim: Callback<(String, String)>,
     #[prop(into)] on_edit: Callback<String>,
@@ -524,6 +585,13 @@ fn DraggableContractCard(
         let server_path = contract_server_path.get();
         let filename = contract_filename.get();
         let content = contract_content.get();
+
+        // A followed card is the server copy; there is nothing to compare.
+        // Unfollowing re-runs this and the normal differs check returns.
+        if contract_follow.get() != FollowState::Off {
+            set_diff_status.set(DiffStatus::default());
+            return;
+        }
 
         let path_to_check = server_path.as_deref().unwrap_or(&filename);
         if path_to_check.trim().is_empty() {
@@ -635,6 +703,9 @@ fn DraggableContractCard(
                 simulations=simulations
                 card_class_name=card_class
                 diff_status=diff_status
+                contract_server_path=contract_server_path
+                follow_view=follow_view
+                on_toggle_follow=on_toggle_follow
             />
         </div>
     }

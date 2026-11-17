@@ -13,6 +13,28 @@ pub fn generate_id() -> String {
     result
 }
 
+/// Whether a card follows its file on the server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FollowState {
+    /// An ordinary, locally editable card.
+    #[default]
+    Off,
+    /// Following its own `server_path`.
+    Direct,
+    /// Following because a followed server directory contains it.
+    ViaDir,
+}
+
+/// A server copy of a followed contract that failed validation. It is kept
+/// beside the card's `content` (the last good version) rather than in it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingServerCopy {
+    /// The raw server text
+    pub text: String,
+    /// Why it is invalid
+    pub err: String,
+}
+
 /// Represents a contract loaded in the frontend
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Contract {
@@ -30,6 +52,13 @@ pub struct Contract {
     /// The original server path (for tracking renames/diffs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_path: Option<String>,
+    /// Whether this card follows the server copy (read-only while it does)
+    #[serde(default)]
+    pub follow: FollowState,
+    /// The latest server copy, when it is invalid and `content` holds the
+    /// last good version instead
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingServerCopy>,
 }
 
 impl Contract {
@@ -42,6 +71,8 @@ impl Contract {
             err: String::new(),
             sims: HashSet::new(),
             server_path: None,
+            follow: FollowState::Off,
+            pending: None,
         }
     }
 
@@ -54,6 +85,8 @@ impl Contract {
             err: String::new(),
             sims: simulations.iter().cloned().collect(),
             server_path: None,
+            follow: FollowState::Off,
+            pending: None,
         }
     }
 

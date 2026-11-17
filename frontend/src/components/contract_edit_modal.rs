@@ -10,7 +10,7 @@ use web_sys::{
 };
 
 use super::contract_card::DiffStatus;
-use crate::models::Contract;
+use crate::models::{Contract, FollowState};
 use crate::utils::{
     check_filename_diff, compare_contracts, compute_side_by_side_diff, fetch_server_contract,
     generate_unique_random_filename, push_contract_to_server, validate_contract_content,
@@ -54,6 +54,17 @@ pub fn ContractEditModal(
     // Track the original server path for the contract
     let (original_server_path, set_original_server_path) = signal::<Option<String>>(None);
 
+    // A followed card is the server's copy: shown read-only, never saved or
+    // pushed from here.
+    let read_only = Memo::new(move |_| {
+        contract.with(|c| {
+            c.as_ref()
+                .map(|c| c.follow != FollowState::Off)
+                .unwrap_or(false)
+        })
+    });
+    let pending = Memo::new(move |_| contract.with(|c| c.as_ref().and_then(|c| c.pending.clone())));
+
     // Debounce timeout reference
     let debounce_timeout: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
 
@@ -88,6 +99,15 @@ pub fn ContractEditModal(
                     // Focus the modal for keyboard events
                     if let Some(el) = modal_ref.get() {
                         let _ = el.unchecked_ref::<HtmlElement>().focus();
+                    }
+
+                    // Following: the content is the server copy (or its last
+                    // good version); show its error, skip the diff fetch.
+                    if c.follow != FollowState::Off {
+                        if !c.err.is_empty() {
+                            set_validation_error.set(Some(c.err.clone()));
+                        }
+                        return;
                     }
 
                     // Fetch server version for diff
@@ -272,6 +292,8 @@ pub fn ContractEditModal(
             err: String::new(),
             sims: HashSet::new(),
             server_path: original_server_path.get(),
+            follow: FollowState::Off,
+            pending: None,
         };
 
         on_save.run(edited);
@@ -314,6 +336,8 @@ pub fn ContractEditModal(
             err: String::new(),
             sims: HashSet::new(),
             server_path: server_path.clone(),
+            follow: FollowState::Off,
+            pending: None,
         };
         on_save.run(edited);
 
@@ -344,6 +368,8 @@ pub fn ContractEditModal(
                         err: String::new(),
                         sims: HashSet::new(), // Will be updated by parent
                         server_path: Some(new_server_path),
+                        follow: FollowState::Off,
+                        pending: None,
                     };
                     on_push.run(pushed);
 
@@ -402,10 +428,14 @@ pub fn ContractEditModal(
                 ev.prevent_default();
                 on_hide.run(());
             }
-            // Shift+Enter to save from anywhere
+            // Shift+Enter to save from anywhere (just closes when read-only)
             if ev.key() == "Enter" && ev.shift_key() {
                 ev.prevent_default();
-                handle_save(ev.unchecked_into::<MouseEvent>());
+                if read_only.get_untracked() {
+                    on_hide.run(());
+                } else {
+                    handle_save(ev.unchecked_into::<MouseEvent>());
+                }
             }
         }
     };
@@ -435,7 +465,7 @@ pub fn ContractEditModal(
                         }
                     >
                         <h5 class="modal-title" style="display: flex; align-items: center; gap: 0.5rem;">
-                            "Edit Contract"
+                            {move || if read_only.get() { "Following Server Contract" } else { "Edit Contract" }}
                             // Loading spinner or status badges
                             {move || {
                                 if current_diff_status().is_loading {
@@ -496,13 +526,43 @@ pub fn ContractEditModal(
                                 style="font-size: 1.25rem; font-weight: 500; border: 1px solid transparent; padding: 0.25rem 0.5rem;"
                                 placeholder="untitled-contract.yaml"
                                 prop:value=move || edited_filename.get()
+                                readonly=move || read_only.get()
                                 on:input=handle_filename_change
                             />
                             {move || filename_error.get().map(|e| view! { <div class="invalid-feedback" style="display: block;">{e}</div> })}
                         </div>
 
+                        // Following status, in place of the diff
+                        <Show when=move || read_only.get()>
+                            <div class="alert alert-info py-2" style="margin-bottom: 1rem;">
+                                {move || format!(
+                                    "Following {} on the server. This copy is read-only; turn following off on the card to edit it.",
+                                    original_server_path.get().unwrap_or_default()
+                                )}
+                            </div>
+                            {move || pending.get().map(|p| view! {
+                                <div class="alert alert-danger" style="margin-bottom: 1rem;">
+                                    <div style="margin-bottom: 0.5rem;">
+                                        <strong>"The server copy is invalid."</strong>
+                                        " The card and the graph keep the last good version, shown below."
+                                    </div>
+                                    <div style="white-space: pre-wrap; font-family: monospace; font-size: 0.9em; margin-bottom: 0.5rem;">
+                                        {p.err}
+                                    </div>
+                                    <label class="form-label">"Server copy (invalid)"</label>
+                                    <textarea
+                                        class="form-control"
+                                        rows="8"
+                                        style="font-family: monospace;"
+                                        readonly
+                                        prop:value=p.text
+                                    ></textarea>
+                                </div>
+                            })}
+                        </Show>
+
                         // Diff status - always visible, collapsible
-                        <div style="margin-bottom: 1rem;">
+                        <div style="margin-bottom: 1rem;" style:display=move || if read_only.get() { "none" } else { "block" }>
                             <button
                                 type="button"
                                 class=move || {
@@ -655,12 +715,15 @@ pub fn ContractEditModal(
 
                             // Content textarea
                             <div class="mb-3">
-                                <label class="form-label">"Contract YAML"</label>
+                                <label class="form-label">
+                                    {move || if pending.get().is_some() { "Contract YAML (last good)" } else { "Contract YAML" }}
+                                </label>
                                 <textarea
                                     class="form-control"
                                     rows="15"
                                     placeholder="Enter contract YAML"
                                     style="font-family: monospace;"
+                                    readonly=move || read_only.get()
                                     prop:value=move || edited_content.get()
                                     on:input=handle_content_change
                                 ></textarea>
@@ -682,10 +745,11 @@ pub fn ContractEditModal(
                             }
                         }
                     >
-                        // Push button (left side)
+                        // Push button (left side; none while following)
                         <button
                             type="button"
                             class="btn btn-primary"
+                            style:visibility=move || if read_only.get() { "hidden" } else { "visible" }
                             disabled=move || {
                                 is_pushing.get()
                                     || validation_error.get().is_some()
@@ -720,8 +784,17 @@ pub fn ContractEditModal(
                             <button
                                 type="button"
                                 class="btn btn-primary"
-                                disabled=move || validation_error.get().is_some() || filename_error.get().is_some()
-                                on:click=handle_save
+                                disabled=move || {
+                                    !read_only.get()
+                                        && (validation_error.get().is_some() || filename_error.get().is_some())
+                                }
+                                on:click=move |ev| {
+                                    if read_only.get_untracked() {
+                                        on_hide.run(());
+                                    } else {
+                                        handle_save(ev);
+                                    }
+                                }
                             >
                                 "Close"
                             </button>

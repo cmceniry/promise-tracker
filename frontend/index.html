@@ -641,7 +641,64 @@
                     zoom: g.cy.zoom(),
                     pan: { x: g.cy.pan().x, y: g.cy.pan().y },
                     expandedPairs: new Set(g.expandedPairs),
+                    selected: g.cy.nodes(':selected').map(n => n.id()),
                 });
+            }
+
+            // When the topology changed but most of the graph survived (a
+            // followed file was edited, a card toggled in or out), keep the
+            // surviving nodes where the reader left them and put each new one
+            // beside its already-placed neighbours: right of what wants it,
+            // left of what it wants, stacked when several share a spot. Nodes
+            // with no placed neighbour go in a row under the graph. Returns
+            // null when too little survived for that to beat a fresh layout.
+            function incrementalPositions(savedPositions, nodes, edges) {
+                const pos = {};
+                let kept = 0;
+                nodes.forEach(n => {
+                    const p = savedPositions[n.id];
+                    if (p) { pos[n.id] = { x: p.x, y: p.y }; kept++; }
+                });
+                // Open scratch groups are containers, positioned by their members.
+                const fresh = nodes.filter(n => !pos[n.id]);
+                if (kept === 0 || fresh.length > kept) return null;
+                if (fresh.length === 0) return pos;
+
+                const placedXs = Object.values(pos).map(p => p.x);
+                const placedYs = Object.values(pos).map(p => p.y);
+                const minX = Math.min(...placedXs);
+                const maxY = Math.max(...placedYs);
+                const STEP_X = LAYOUT.rankSep, STEP_Y = 50;
+                const taken = new Map();
+
+                let waiting = fresh;
+                let progress = true;
+                while (waiting.length && progress) {
+                    progress = false;
+                    waiting = waiting.filter(n => {
+                        const spots = [];
+                        edges.forEach(e => {
+                            if (e.target === n.id && pos[e.source]) {
+                                spots.push({ x: pos[e.source].x + STEP_X, y: pos[e.source].y });
+                            } else if (e.source === n.id && pos[e.target]) {
+                                spots.push({ x: pos[e.target].x - STEP_X, y: pos[e.target].y });
+                            }
+                        });
+                        if (!spots.length) return true;
+                        const x = spots.reduce((a, s) => a + s.x, 0) / spots.length;
+                        const y = spots.reduce((a, s) => a + s.y, 0) / spots.length;
+                        const key = Math.round(x) + ',' + Math.round(y);
+                        const k = taken.get(key) || 0;
+                        taken.set(key, k + 1);
+                        pos[n.id] = { x: x, y: y + STEP_Y * k };
+                        progress = true;
+                        return false;
+                    });
+                }
+                waiting.forEach((n, i) => {
+                    pos[n.id] = { x: minX + i * STEP_X, y: maxY + 2 * STEP_Y };
+                });
+                return pos;
             }
 
             // Wrap the folded Rust records into cytoscape elements. A line with
@@ -842,10 +899,16 @@
                 }
                 destroy(containerId);
 
-                // Restore the previous viewport when the topology is unchanged.
+                // Restore the previous viewport when the topology is unchanged;
+                // when it changed, keep what survived and place the rest.
                 const saved = savedStates.get(containerId);
                 const restorable = saved && saved.signature === signatureOf(nodes, edges);
-                const expandedPairs = restorable ? new Set(saved.expandedPairs) : new Set();
+                const incremental = !restorable && saved
+                    ? incrementalPositions(saved.positions, nodes, edges)
+                    : null;
+                const expandedPairs = (restorable || incremental)
+                    ? new Set(saved.expandedPairs)
+                    : new Set();
                 const cy = cytoscape({
                     container: container,
                     elements: buildElements(nodes, edges, expandedPairs),
@@ -854,11 +917,17 @@
                     selectionType: 'additive',
                     layout: restorable
                         ? { name: 'preset', positions: n => saved.positions[n.id()], fit: false }
-                        : layoutFor(nodes, edges, expandedPairs),
+                        : incremental
+                            ? { name: 'preset', positions: n => incremental[n.id()], fit: false }
+                            : layoutFor(nodes, edges, expandedPairs),
                 });
-                if (restorable) {
+                if (restorable || incremental) {
                     cy.zoom(saved.zoom);
                     cy.pan(saved.pan);
+                }
+                // The selection (nodes picked for a group) outlives a redraw.
+                if (saved && saved.selected) {
+                    saved.selected.forEach(id => cy.getElementById(id).select());
                 }
 
                 cy.on('tap', 'node', evt => {

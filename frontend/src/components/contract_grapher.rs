@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::follow::{blocks_graph, in_graph};
 use crate::models::Contract;
 
 // Import real components
@@ -22,6 +23,22 @@ use super::trace_view::TraceView;
 
 const GROUPS_STORAGE_KEY: &str = "scratch_groups";
 
+/// The items of a contract that can be drawn: documents that are not an
+/// Item are skipped, and reading stops at the first YAML syntax error —
+/// after one, serde_yaml's document iterator yields that same error forever.
+fn graphable_items(content: &str) -> Vec<Item> {
+    let mut items = Vec::new();
+    for document in serde_yaml::Deserializer::from_str(content) {
+        let Ok(value) = serde_yaml::Value::deserialize(document) else {
+            break;
+        };
+        if let Ok(item) = Item::deserialize(value) {
+            items.push(item);
+        }
+    }
+    items
+}
+
 /// Build a Tracker from contract contents. `fold_collectives` chooses whether
 /// a SuperAgent stands as one agent or as its members.
 fn build_tracker_from_contracts(
@@ -33,8 +50,9 @@ fn build_tracker_from_contracts(
     tracker.set_fold_collectives(fold_collectives);
 
     for contract in contracts {
-        // Skip contracts with errors
-        if !contract.err.is_empty() {
+        // Skip contracts with errors (a followed card in error has no good
+        // version to show; one with a pending bad copy still has `content`)
+        if !in_graph(contract) {
             continue;
         }
 
@@ -45,16 +63,8 @@ fn build_tracker_from_contracts(
             }
         }
 
-        // Skip empty content
-        if contract.content.trim().is_empty() {
-            continue;
-        }
-
-        // Parse and add items from the contract
-        for document in serde_yaml::Deserializer::from_str(&contract.content) {
-            if let Ok(item) = Item::deserialize(document) {
-                tracker.add_item(item);
-            }
+        for item in graphable_items(&contract.content) {
+            tracker.add_item(item);
         }
     }
 
@@ -66,6 +76,10 @@ fn build_tracker_from_contracts(
 pub fn ContractGrapher(
     contracts: ReadSignal<Vec<Contract>>,
     simulations: ReadSignal<Vec<String>>,
+    /// False until followed cards have had their first fetch of the session;
+    /// the graph waits rather than draw their stored copies and then redraw.
+    #[prop(into)]
+    ready: Signal<bool>,
     on_add_simulation: Callback<()>,
     on_remove_simulation: Callback<()>,
 ) -> impl IntoView {
@@ -126,6 +140,9 @@ pub fn ContractGrapher(
         let current_contracts = contracts.get();
         let sims = simulations.get();
         let fold = fold_collectives.get();
+        if !ready.get() {
+            return;
+        }
 
         // Cancel any existing timeout
         if let Some(handle) = debounce_handle_clone.borrow_mut().take() {
@@ -143,8 +160,9 @@ pub fn ContractGrapher(
                 return;
             }
 
-            // Skip if any contract has an error
-            if current_contracts.iter().any(|c| !c.err.is_empty()) {
+            // Skip if any (unfollowed) contract has an error; a followed card
+            // in error is only left out, never holds the graph back
+            if blocks_graph(&current_contracts) {
                 return;
             }
 
@@ -576,5 +594,28 @@ pub fn ContractGrapher(
                 </Show>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graphable_items_stops_at_a_syntax_error() {
+        assert!(graphable_items("kind: Agent\nname: [x\n").is_empty());
+        let items = graphable_items("kind: Agent\nname: a\n---\nkind: Agent\nname: [x\n");
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn graphable_items_skips_documents_that_are_not_items() {
+        let items = graphable_items(
+            "kind: Agent\nname: a\n---\nkind: Bogus\nname: b\n---\nkind: SuperAgent\nname: sa\n",
+        );
+        assert_eq!(
+            items.iter().map(Item::get_name).collect::<Vec<String>>(),
+            vec!["Agent/a", "SuperAgent/sa"]
+        );
     }
 }

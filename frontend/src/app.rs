@@ -2,6 +2,7 @@ use gloo_storage::{LocalStorage, Storage};
 use leptos::prelude::*;
 
 use crate::components::{ContractCarder, ContractGrapher};
+use crate::follow_sync::FollowSync;
 use crate::models::Contract;
 
 const CONTRACTS_STORAGE_KEY: &str = "contracts";
@@ -45,6 +46,11 @@ pub fn App() -> impl IntoView {
 
     // Create contract state signals
     let (contracts, set_contracts) = signal(initial_contracts);
+
+    // Following server files: fetches followed cards now and keeps the event
+    // stream open while anything is followed. Cards reach it through context.
+    let follow = FollowSync::start(contracts, set_contracts);
+    provide_context(follow);
 
     // Persist simulations to localStorage whenever they change
     Effect::new(move |_| {
@@ -130,6 +136,7 @@ pub fn App() -> impl IntoView {
                         <ContractGrapher
                             contracts=contracts
                             simulations=simulations
+                            ready=follow.ready
                             on_add_simulation=Callback::new(add_simulation)
                             on_remove_simulation=Callback::new(remove_simulation)
                         />
