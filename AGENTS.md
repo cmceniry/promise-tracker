@@ -45,6 +45,8 @@ just build-wasm       # Build legacy WASM package
 ### Core Library (`src/`)
 - `lib.rs` - Main `Tracker` struct for managing agents and resolution
 - `resolve.rs` - Resolution logic (who provides what)
+- `query.rs` - Inventory queries as data: an agent's provides, a behavior's
+  providers/consumers, unsatisfied wants with leaf causes, unused promises
 - `components/` - Domain models: `Agent`, `Behavior`, `SuperAgent`, `Item`
 
 ### API Server (`api/`)
@@ -72,7 +74,13 @@ just build-wasm       # Build legacy WASM package
 - Key components: `contract_browser.rs`, `contract_edit_modal.rs`, `contract_grapher.rs`
 
 ### CLI (`cli/`)
-Commands: `agents`, `behaviors`, `check-unsatisfied`, `simulate`, `validate`, `who-provides`, `schema`
+Commands: `agents`, `behavior`, `check-unsatisfied`, `provides` (alias
+`who-provides`), `providers <behavior>`, `unused`, `simulate`, `validate`,
+`schema`. Display flags matching the UI toggles, where meaningful:
+`--unfold` (SuperAgent members as agents), `--fold-self`, `--bundle`;
+`check-unsatisfied --summary` lists unsatisfied wants with leaf causes.
+`provides` / `providers` / `unused` / `check-unsatisfied --summary` are thin
+printers over `src/query.rs`, which the UI's Inventory tab shares.
 
 ## Contract Format
 

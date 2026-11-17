@@ -256,6 +256,38 @@ pub fn process_file(path: &str, tracker: &mut Tracker) -> Result<(), AddError> {
     Ok(())
 }
 
+/// Load the given files and dirs into a tracker, stopping on the first
+/// failure. `unfold` stands collectives' members on their own (see
+/// [`Tracker::set_fold_collectives`]); the default folds them.
+pub fn load_tracker(files: &Vec<String>, unfold: bool) -> Tracker {
+    let mut tracker = Tracker::new();
+    tracker.set_fold_collectives(!unfold);
+    let todo = match ManifestList::new(files) {
+        Ok(todo) => todo,
+        Err(e) => abort(e),
+    };
+    let mut paths: Vec<String> = todo.files.into_iter().collect();
+    paths.sort();
+    let mut items: Vec<Item> = vec![];
+    for path in paths {
+        match check_file(&path) {
+            Ok(found) => items.extend(found),
+            Err(e) => abort(e),
+        }
+    }
+    tracker.add_items(items);
+    tracker
+}
+
+/// Several agents on one line, with a count when there is more than one.
+pub fn agent_list(agents: &[String]) -> String {
+    if agents.len() > 1 {
+        format!("{} (\u{00d7}{})", agents.join(", "), agents.len())
+    } else {
+        agents.join(", ")
+    }
+}
+
 /// Report a load failure and stop, for the commands that cannot continue
 /// without their contracts.
 pub fn abort(e: AddError) -> ! {

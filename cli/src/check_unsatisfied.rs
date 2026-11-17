@@ -1,5 +1,5 @@
 use clap::Parser;
-use promise_tracker::Tracker;
+use promise_tracker::query::{self, Cause, CauseKind, QueryOptions};
 use std::collections::HashSet;
 
 #[derive(Parser)]
@@ -11,19 +11,42 @@ pub struct Parameters {
     /// Show single line outputs per provides/conditions
     #[clap(short, long)]
     compressed: bool,
+
+    /// Show SuperAgent members as agents of their own
+    #[clap(long)]
+    unfold: bool,
+
+    /// One line per unsatisfied want with its leaf causes, instead of every
+    /// want's resolution
+    #[clap(short, long)]
+    summary: bool,
+
+    /// Collapse unsatisfied wants that differ only by agent (implies --summary)
+    #[clap(long)]
+    bundle: bool,
 }
 
 pub fn command(parameters: &Parameters) {
-    let mut tracker = Tracker::new();
-    let todo = match cli::ManifestList::new(&parameters.files) {
-        Ok(todo) => todo,
-        Err(e) => cli::abort(e),
-    };
-    for file in todo.files {
-        match cli::process_file(&file, &mut tracker) {
-            Ok(_) => {}
-            Err(e) => cli::abort(e),
+    let tracker = cli::load_tracker(&parameters.files, parameters.unfold);
+    if parameters.summary || parameters.bundle {
+        let options = QueryOptions {
+            fold_self: false,
+            bundle: parameters.bundle,
+        };
+        for row in query::unsatisfied(&tracker, options) {
+            println!(
+                "{} {} {}: {}",
+                cli::agent_list(&row.agents),
+                if row.agents.len() > 1 {
+                    "want"
+                } else {
+                    "wants"
+                },
+                row.behavior,
+                causes(&row.causes)
+            );
         }
+        return;
     }
     let mut wants = HashSet::new();
     for agent_name in tracker.get_working_agent_names() {
@@ -45,4 +68,46 @@ pub fn command(parameters: &Parameters) {
             }
         }
     }
+}
+
+/// Each cause as `c2 is not provided (condition of c1 by q, r)`: causes that
+/// differ only by the agent making the promise share a line.
+fn causes(causes: &[Cause]) -> String {
+    let mut grouped: Vec<(&str, CauseKind, Option<&str>, Vec<&str>)> = vec![];
+    for cause in causes {
+        let provide = cause.needed_by.as_ref().map(|s| s.provide.as_str());
+        let agent = cause.needed_by.as_ref().map(|s| s.agent.as_str());
+        match grouped
+            .iter_mut()
+            .find(|(b, k, p, _)| *b == cause.behavior && *k == cause.kind && *p == provide)
+        {
+            Some((_, _, _, agents)) => agents.extend(agent),
+            None => grouped.push((
+                &cause.behavior,
+                cause.kind,
+                provide,
+                agent.into_iter().collect(),
+            )),
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(behavior, kind, provide, agents)| {
+            let what = match kind {
+                CauseKind::Unprovided => "is not provided",
+                CauseKind::Cycle => "is only provided through a dependency loop",
+            };
+            match provide {
+                None => format!("{} {}", behavior, what),
+                Some(provide) => format!(
+                    "{} {} (condition of {} by {})",
+                    behavior,
+                    what,
+                    provide,
+                    agents.join(", ")
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }

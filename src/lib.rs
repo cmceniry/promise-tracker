@@ -3,10 +3,12 @@ pub mod diagram;
 pub mod fold;
 pub mod network_diagram;
 pub mod promise_graph;
+pub mod query;
 pub mod trace;
 
 use components::Agent;
 use components::BaseKind;
+use components::Behavior;
 use components::Instance;
 use components::Item;
 use components::SuperAgent;
@@ -573,6 +575,63 @@ impl Tracker {
         let mut visiting: HashSet<String> = HashSet::new();
         self.collect_members(name, &mut visiting, &mut out);
         Some(out)
+    }
+
+    /// The collectives that stand in for `member` when collectives are
+    /// folded: every collective reaching it, through any nesting, that is not
+    /// itself folded into another collective or copied by an instance. Sorted;
+    /// empty when nothing folds it. Answered the same whether or not the
+    /// tracker is folded at the moment, so a view can ask before switching.
+    pub fn folding_collectives(&self, member: &str) -> Vec<String> {
+        let nested: HashSet<String> = self
+            .available_superagents
+            .iter()
+            .flat_map(|sa| sa.get_agent_names())
+            .collect();
+        let copied: HashSet<&str> = self
+            .available_instances
+            .iter()
+            .map(|i| i.get_base().name().as_str())
+            .collect();
+        let mut ret: Vec<String> = self
+            .available_superagents
+            .iter()
+            .map(|sa| sa.get_name())
+            .filter(|name| !nested.contains(*name) && !copied.contains(name.as_str()))
+            .filter(|name| {
+                self.collective_members(name)
+                    .is_some_and(|members| members.iter().any(|m| m == member))
+            })
+            .cloned()
+            .collect();
+        ret.sort();
+        ret.dedup();
+        ret
+    }
+
+    /// Every promise a working agent makes, conditions and all, in
+    /// declaration order without repeats. None when no such working agent.
+    pub fn get_agent_promises(&self, agent_name: &str) -> Option<Vec<Behavior>> {
+        let agents = self.working_agents.get(agent_name)?;
+        let mut ret: Vec<Behavior> = vec![];
+        for agent in agents {
+            for behavior in agent.provides() {
+                if !ret.contains(behavior) {
+                    ret.push(behavior.clone());
+                }
+            }
+        }
+        Some(ret)
+    }
+
+    /// Does any working agent make a promise that could keep the concrete
+    /// `goal`, whether or not its conditions hold?
+    pub fn has_provider(&self, goal: &str) -> bool {
+        self.working_agents.values().any(|variants| {
+            variants
+                .iter()
+                .any(|a| a.provides().iter().any(|b| b.match_goal(goal).is_some()))
+        })
     }
 
     fn collect_members(&self, name: &str, visiting: &mut HashSet<String>, out: &mut Vec<String>) {
@@ -2173,5 +2232,51 @@ bindings:
         t.add_instance(Instance::new("i1", "Agent/a1"));
         t.set_fold_collectives(false);
         assert_eq!(working(&t), vec!["a1", "i1"]);
+    }
+
+    #[test]
+    fn test_folding_collectives_names_the_outermost_collective() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a"));
+        t.add_agent(Agent::build("b"));
+        t.add_agent(Agent::build("loose"));
+        t.add_superagent(SuperAgent::new(String::from("inner")).with_agent("a"));
+        t.add_superagent(
+            SuperAgent::new(String::from("outer"))
+                .with_agent("inner")
+                .with_agent("b"),
+        );
+        t.add_superagent(SuperAgent::new(String::from("other")).with_agent("b"));
+        assert_eq!(t.folding_collectives("a"), vec!["outer"]);
+        assert_eq!(t.folding_collectives("b"), vec!["other", "outer"]);
+        assert!(t.folding_collectives("loose").is_empty());
+        // Unfolded, the answer is the same: it says where folding would go.
+        t.set_fold_collectives(false);
+        assert_eq!(t.folding_collectives("a"), vec!["outer"]);
+    }
+
+    #[test]
+    fn test_folding_collectives_skips_a_collective_only_copied() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a"));
+        t.add_superagent(SuperAgent::new(String::from("sa")).with_agent("a"));
+        t.add_instance(Instance::new("i", "SuperAgent/sa"));
+        assert!(t.folding_collectives("a").is_empty());
+    }
+
+    #[test]
+    fn test_get_agent_promises_and_has_provider() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a").with_provides(vec![
+            Behavior::build("x").with_conditions(vec![String::from("y")]),
+            Behavior::build("db-{{n}}"),
+        ]));
+        let promises = t.get_agent_promises("a").unwrap();
+        assert_eq!(promises.len(), 2);
+        assert_eq!(promises[0].get_conditions(), vec!["y"]);
+        assert_eq!(t.get_agent_promises("nobody"), None);
+        assert!(t.has_provider("x"));
+        assert!(t.has_provider("db-main"));
+        assert!(!t.has_provider("y"));
     }
 }

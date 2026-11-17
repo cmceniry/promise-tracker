@@ -3,10 +3,12 @@ use clap::{Parser, Subcommand};
 mod agents;
 mod behaviors;
 mod check_unsatisfied;
+mod provides;
+mod providers;
 mod schema;
 mod simulate;
+mod unused;
 mod validate;
-mod who_provides;
 
 #[derive(Parser)]
 #[command(arg_required_else_help(true))]
@@ -27,10 +29,15 @@ enum Command {
     Schema {},
     /// Check which behaviors are covered by the given file(s)
     Simulate(simulate::Parameters),
+    /// Show what an agent provides
+    #[command(alias = "who-provides")]
+    Provides(provides::Parameters),
+    /// Show which agents provide a behavior, and which use it
+    Providers(providers::Parameters),
+    /// List provided behaviors nobody wants or needs
+    Unused(unused::Parameters),
     /// Check that the given file(s) are yaml and contain valid Agents et al
     Validate(validate::Parameters),
-    /// Show who provides stuff
-    WhoProvides(who_provides::Parameters),
 }
 
 fn main() {
@@ -55,8 +62,14 @@ fn main() {
         Some(Command::Validate(parameters)) => {
             validate::command(parameters);
         }
-        Some(Command::WhoProvides(parameters)) => {
-            who_provides::command(parameters);
+        Some(Command::Provides(parameters)) => {
+            provides::command(parameters);
+        }
+        Some(Command::Providers(parameters)) => {
+            providers::command(parameters);
+        }
+        Some(Command::Unused(parameters)) => {
+            unused::command(parameters);
         }
         None => {}
     }
