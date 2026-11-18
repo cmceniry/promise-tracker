@@ -51,6 +51,11 @@ pub fn ContractEditModal(
     // Push state
     let (is_pushing, set_is_pushing) = signal(false);
 
+    // Edited since this opening of the modal (sticky until it reopens), and
+    // the warning shown when a click outside is refused for that reason.
+    let (touched, set_touched) = signal(false);
+    let (outside_warning, set_outside_warning) = signal(false);
+
     // Track the original server path for the contract
     let (original_server_path, set_original_server_path) = signal::<Option<String>>(None);
 
@@ -90,6 +95,8 @@ pub fn ContractEditModal(
                     set_show_diff.set(false);
                     set_show_error.set(false);
                     set_is_pushing.set(false);
+                    set_touched.set(false);
+                    set_outside_warning.set(false);
 
                     // Cancel any pending debounce
                     if let Some(timeout) = debounce_timeout.borrow_mut().take() {
@@ -222,6 +229,7 @@ pub fn ContractEditModal(
             let input: HtmlInputElement = target.unchecked_into();
             let value = input.value();
             set_edited_filename.set(value.clone());
+            set_touched.set(true);
 
             // Validate filename
             if let Some(error) = validate_filename(&value) {
@@ -242,6 +250,7 @@ pub fn ContractEditModal(
             let textarea: HtmlTextAreaElement = target.unchecked_into();
             let value = textarea.value();
             set_edited_content.set(value.clone());
+            set_touched.set(true);
 
             // Validate content
             let err = validate_contract_content(&value);
@@ -394,16 +403,6 @@ pub fn ContractEditModal(
         on_hide.run(());
     };
 
-    // Nothing edited since the modal opened: a click outside the dialog may
-    // close it without losing work.
-    let is_unchanged = move || {
-        contract.with_untracked(|c| {
-            c.as_ref().map_or(true, |c| {
-                edited_filename.with(|f| *f == c.filename)
-                    && edited_content.with(|t| *t == c.content)
-            })
-        })
-    };
     // Close only when both press and release land on the backdrop itself, so
     // a text selection dragged out of the dialog doesn't close it.
     let backdrop_press = StoredValue::new(false);
@@ -413,7 +412,15 @@ pub fn ContractEditModal(
     let on_backdrop_click = move |ev: MouseEvent| {
         let pressed = backdrop_press.get_value();
         backdrop_press.set_value(false);
-        if pressed && ev.target() == ev.current_target() && is_unchanged() {
+        if !(pressed && ev.target() == ev.current_target()) {
+            return;
+        }
+        // Nothing edited since the modal opened: closing loses no work.
+        // Otherwise it's unclear whether the click meant Cancel or Close, so
+        // ask for one of those instead.
+        if touched.get_untracked() {
+            set_outside_warning.set(true);
+        } else {
             on_hide.run(());
         }
     };
@@ -756,6 +763,22 @@ pub fn ContractEditModal(
                             </div>
                         </div>
                     </div>
+
+                    <Show when=move || outside_warning.get()>
+                        <div
+                            class="alert alert-warning mb-0 rounded-0 py-2"
+                            role="alert"
+                            style="display: flex; justify-content: space-between; align-items: center;"
+                        >
+                            <span>"Contract changed: click Cancel to discard or Close to keep your edits."</span>
+                            <button
+                                type="button"
+                                class="btn-close"
+                                aria-label="Dismiss"
+                                on:click=move |_| set_outside_warning.set(false)
+                            ></button>
+                        </div>
+                    </Show>
 
                     // Modal footer
                     <div
