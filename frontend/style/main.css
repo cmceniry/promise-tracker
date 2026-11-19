@@ -238,6 +238,7 @@ body {
 
 .trail-wants-head {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 0.5rem;
     padding: 0.5rem 0.6rem;
@@ -849,4 +850,122 @@ body {
 .inv-trace {
     font-size: 0.85em;
     vertical-align: baseline;
+}
+
+/*
+ * App layout: on a wide screen the page is one viewport tall and each column
+ * scrolls on its own, so the grapher can fill its column. 1rem is the body's
+ * padding-top. Stacked (narrow) layout keeps the page scroll.
+ */
+.app-column {
+    overflow-y: auto;
+}
+
+.grapher-pane {
+    margin-top: 1rem;
+}
+
+.grapher-sims {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.grapher-sim {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 0.5rem;
+    background: #fafbfc;
+}
+
+@media (min-width: 768px) {
+    .app-row {
+        height: calc(100vh - 1rem);
+    }
+
+    .app-column {
+        height: 100%;
+    }
+
+    /*
+     * A column-flex chain from the grapher down to the view, so the simulation
+     * panels - and the graph canvas inside them - take whatever height the
+     * header, controls and tabs leave. min-height rather than height: taller
+     * content (a long inventory) still grows and the column scrolls.
+     */
+    .contract-grapher {
+        min-height: 100%;
+        padding-bottom: 0.75rem;
+    }
+
+    .contract-grapher,
+    .grapher-tabs,
+    .grapher-pane,
+    .grapher-sim,
+    .grapher-sim > .view-frame,
+    .grapher-sim > .view-frame > .view-frame-body,
+    .grapher-sim .view-frame-body > .promise-network-container {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .grapher-tabs,
+    .grapher-pane,
+    .grapher-sims,
+    .grapher-sim > .view-frame,
+    .grapher-sim > .view-frame > .view-frame-body,
+    .grapher-sim .view-frame-body > .promise-network-container {
+        flex: 1 1 auto;
+    }
+
+    /*
+     * Trace and Inventory: the side list (Wants, or the Agents / Behaviors
+     * picker) runs the full height of the panel and scrolls inside it.
+     * contain: size keeps a long list from setting that height - the panel
+     * and the content beside it do. Beside content taller than the column it
+     * stops at the viewport and sticks while the column scrolls.
+     */
+    .grapher-sim > .inv-panel {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+    }
+
+    .inv-panel > .trail-layout,
+    .grapher-sim .view-frame-body > .trail-layout {
+        flex: 1 1 auto;
+    }
+
+    .grapher-sim .trail-wants {
+        align-self: stretch;
+        contain: size;
+        min-height: 300px;
+        max-height: calc(100vh - 2rem);
+        position: sticky;
+        top: 0.5rem;
+    }
+
+    /*
+     * The trail itself fills the panel too: its columns take the spare height,
+     * which puts the inspector along the bottom.
+     */
+    .grapher-sim .view-frame-body > .trail-layout > .trail-main {
+        align-self: stretch;
+    }
+
+    .grapher-sim .view-frame-body .trail-columns {
+        flex: 1 1 auto;
+    }
+
+    /* Fills the panel; the glue's ResizeObserver refits the graph */
+    .grapher-sim .promise-graph-canvas {
+        flex: 1 1 0;
+    }
+
+    /* Maximized, the frame is the page and the canvas height above applies */
+    .grapher-sim .view-maximized .promise-graph-canvas {
+        flex: none;
+    }
 }

@@ -155,15 +155,15 @@ pub fn App() -> impl IntoView {
     view! {
         <div class="App">
             <div class="container-fluid">
-                <div class="row">
-                    <div class="col-md-3" style="overflow-y: scroll;">
+                <div class="row app-row">
+                    <div class="col-md-3 app-column">
                         <ContractCarder
                             contracts=contracts
                             set_contracts=set_contracts
                             simulations=simulations
                         />
                     </div>
-                    <div class="col-md-9" style="overflow-y: scroll;">
+                    <div class="col-md-9 app-column">
                         <ContractGrapher
                             contracts=contracts
                             simulations=simulations

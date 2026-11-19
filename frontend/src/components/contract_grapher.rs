@@ -409,17 +409,17 @@ pub fn ContractGrapher(
             </ul>
 
             // Tab Content
-            <div class="tab-content">
+            <div class="tab-content grapher-tabs">
                 // Overview Tab
                 <Show when=move || active_view.get() == "overview">
-                    <div style="margin-top: 1rem;">
+                    <div class="grapher-pane">
                         <div style="margin-bottom: 1rem;">
                             <h3 style="margin: 0;">"Promise Relationships Overview"</h3>
                             <p style="color: #666; font-size: 0.9em; margin-top: 0.25rem; margin-bottom: 0;">
                                 "This view shows all components and their promise relationships."
                             </p>
                         </div>
-                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                        <div class="grapher-sims">
                             {move || {
                                 visible_simulations()
                                     .iter()
@@ -429,9 +429,7 @@ pub fn ContractGrapher(
                                     let sim_display = sim.clone();
                                     let sim_for_graph = sim.clone();
                                     view! {
-                                        <div
-                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
-                                        >
+                                        <div class="grapher-sim">
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
@@ -456,7 +454,7 @@ pub fn ContractGrapher(
 
                 // Detailed View Tab
                 <Show when=move || active_view.get() == "detailed">
-                    <div style="margin-top: 1rem;">
+                    <div class="grapher-pane">
                         <h3>"Detailed Promise Resolution"</h3>
                         <p style="color: #666; font-size: 0.9em; margin-bottom: 1rem;">
                             "Select a component and behavior to see how promises are resolved."
@@ -514,7 +512,7 @@ pub fn ContractGrapher(
                         </div>
 
                         // Simulation panels
-                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                        <div class="grapher-sims">
                             {move || {
                                 visible_simulations()
                                     .iter()
@@ -526,9 +524,7 @@ pub fn ContractGrapher(
                                     // Local tab state for each simulation's text/sequence tabs
                                     let (inner_tab, set_inner_tab) = signal("text".to_string());
                                     view! {
-                                        <div
-                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
-                                        >
+                                        <div class="grapher-sim">
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
@@ -594,14 +590,14 @@ pub fn ContractGrapher(
 
                 // Trace Tab
                 <Show when=move || active_view.get() == "trace">
-                    <div style="margin-top: 1rem;">
+                    <div class="grapher-pane">
                         <div style="margin-bottom: 1rem;">
                             <h3 style="margin: 0;">"Trace a Want"</h3>
                             <p style="color: #666; font-size: 0.9em; margin-top: 0.25rem; margin-bottom: 0;">
                                 "One want, read left to right: who promises it, and what that rests on. Each promise is shown once."
                             </p>
                         </div>
-                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                        <div class="grapher-sims">
                             {move || {
                                 visible_simulations()
                                     .iter()
@@ -610,9 +606,7 @@ pub fn ContractGrapher(
                                     let sim_display = sim.clone();
                                     let sim_for_trace = sim.clone();
                                     view! {
-                                        <div
-                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
-                                        >
+                                        <div class="grapher-sim">
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
@@ -636,14 +630,14 @@ pub fn ContractGrapher(
 
                 // Inventory Tab
                 <Show when=move || active_view.get() == "inventory">
-                    <div style="margin-top: 1rem;">
+                    <div class="grapher-pane">
                         <div style="margin-bottom: 1rem;">
                             <h3 style="margin: 0;">"Inventory"</h3>
                             <p style="color: #666; font-size: 0.9em; margin-top: 0.25rem; margin-bottom: 0;">
                                 "What each agent provides, who provides and uses each behavior, which wants nobody keeps, and which promises nobody uses. Click a name for a summary."
                             </p>
                         </div>
-                        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                        <div class="grapher-sims">
                             {move || {
                                 visible_simulations()
                                     .iter()
@@ -651,9 +645,7 @@ pub fn ContractGrapher(
                                     let tracker_signal = get_sim_tracker(sim);
                                     let sim_display = sim.clone();
                                     view! {
-                                        <div
-                                            style="flex: 1; min-width: 0; border: 1px solid #ccc; border-radius: 4px; padding: 0.5rem; background: #fafbfc;"
-                                        >
+                                        <div class="grapher-sim">
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
