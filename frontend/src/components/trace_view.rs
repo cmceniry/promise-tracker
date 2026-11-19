@@ -409,6 +409,13 @@ pub fn TraceView(
         groups
     });
 
+    // Search text for the want list; it narrows the list, not the selection.
+    let want_query = RwSignal::new(String::new());
+    let shown_wants = Memo::new(move |_| {
+        let query = want_query.get();
+        grouped_wants.with(|groups| filter_wants(groups, &query))
+    });
+
     view! {
         <ViewFrame
             title=frame_title
@@ -433,14 +440,25 @@ pub fn TraceView(
                                 }
                             }}
                         </span>
+                        <input
+                            type="search"
+                            class="form-control form-control-sm"
+                            placeholder="Find a want or agent"
+                            aria-label="Find a want or agent"
+                            prop:value=move || want_query.get()
+                            on:input=move |ev| want_query.set(event_target_value(&ev))
+                        />
                     </div>
                     {move || {
-                        let groups = grouped_wants.get();
+                        let groups = shown_wants.get();
                         if groups.is_empty() {
+                            let text = if grouped_wants.with(|g| g.is_empty()) {
+                                "No wants in this simulation."
+                            } else {
+                                "No match."
+                            };
                             return view! {
-                                <div class="trail-muted" style="padding: 0.5rem;">
-                                    "No wants in this simulation."
-                                </div>
+                                <div class="trail-muted" style="padding: 0.5rem;">{text}</div>
                             }
                                 .into_any();
                         }
@@ -787,6 +805,33 @@ pub fn TraceView(
     }
 }
 
+/// Narrow the grouped want list to a search: an agent whose name matches keeps
+/// all its wants, any other agent keeps the wants whose behavior matches.
+/// Case-insensitive; a blank query keeps everything.
+fn filter_wants(
+    groups: &[(String, Vec<WantSummary>)],
+    query: &str,
+) -> Vec<(String, Vec<WantSummary>)> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return groups.to_vec();
+    }
+    groups
+        .iter()
+        .filter_map(|(agent, items)| {
+            if agent.to_lowercase().contains(&q) {
+                return Some((agent.clone(), items.clone()));
+            }
+            let kept: Vec<WantSummary> = items
+                .iter()
+                .filter(|w| w.behavior.to_lowercase().contains(&q))
+                .cloned()
+                .collect();
+            (!kept.is_empty()).then(|| (agent.clone(), kept))
+        })
+        .collect()
+}
+
 /// Helper function to schedule a callback using requestAnimationFrame
 fn request_animation_frame<F>(f: F) -> Result<i32, JsValue>
 where
@@ -795,4 +840,52 @@ where
     let window = web_sys::window().expect("no global window exists");
     let closure = Closure::once_into_js(f);
     window.request_animation_frame(closure.as_ref().unchecked_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn want(agent: &str, behavior: &str) -> WantSummary {
+        WantSummary {
+            agent: agent.to_string(),
+            behavior: behavior.to_string(),
+            satisfied: true,
+        }
+    }
+
+    fn names(groups: &[(String, Vec<WantSummary>)]) -> Vec<(String, Vec<String>)> {
+        groups
+            .iter()
+            .map(|(a, ws)| (a.clone(), ws.iter().map(|w| w.behavior.clone()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn filter_wants_matches_agents_and_behaviors() {
+        let groups = vec![
+            ("web".to_string(), vec![want("web", "db-conn"), want("web", "cache")]),
+            ("Database".to_string(), vec![want("Database", "disk")]),
+            ("queue".to_string(), vec![want("queue", "disk"), want("queue", "net")]),
+        ];
+        // Blank keeps everything
+        assert_eq!(filter_wants(&groups, "  ").len(), 3);
+        // A behavior match keeps only that want; an agent match keeps the agent whole
+        assert_eq!(
+            names(&filter_wants(&groups, "DB")),
+            vec![("web".to_string(), vec!["db-conn".to_string()])]
+        );
+        assert_eq!(
+            names(&filter_wants(&groups, "data")),
+            vec![("Database".to_string(), vec!["disk".to_string()])]
+        );
+        assert_eq!(
+            names(&filter_wants(&groups, "disk")),
+            vec![
+                ("Database".to_string(), vec!["disk".to_string()]),
+                ("queue".to_string(), vec!["disk".to_string()]),
+            ]
+        );
+        assert!(filter_wants(&groups, "nope").is_empty());
+    }
 }
