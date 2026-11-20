@@ -11,6 +11,7 @@ use components::BaseKind;
 use components::Behavior;
 use components::Instance;
 use components::Item;
+use components::Pattern;
 use components::SuperAgent;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -272,6 +273,7 @@ impl Tracker {
             if templates.contains(a.get_name()) {
                 continue;
             }
+            let a = a.bind_self();
             let e = new_working_agents
                 .entry(a.get_name().clone())
                 .or_insert(vec![a.clone()]);
@@ -319,7 +321,9 @@ impl Tracker {
                     .available_agents
                     .iter()
                     .filter(|a| a.get_name() == &member)
-                    .for_each(|a| stub.merge(a)),
+                    // `{{!self}}` is the member, not the collective it is
+                    // folded into, so the text reads the same unfolded.
+                    .for_each(|a| stub.merge(&a.bind_self())),
             }
         }
         // reduce its behaviors to those that are not internally handled
@@ -381,7 +385,8 @@ impl Tracker {
         for (agent_name, variants) in &self.working_agents {
             for variant in variants {
                 for want in variant.wants() {
-                    if !want.get_name_pattern().is_ground() {
+                    // An open variable is no gap: resolution finds its value.
+                    if want.get_name_pattern().needs_binding() {
                         ret.push((agent_name.clone(), want.get_name().clone()));
                     }
                 }
@@ -624,9 +629,34 @@ impl Tracker {
         Some(ret)
     }
 
+    /// `name` as `agent` declares it — a promise, a condition or a want — with
+    /// every value a substitution filled in wrapped in `<>`: `<A1> reads R1`
+    /// for a want written `{{!self}} reads R1`.
+    ///
+    /// None when the agent wrote the name out in full, or does not declare it.
+    /// For display only; the marked text is not a behavior name.
+    pub fn marked_name(&self, agent: &str, name: &str) -> Option<String> {
+        let variants = self.working_agents.get(agent)?;
+        variants.iter().find_map(|variant| {
+            variant
+                .provides()
+                .iter()
+                .flat_map(|p| {
+                    std::iter::once(p.get_name_pattern()).chain(p.get_condition_patterns())
+                })
+                .chain(variant.wants().iter().map(|w| w.get_name_pattern()))
+                .find(|p| p.source() == name && p.has_bound())
+                .map(|p| p.marked())
+        })
+    }
+
     /// Does any working agent make a promise that could keep the concrete
     /// `goal`, whether or not its conditions hold?
     pub fn has_provider(&self, goal: &str) -> bool {
+        // An open goal has a provider when anything it matches does.
+        if let Some(matches) = self.open_matches(goal) {
+            return !matches.is_empty();
+        }
         self.working_agents.values().any(|variants| {
             variants
                 .iter()
@@ -798,6 +828,18 @@ impl Tracker {
         in_progress.push(goal.to_string());
         let mut complete = true;
 
+        // An open goal depends on everything it matches.
+        if let Some(matches) = self.open_matches(goal) {
+            for name in matches {
+                complete &= self.walk_for_cycles(&name, in_progress, clean, found);
+            }
+            in_progress.pop();
+            if complete {
+                clean.insert(goal.to_string());
+            }
+            return complete;
+        }
+
         let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
         agent_names.sort();
         for agent_name in agent_names {
@@ -849,6 +891,27 @@ impl Tracker {
         let mut r = Resolution::new(goal);
         let mut self_contained = true;
 
+        // An open goal is kept by whatever keeps any behavior it matches. Each
+        // match is resolved as the concrete goal it is, and its offers are
+        // gathered here under that name.
+        if let Some(matches) = self.open_matches(goal) {
+            for name in matches {
+                let (resolved, stands_alone) = self.resolve_goal(&name, in_progress, settled);
+                self_contained &= stands_alone;
+                for offer in resolved.get_satisfying_offers() {
+                    r = r.add_satisfying_offer(offer.clone().answering(&name));
+                }
+                for offer in resolved.get_unsatisfying_offers() {
+                    r = r.add_unsatisfying_offer(offer.clone().answering(&name));
+                }
+            }
+            in_progress.pop();
+            if self_contained {
+                settled.insert(goal.to_string(), r.clone());
+            }
+            return (r, self_contained);
+        }
+
         let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
         agent_names.sort();
         for agent_name in agent_names {
@@ -894,6 +957,41 @@ impl Tracker {
             settled.insert(goal.to_string(), r.clone());
         }
         (r, self_contained)
+    }
+}
+
+impl Tracker {
+    /// The concrete behaviors an open goal could be answered by: every
+    /// concrete name a working agent promises that the goal matches, by agent
+    /// then declaration order, each once. None when the goal is not open.
+    ///
+    /// Only names promised outright are considered. A parameterized promise
+    /// is not matched: that is a pattern on both sides, the general
+    /// unification this design leaves alone. And only what is declared — never
+    /// what another resolution happened to derive — so the answer does not
+    /// depend on what was resolved first.
+    pub fn open_matches(&self, goal: &str) -> Option<Vec<String>> {
+        let pattern = Pattern::parse_lossy(goal);
+        if !pattern.has_open() {
+            return None;
+        }
+        let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
+        agent_names.sort();
+        let mut matches: Vec<String> = vec![];
+        for agent_name in agent_names {
+            for variant in &self.working_agents[agent_name] {
+                for promise in variant.provides() {
+                    let name = promise.get_name_pattern();
+                    if name.is_ground()
+                        && pattern.match_ground(name.source()).is_some()
+                        && !matches.contains(name.source())
+                    {
+                        matches.push(name.source().clone());
+                    }
+                }
+            }
+        }
+        Some(matches)
     }
 }
 
@@ -1918,6 +2016,297 @@ provides:
                     Resolution::new("r")
                         .add_satisfying_offer(Offer::new_conditional("r", vec![shared])),
                 ],
+            ))
+        );
+    }
+
+    /// The motivating chain: A1 and D1 name themselves, and it resolves as
+    /// if they had written their names out.
+    #[test]
+    fn test_self_is_the_agent_that_wrote_it() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("A1").with_wants(vec![Behavior::build("{{!self}} reads R1")]));
+        t.add_agent(Agent::build("S1").with_provides(vec![
+            Behavior::build("{{agent}} reads R1").with_conditions(vec![String::from(
+                "{{!SELF}} configured to allow R1 read access for {{agent}}",
+            )]),
+        ]));
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build(
+            "S1 configured to allow R1 read access for {{agent}}",
+        )
+        .with_conditions(vec![String::from("D1 shows usage of R1 by {{agent}}")])]));
+        t.add_agent(
+            Agent::build("D1")
+                .with_provides(vec![Behavior::build("{{!self}} shows usage of R1 by A1")]),
+        );
+
+        assert!(t.non_ground_wants().is_empty());
+        assert_eq!(
+            t.get_agent_wants(String::from("A1")),
+            HashSet::from([String::from("A1 reads R1")])
+        );
+        assert!(t.resolve("A1 reads R1").is_satisfied());
+        assert_eq!(
+            t.resolve("D1 shows usage of R1 by A1"),
+            Resolution::new("D1 shows usage of R1 by A1").add_satisfying_offer(Offer::new("D1"))
+        );
+
+        // what was written as a variable can be shown as such
+        assert_eq!(
+            t.marked_name("A1", "A1 reads R1"),
+            Some("<A1> reads R1".to_string())
+        );
+        assert_eq!(
+            t.marked_name("D1", "D1 shows usage of R1 by A1"),
+            Some("<D1> shows usage of R1 by A1".to_string())
+        );
+        // O1 wrote S1 out in full, and nobody else declares A1's want
+        assert_eq!(
+            t.marked_name("O1", "S1 configured to allow R1 read access for {{agent}}"),
+            None
+        );
+        assert_eq!(t.marked_name("S1", "A1 reads R1"), None);
+        assert_eq!(t.marked_name("nobody", "A1 reads R1"), None);
+    }
+
+    #[test]
+    fn test_self_is_the_instance_not_its_base() {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("reader")
+                .with_wants(vec![Behavior::build("{{!self}} reads R1")])
+                .with_provides(vec![Behavior::build("{{!self}}/{{env}} is up")]),
+        );
+        t.add_instance(Instance::new("r-prod", "reader").with_binding("env", "prod"));
+        t.add_instance(
+            Instance::new("r-dev", "reader")
+                .with_binding("env", "dev")
+                .with_wants(vec![Behavior::build("{{!self}} has a sandbox")]),
+        );
+
+        assert_eq!(t.get_working_agent_names(), vec!["r-dev", "r-prod"]);
+        assert_eq!(
+            t.get_agent_wants(String::from("r-prod")),
+            HashSet::from([String::from("r-prod reads R1")])
+        );
+        assert_eq!(
+            t.get_agent_wants(String::from("r-dev")),
+            HashSet::from([
+                String::from("r-dev reads R1"),
+                String::from("r-dev has a sandbox")
+            ])
+        );
+        assert!(t.non_ground_wants().is_empty());
+        assert!(t.resolve("r-prod/prod is up").is_satisfied());
+        assert!(!t.resolve("reader/prod is up").is_satisfied());
+        // both kinds of substitution are marked
+        assert_eq!(
+            t.marked_name("r-prod", "r-prod/prod is up"),
+            Some("<r-prod>/<prod> is up".to_string())
+        );
+    }
+
+    #[test]
+    fn test_self_is_the_member_folded_or_not() {
+        let build = |fold: bool| {
+            let mut t = Tracker::new();
+            t.set_fold_collectives(fold);
+            t.add_agent(Agent::build("db").with_wants(vec![Behavior::build("{{!self}} reads R1")]));
+            t.add_agent(Agent::build("web").with_provides(vec![Behavior::build("{{!self}} serves")]));
+            t.add_superagent(
+                SuperAgent::new(String::from("site"))
+                    .with_agent("db")
+                    .with_agent("web"),
+            );
+            t
+        };
+
+        let folded = build(true);
+        assert_eq!(folded.get_working_agent_names(), vec!["site"]);
+        assert_eq!(
+            folded.get_agent_wants(String::from("site")),
+            HashSet::from([String::from("db reads R1")])
+        );
+        assert!(folded.resolve("web serves").is_satisfied());
+        assert_eq!(
+            folded.marked_name("site", "db reads R1"),
+            Some("<db> reads R1".to_string())
+        );
+
+        let unfolded = build(false);
+        assert_eq!(
+            unfolded.get_agent_wants(String::from("db")),
+            HashSet::from([String::from("db reads R1")])
+        );
+        assert!(unfolded.resolve("web serves").is_satisfied());
+    }
+
+    /// The documented wrinkle: a collective's members keep their own names, so
+    /// two instances of it say the same thing unless a binding tells them
+    /// apart.
+    #[test]
+    fn test_self_overlaps_across_instances_of_a_collective() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("db").with_wants(vec![
+            Behavior::build("{{!self}} reads R1"),
+            Behavior::build("{{!self}}/{{env}} reads R2"),
+        ]));
+        t.add_superagent(SuperAgent::new(String::from("site")).with_agent("db"));
+        t.add_instance(Instance::new("prod", "SuperAgent/site").with_binding("env", "prod"));
+        t.add_instance(Instance::new("staging", "SuperAgent/site").with_binding("env", "staging"));
+
+        assert_eq!(
+            t.get_agent_wants(String::from("prod")),
+            HashSet::from([String::from("db reads R1"), String::from("db/prod reads R2")])
+        );
+        assert_eq!(
+            t.get_agent_wants(String::from("staging")),
+            HashSet::from([
+                String::from("db reads R1"),
+                String::from("db/staging reads R2")
+            ])
+        );
+    }
+
+    /// O1 does not care which document shows the usage, only that one does.
+    fn open_chain(docs: &[(&str, bool)]) -> Tracker {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("A1").with_wants(vec![Behavior::build("{{!self}} reads R1")]));
+        t.add_agent(Agent::build("S1").with_provides(vec![
+            Behavior::build("{{agent}} reads R1").with_conditions(vec![String::from(
+                "{{!self}} configured to allow R1 read access for {{agent}}",
+            )]),
+        ]));
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build(
+            "S1 configured to allow R1 read access for {{agent}}",
+        )
+        .with_conditions(vec![String::from("{{?doc}} shows usage of R1 by {{agent}}")])]));
+        for (doc, approved) in docs {
+            let mut provides = vec![Behavior::build("{{!self}} shows usage of R1 by A1")
+                .with_conditions(vec![String::from("{{!self}} is approved")])];
+            if *approved {
+                provides.push(Behavior::build("{{!self}} is approved"));
+            }
+            t.add_agent(Agent::build(doc).with_provides(provides));
+        }
+        t
+    }
+
+    #[test]
+    fn test_open_condition_is_met_by_whoever_provides_a_match() {
+        let t = open_chain(&[("D1", true)]);
+        assert!(t.resolve("A1 reads R1").is_satisfied());
+        assert_eq!(
+            t.resolve("{{?doc}} shows usage of R1 by A1"),
+            Resolution::new("{{?doc}} shows usage of R1 by A1").add_satisfying_offer(
+                Offer::new_conditional(
+                    "D1",
+                    vec![Resolution::new("D1 is approved").add_satisfying_offer(Offer::new("D1"))]
+                )
+                .answering("D1 shows usage of R1 by A1")
+            )
+        );
+        assert!(t.dependency_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_open_goal_gathers_every_match_and_any_one_keeps_it() {
+        let t = open_chain(&[("D1", false), ("D2", true)]);
+        let r = t.resolve("{{?doc}} shows usage of R1 by A1");
+        assert!(r.is_satisfied());
+        assert_eq!(r.get_satisfying_offers().len(), 1);
+        assert_eq!(
+            r.get_satisfying_offers()[0].get_behavior(),
+            Some("D2 shows usage of R1 by A1")
+        );
+        assert_eq!(r.get_unsatisfying_offers().len(), 1);
+        assert_eq!(
+            r.get_unsatisfying_offers()[0].get_behavior(),
+            Some("D1 shows usage of R1 by A1")
+        );
+        assert!(t.resolve("A1 reads R1").is_satisfied());
+
+        // neither approved: every match fails, and so does the chain
+        let t = open_chain(&[("D1", false), ("D2", false)]);
+        assert!(!t.resolve("A1 reads R1").is_satisfied());
+    }
+
+    #[test]
+    fn test_open_goal_with_no_match_is_unsatisfied_under_its_own_text() {
+        let t = open_chain(&[]);
+        assert_eq!(
+            t.resolve("{{?doc}} shows usage of R1 by A1"),
+            Resolution::new("{{?doc}} shows usage of R1 by A1")
+        );
+        assert!(!t.resolve("A1 reads R1").is_satisfied());
+        assert!(!t.has_provider("{{?doc}} shows usage of R1 by A1"));
+    }
+
+    #[test]
+    fn test_open_want_is_legitimate_and_skips_parameterized_providers() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("A1").with_wants(vec![
+            Behavior::build("{{?svc}} grants {{!self}} read on R1"),
+            Behavior::build("{{?who}} backs up R1"),
+        ]));
+        // a pattern on the provider's side: not matched by an open goal
+        t.add_agent(
+            Agent::build("S1")
+                .with_provides(vec![Behavior::build("{{!self}} grants {{agent}} read on R1")]),
+        );
+        t.add_agent(Agent::build("B1").with_provides(vec![Behavior::build("{{!self}} backs up R1")]));
+
+        // an open want is not a gap in the contract
+        assert!(t.non_ground_wants().is_empty());
+        assert!(!t.resolve("{{?svc}} grants A1 read on R1").is_satisfied());
+        assert_eq!(
+            t.resolve("{{?who}} backs up R1"),
+            Resolution::new("{{?who}} backs up R1")
+                .add_satisfying_offer(Offer::new("B1").answering("B1 backs up R1"))
+        );
+        // while a want with a plain variable still is one
+        t.add_agent(Agent::build("W").with_wants(vec![Behavior::build("{{?a}} and {{b}}")]));
+        assert_eq!(
+            t.non_ground_wants(),
+            vec![("W".to_string(), "{{?a}} and {{b}}".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_open_goal_on_a_loop_terminates_and_is_reported() {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("a")
+                .with_provides(vec![Behavior::build("a is ready")
+                    .with_conditions(vec![String::from("{{?x}} is ready")])]),
+        );
+        assert!(!t.resolve("a is ready").is_satisfied());
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["a is ready".to_string(), "{{?x}} is ready".to_string()]]
+        );
+    }
+
+    #[test]
+    fn test_open_condition_passes_through_a_folded_collective() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("op").with_provides(vec![
+            Behavior::build("configured").with_conditions(vec![String::from("{{?doc}} shows usage")]),
+        ]));
+        t.add_agent(Agent::build("d1").with_provides(vec![Behavior::build("{{!self}} shows usage")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("team"))
+                .with_agent("op")
+                .with_agent("d1"),
+        );
+        assert_eq!(t.get_working_agent_names(), vec!["team"]);
+        // the open condition is not reduced away; the collective meets it itself
+        assert_eq!(
+            t.resolve("configured"),
+            Resolution::new("configured").add_satisfying_offer(Offer::new_conditional(
+                "team",
+                vec![Resolution::new("{{?doc}} shows usage")
+                    .add_satisfying_offer(Offer::new("team").answering("d1 shows usage"))]
             ))
         );
     }

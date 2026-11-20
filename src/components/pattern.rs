@@ -19,6 +19,33 @@ use std::hash::{Hash, Hasher};
 /// Variable name to the concrete value it stands for.
 pub type Bindings = BTreeMap<String, String>;
 
+/// The reserved variable an agent names itself by, in both its spellings.
+///
+/// `!` opens the built-in namespace: it is not a legal character in an
+/// ordinary variable, so no name an author picks can collide with one. A
+/// built-in is never bound by matching a goal; [`self_bindings`] supplies it
+/// when the tracker builds its working agents.
+pub const SELF_VARS: [&str; 2] = ["!self", "!SELF"];
+
+/// The bindings that replace `{{!self}}` with `name`.
+pub fn self_bindings(name: &str) -> Bindings {
+    SELF_VARS
+        .iter()
+        .map(|v| (v.to_string(), name.to_string()))
+        .collect()
+}
+
+/// Is this variable open — written `{{?x}}`, and bound by whoever provides a
+/// match rather than by the promise name?
+pub fn is_open(variable: &str) -> bool {
+    variable.starts_with('?')
+}
+
+/// Is this variable name one of the reserved built-ins?
+pub fn is_builtin(variable: &str) -> bool {
+    variable.starts_with('!')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Segment {
     Literal(String),
@@ -35,6 +62,8 @@ pub enum PatternError {
     InvalidVariable(String),
     /// `{{a}}{{b}}`, which has no deterministic reading.
     AdjacentVariables(String, String),
+    /// `{{!x}}` where `x` is not a built-in.
+    UnknownBuiltin(String),
 }
 
 impl fmt::Display for PatternError {
@@ -44,13 +73,18 @@ impl fmt::Display for PatternError {
             PatternError::EmptyVariable => write!(f, "empty variable name in `{{{{}}}}`"),
             PatternError::InvalidVariable(v) => write!(
                 f,
-                "invalid variable name `{}`, expected only letters, digits, `_` or `-`",
+                "invalid variable name `{}`, expected only letters, digits, `_` or `-` (after a leading `?` for an open variable)",
                 v
             ),
             PatternError::AdjacentVariables(a, b) => write!(
                 f,
                 "`{{{{{}}}}}` and `{{{{{}}}}}` are adjacent; separate them with literal text",
                 a, b
+            ),
+            PatternError::UnknownBuiltin(v) => write!(
+                f,
+                "unknown built-in `{{{{{}}}}}`; the only one is `{{{{!self}}}}`",
+                v
             ),
         }
     }
@@ -68,6 +102,9 @@ impl std::error::Error for PatternError {}
 pub struct Pattern {
     source: String,
     segments: Vec<Segment>,
+    /// Byte ranges of `source` that a substitution filled in, in order. For
+    /// display only ([`Pattern::marked`]); never part of the identity.
+    bound: Vec<(usize, usize)>,
 }
 
 fn render(segments: &[Segment]) -> String {
@@ -106,9 +143,16 @@ impl Pattern {
             if name.is_empty() {
                 return Err(PatternError::EmptyVariable);
             }
-            if !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            if is_builtin(name) {
+                if !SELF_VARS.contains(&name) {
+                    return Err(PatternError::UnknownBuiltin(name.to_string()));
+                }
+            } else if name == "?"
+                || !name
+                    .strip_prefix('?')
+                    .unwrap_or(name)
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
             {
                 return Err(PatternError::InvalidVariable(name.to_string()));
             }
@@ -132,6 +176,7 @@ impl Pattern {
         Ok(Pattern {
             source: source.to_string(),
             segments,
+            bound: vec![],
         })
     }
 
@@ -145,6 +190,7 @@ impl Pattern {
         Pattern::parse(source).unwrap_or_else(|_| Pattern {
             source: source.to_string(),
             segments: vec![Segment::Literal(source.to_string())],
+            bound: vec![],
         })
     }
 
@@ -172,6 +218,18 @@ impl Pattern {
             .collect()
     }
 
+    /// Does this name hold an open variable, `{{?x}}`?
+    pub fn has_open(&self) -> bool {
+        self.vars().into_iter().any(is_open)
+    }
+
+    /// Does this name hold a variable that something has to supply before it
+    /// can be resolved? An open variable does not count: resolution itself
+    /// finds its value.
+    pub fn needs_binding(&self) -> bool {
+        self.vars().into_iter().any(|v| !is_open(v))
+    }
+
     /// Match a concrete name, binding this pattern's variables.
     ///
     /// Leftmost-shortest: each variable takes the smallest binding that lets
@@ -195,13 +253,41 @@ impl Pattern {
     /// and is rejected by validation before it reaches here.
     pub fn substitute(&self, bindings: &Bindings) -> Pattern {
         let mut segments: Vec<Segment> = vec![];
+        let mut bound: Vec<(usize, usize)> = vec![];
+        // Where this segment starts in the text as it was, and as it will be.
+        let mut old_at = 0;
+        let mut new_at = 0;
         for segment in &self.segments {
             let next = match segment {
-                Segment::Var(v) => match bindings.get(v) {
-                    Some(value) => Segment::Literal(value.clone()),
-                    None => Segment::Var(v.clone()),
-                },
-                Segment::Literal(l) => Segment::Literal(l.clone()),
+                Segment::Var(v) => {
+                    let written = v.len() + 4;
+                    old_at += written;
+                    match bindings.get(v) {
+                        Some(value) => {
+                            if !value.is_empty() {
+                                bound.push((new_at, new_at + value.len()));
+                            }
+                            new_at += value.len();
+                            Segment::Literal(value.clone())
+                        }
+                        None => {
+                            new_at += written;
+                            Segment::Var(v.clone())
+                        }
+                    }
+                }
+                Segment::Literal(l) => {
+                    // What an earlier substitution filled in sits inside
+                    // literal text, and moves with it.
+                    for (start, end) in &self.bound {
+                        if *start >= old_at && *end <= old_at + l.len() {
+                            bound.push((start - old_at + new_at, end - old_at + new_at));
+                        }
+                    }
+                    old_at += l.len();
+                    new_at += l.len();
+                    Segment::Literal(l.clone())
+                }
             };
             match (segments.last_mut(), &next) {
                 // Substitution can leave two literals side by side; a pattern
@@ -216,7 +302,35 @@ impl Pattern {
         Pattern {
             source: render(&segments),
             segments,
+            bound,
         }
+    }
+
+    /// Replace `{{!self}}` with the name of the agent that wrote it.
+    pub fn bind_self(&self, name: &str) -> Pattern {
+        self.substitute(&self_bindings(name))
+    }
+
+    /// Did a substitution fill in any part of this name?
+    pub fn has_bound(&self) -> bool {
+        !self.bound.is_empty()
+    }
+
+    /// The source with every substituted value wrapped in `<>`, to show what
+    /// was written as a variable. For display only: `<A1> reads R1` and
+    /// `A1 reads R1` are the same name.
+    pub fn marked(&self) -> String {
+        let mut out = String::new();
+        let mut at = 0;
+        for (start, end) in &self.bound {
+            out.push_str(&self.source[at..*start]);
+            out.push('<');
+            out.push_str(&self.source[*start..*end]);
+            out.push('>');
+            at = *end;
+        }
+        out.push_str(&self.source[at..]);
+        out
     }
 }
 
@@ -571,6 +685,112 @@ mod tests {
         assert_eq!(
             condition.substitute(&bindings).source(),
             "binary-installed/p2"
+        );
+    }
+
+    #[test]
+    fn self_is_a_reserved_variable_in_either_spelling() {
+        for source in ["{{!self}} reads R1", "{{!SELF}} reads R1"] {
+            let p = Pattern::parse(source).unwrap();
+            assert!(!p.is_ground());
+            assert_eq!(p.source(), source);
+            let out = p.bind_self("A1");
+            assert!(out.is_ground());
+            assert_eq!(out.source(), "A1 reads R1");
+        }
+    }
+
+    #[test]
+    fn an_unknown_builtin_is_an_error() {
+        assert_eq!(
+            Pattern::parse("{{!slef}} reads R1"),
+            Err(PatternError::UnknownBuiltin("!slef".into()))
+        );
+        assert_eq!(
+            Pattern::parse("{{!Self}}"),
+            Err(PatternError::UnknownBuiltin("!Self".into()))
+        );
+        // `!` anywhere but the front is just a bad variable name
+        assert_eq!(
+            Pattern::parse("{{a!}}"),
+            Err(PatternError::InvalidVariable("a!".into()))
+        );
+    }
+
+    #[test]
+    fn bind_self_leaves_other_variables_alone() {
+        let p = Pattern::parse("{{!self}} allows {{agent}}").unwrap();
+        let out = p.bind_self("S1");
+        assert_eq!(out.source(), "S1 allows {{agent}}");
+        assert_eq!(out.vars().into_iter().collect::<Vec<_>>(), vec!["agent"]);
+        // and a name without it is untouched
+        let plain = Pattern::parse("a/{{x}}").unwrap();
+        assert_eq!(plain.bind_self("S1"), plain);
+    }
+
+    #[test]
+    fn marked_wraps_what_substitution_filled_in() {
+        let p = Pattern::parse("{{!self}} reads R1").unwrap();
+        assert!(!p.has_bound());
+        assert_eq!(p.marked(), "{{!self}} reads R1");
+
+        let out = p.bind_self("A1");
+        assert!(out.has_bound());
+        assert_eq!(out.marked(), "<A1> reads R1");
+        // identity is still the plain text
+        assert_eq!(out, Pattern::parse("A1 reads R1").unwrap());
+        assert!(!Pattern::parse("A1 reads R1").unwrap().has_bound());
+    }
+
+    #[test]
+    fn marks_survive_a_later_substitution() {
+        let p = Pattern::parse("x/{{env}}/{{!self}}/{{tenant}}/y").unwrap();
+        let first = p.substitute(&binds(&[("env", "prod")]));
+        assert_eq!(first.marked(), "x/<prod>/{{!self}}/{{tenant}}/y");
+        let second = first.bind_self("db");
+        assert_eq!(second.marked(), "x/<prod>/<db>/{{tenant}}/y");
+        let third = second.substitute(&binds(&[("tenant", "t1")]));
+        assert_eq!(third.source(), "x/prod/db/t1/y");
+        assert_eq!(third.marked(), "x/<prod>/<db>/<t1>/y");
+    }
+
+    #[test]
+    fn marks_respect_character_boundaries() {
+        let p = Pattern::parse("é/{{a}}/ü").unwrap();
+        let out = p.substitute(&binds(&[("a", "日本")]));
+        assert_eq!(out.marked(), "é/<日本>/ü");
+    }
+
+    #[test]
+    fn open_variables_parse_and_match_like_any_other() {
+        let p = Pattern::parse("{{?doc}} shows usage of R1 by {{agent}}").unwrap();
+        assert!(p.has_open());
+        assert!(p.needs_binding());
+        assert_eq!(p.source(), "{{?doc}} shows usage of R1 by {{agent}}");
+
+        // once the promise's own variable is filled in, only the open one is left
+        let goal = p.substitute(&binds(&[("agent", "A1")]));
+        assert_eq!(goal.source(), "{{?doc}} shows usage of R1 by A1");
+        assert!(goal.has_open());
+        assert!(!goal.needs_binding());
+        assert_eq!(
+            goal.match_ground("D1 shows usage of R1 by A1"),
+            Some(binds(&[("?doc", "D1")]))
+        );
+        assert_eq!(goal.match_ground("D1 shows usage of R1 by A2"), None);
+
+        assert!(!Pattern::parse("plain/{{x}}").unwrap().has_open());
+        assert_eq!(
+            Pattern::parse("{{?}}"),
+            Err(PatternError::InvalidVariable("?".into()))
+        );
+        assert_eq!(
+            Pattern::parse("{{?a b}}"),
+            Err(PatternError::InvalidVariable("?a b".into()))
+        );
+        assert_eq!(
+            Pattern::parse("{{a?}}"),
+            Err(PatternError::InvalidVariable("a?".into()))
         );
     }
 

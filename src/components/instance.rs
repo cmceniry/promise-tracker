@@ -187,10 +187,10 @@ impl Instance {
     pub fn materialize(&self, base: &Agent) -> Agent {
         let mut agent = base.make_instance(&self.name, &self.bindings);
         for p in &self.provides {
-            agent.add_provide(p.clone());
+            agent.add_provide(p.bind_self(&self.name));
         }
         for w in &self.wants {
-            agent.add_want(w.clone());
+            agent.add_want(w.bind_self(&self.name));
         }
         agent
     }

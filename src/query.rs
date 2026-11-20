@@ -22,7 +22,7 @@
 //!   by agent into one row whose `agents` lists them all. Unbundled, every
 //!   such row names exactly one agent.
 
-use crate::components::Behavior;
+use crate::components::{Behavior, Pattern};
 use crate::resolve::Resolution;
 use crate::Tracker;
 use serde::{Deserialize, Serialize};
@@ -413,7 +413,8 @@ fn leaf_causes(
             }
             let site = CauseSite {
                 agent: offer.get_agent_name().to_string(),
-                provide: behavior.to_string(),
+                // under an open goal, the concrete promise the offer keeps
+                provide: offer.get_behavior().unwrap_or(behavior).to_string(),
             };
             leaf_causes(tracker, condition, Some(site), out);
         }
@@ -523,7 +524,13 @@ impl Index {
     fn consumers(&self, behavior: &str) -> Vec<(String, ConsumerKind)> {
         let mut ret: Vec<(String, ConsumerKind)> = vec![];
         for (agent, wants) in &self.wants {
-            if wants.iter().any(|w| w == behavior) {
+            // An open want is a want of everything it matches.
+            if wants.iter().any(|w| {
+                w == behavior || {
+                    let want = Pattern::parse_lossy(w);
+                    want.has_open() && want.match_ground(behavior).is_some()
+                }
+            }) {
                 ret.push((agent.clone(), ConsumerKind::Want));
             }
         }
@@ -593,6 +600,10 @@ fn collect_names(resolution: &Resolution, out: &mut BTreeSet<String>) {
         .iter()
         .chain(resolution.get_unsatisfying_offers())
     {
+        // what an open goal was answered by is asked for too
+        if let Some(kept) = offer.get_behavior() {
+            out.insert(kept.to_string());
+        }
         for condition in offer.get_resolved_conditions() {
             collect_names(condition, out);
         }
@@ -652,6 +663,72 @@ mod tests {
 
     fn unused_names(t: &Tracker, options: QueryOptions) -> Vec<String> {
         unused(t, options).into_iter().map(|u| u.behavior).collect()
+    }
+
+    // --- Open variables ---------------------------------------------------
+
+    #[test]
+    fn a_promise_met_through_an_open_goal_is_used() {
+        let t = tracker(vec![
+            agent("op", vec![bc("configured", &["{{?doc}} shows usage"])], &["configured"]),
+            agent("d1", vec![b("d1 shows usage")], &[]),
+            agent("w", vec![], &["{{?who}} backs up"]),
+            agent("bk", vec![b("bk backs up")], &[]),
+            agent("idle", vec![b("nothing asks for this")], &[]),
+        ]);
+        assert_eq!(unused_names(&t, PLAIN), names(&["nothing asks for this"]));
+        assert!(unsatisfied(&t, PLAIN).is_empty());
+
+        // the open want shows among the behavior's consumers
+        let used = behavior_use(&t, "bk backs up", PLAIN).unwrap();
+        assert_eq!(
+            used.consumers,
+            vec![ConsumerRow {
+                agents: names(&["w"]),
+                kind: ConsumerKind::Want
+            }]
+        );
+    }
+
+    #[test]
+    fn an_open_want_with_no_match_is_unsatisfied_under_its_own_text() {
+        let t = tracker(vec![
+            agent("w", vec![], &["{{?who}} backs up"]),
+            agent("bk", vec![b("{{x}} backs up")], &[]),
+        ]);
+        assert_eq!(
+            unsatisfied(&t, PLAIN),
+            vec![UnsatisfiedRow {
+                agents: names(&["w"]),
+                behavior: "{{?who}} backs up".into(),
+                causes: vec![Cause {
+                    behavior: "{{?who}} backs up".into(),
+                    kind: CauseKind::Unprovided,
+                    needed_by: None,
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failing_open_condition_names_the_promise_it_matched() {
+        let t = tracker(vec![
+            agent("op", vec![bc("configured", &["{{?doc}} shows usage"])], &["configured"]),
+            agent("d1", vec![bc("d1 shows usage", &["d1 is approved"])], &[]),
+        ]);
+        let rows = unsatisfied(&t, PLAIN);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].causes,
+            vec![Cause {
+                behavior: "d1 is approved".into(),
+                kind: CauseKind::Unprovided,
+                needed_by: Some(CauseSite {
+                    agent: "d1".into(),
+                    provide: "d1 shows usage".into()
+                }),
+            }]
+        );
     }
 
     // --- Agents -----------------------------------------------------------

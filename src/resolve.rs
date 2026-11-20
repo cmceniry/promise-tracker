@@ -323,6 +323,11 @@ mod tests_resolution {
 pub struct Offer {
     agent_name: String,
     resolved_conditions: Vec<Resolution>,
+    /// The concrete behavior this offer keeps, when the goal it answers was
+    /// open (`{{?doc}} shows usage`) and so named none itself. Absent for a
+    /// concrete goal, whose name already says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    behavior: Option<String>,
 }
 
 impl Offer {
@@ -330,6 +335,7 @@ impl Offer {
         Offer {
             agent_name: String::from(agent_name),
             resolved_conditions: vec![],
+            behavior: None,
         }
     }
 
@@ -337,7 +343,20 @@ impl Offer {
         Offer {
             agent_name: String::from(agent_name),
             resolved_conditions,
+            behavior: None,
         }
+    }
+
+    /// This offer, as the answer to an open goal by way of the concrete
+    /// `behavior` it matched.
+    pub fn answering(mut self, behavior: &str) -> Offer {
+        self.behavior = Some(behavior.to_string());
+        self
+    }
+
+    /// The concrete behavior this offer keeps, when the goal was open.
+    pub fn get_behavior(&self) -> Option<&str> {
+        self.behavior.as_deref()
     }
 
     /// Returns the agent name
@@ -445,6 +464,9 @@ impl Offer {
 impl PartialEq for Offer {
     fn eq(&self, other: &Self) -> bool {
         if self.agent_name != other.agent_name {
+            return false;
+        }
+        if self.behavior != other.behavior {
             return false;
         }
         if self.resolved_conditions.len() != other.resolved_conditions.len() {

@@ -1,5 +1,5 @@
 use crate::components::behavior::Behavior;
-use crate::components::pattern::{Bindings, Pattern};
+use crate::components::pattern::{self_bindings, Bindings, Pattern};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
@@ -258,7 +258,11 @@ impl Agent {
                 || p.get_condition_patterns()
                     .iter()
                     .any(|c| c.match_ground(behavior_name).is_some())
-        }) || self.wants.iter().any(|w| w.get_name() == behavior_name)
+        }) || self.wants.iter().any(|w| {
+            w.get_name() == behavior_name
+                // an open want is a want of everything it could match
+                || (w.get_name_pattern().has_open() && w.match_goal(behavior_name).is_some())
+        })
     }
 
     pub fn merge(&mut self, other: &Agent) {
@@ -293,15 +297,34 @@ impl Agent {
     ///
     /// What the bindings do not cover stays parameterized, so a copy can fix
     /// some values and leave the rest to whoever wants the promise.
+    ///
+    /// `{{!self}}` becomes the instance's name: the copy is the agent, the
+    /// base only describes it.
     pub fn make_instance(&self, instance_name: &str, bindings: &Bindings) -> Agent {
+        let mut bindings = bindings.clone();
+        bindings.extend(self_bindings(instance_name));
         Agent::new(instance_name.to_string())
             .with_provides(
                 self.provides
                     .iter()
-                    .map(|p| p.instantiate(bindings))
+                    .map(|p| p.instantiate(&bindings))
                     .collect(),
             )
-            .with_wants(self.wants.iter().map(|w| w.instantiate(bindings)).collect())
+            .with_wants(
+                self.wants
+                    .iter()
+                    .map(|w| w.instantiate(&bindings))
+                    .collect(),
+            )
+    }
+
+    /// A copy with `{{!self}}` replaced by this agent's own name, through
+    /// everything it promises and needs.
+    pub fn bind_self(&self) -> Agent {
+        let mut agent = self.clone();
+        agent.provides = self.provides.iter().map(|p| p.bind_self(&self.name)).collect();
+        agent.wants = self.wants.iter().map(|w| w.bind_self(&self.name)).collect();
+        agent
     }
 }
 

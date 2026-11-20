@@ -123,6 +123,12 @@ impl Behavior {
         }
     }
 
+    /// A copy with `{{!self}}` replaced by the name of the agent that wrote
+    /// it, through the name and the conditions.
+    pub fn bind_self(&self, name: &str) -> Behavior {
+        self.instantiate(&crate::components::pattern::self_bindings(name))
+    }
+
     pub fn has_none_of_these_conditions(&self, conditions: &HashSet<String>) -> bool {
         !self
             .conditions

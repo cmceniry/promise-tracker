@@ -399,3 +399,16 @@ mod tests {
         assert_eq!(e.location(), None);
     }
 }
+
+/// Stop unless `behavior` names one concrete behavior. A command-line
+/// argument is a question about one behavior; variables, open or not, belong
+/// in contracts.
+pub fn require_concrete(behavior: &str) {
+    if behavior.contains("{{") {
+        eprintln!(
+            "error: `{}` holds a variable; name one concrete behavior",
+            behavior
+        );
+        std::process::exit(2);
+    }
+}

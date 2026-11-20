@@ -12,6 +12,9 @@ pub struct ViewOptions {
     pub bundle: bool,
     /// Promises an agent makes to itself are folded away.
     pub fold_self: bool,
+    /// Values a variable was replaced with are wrapped in `<>` where an
+    /// agent's own declarations are listed. Display only.
+    pub mark_bound: bool,
 }
 
 impl Default for ViewOptions {
@@ -20,6 +23,7 @@ impl Default for ViewOptions {
             collectives: true,
             bundle: true,
             fold_self: false,
+            mark_bound: false,
         }
     }
 }
@@ -78,8 +82,8 @@ fn OptionToggle(
     }
 }
 
-/// The display options, applying to every view below. Three switches of
-/// equal standing, on one line.
+/// The display options, applying to every view below. Switches of equal
+/// standing, on one line.
 #[component]
 pub fn DisplayOptions(
     options: ReadSignal<ViewOptions>,
@@ -88,6 +92,7 @@ pub fn DisplayOptions(
     let collectives = Signal::derive(move || options.get().collectives);
     let bundle = Signal::derive(move || options.get().bundle);
     let fold_self = Signal::derive(move || options.get().fold_self);
+    let mark_bound = Signal::derive(move || options.get().mark_bound);
 
     view! {
         <div class="view-options">
@@ -127,6 +132,19 @@ pub fn DisplayOptions(
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M8 3a5 5 0 1 0 5 5" fill="none" stroke="currentColor" stroke-width="1.5"></path>
                     <path d="M8 0.5 5 3 8 5.5z"></path>
+                </svg>
+            </OptionToggle>
+            <span style="font-weight: bold;">"Mark:"</span>
+            <OptionToggle
+                on=mark_bound
+                label="Bound values"
+                about="Wrap values a variable was replaced with in <>, such as an agent's own name where it wrote {{!self}}, in the Inventory and the Trace wants list"
+                on_click=Callback::new(move |_| set_options.update(|o| o.mark_bound = !o.mark_bound))
+            >
+                // Angle brackets around a value.
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16">
+                    <path d="M5 3 1 8 5 13 M11 3 15 8 11 13"></path>
+                    <circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle>
                 </svg>
             </OptionToggle>
         </div>

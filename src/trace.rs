@@ -450,6 +450,9 @@ impl TrailBuilder {
         }
 
         for (offer, satisfied) in offers {
+            // An offer answering an open goal is carded under the concrete
+            // behavior it keeps.
+            let behavior = offer.get_behavior().unwrap_or(behavior);
             let agent = offer.get_agent_name();
             let (card, reference) =
                 self.place(depth, CardKind::Offer, behavior, Some(agent), satisfied);

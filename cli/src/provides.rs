@@ -20,6 +20,11 @@ pub struct Parameters {
     #[clap(short, long)]
     conditions: bool,
 
+    /// Wrap values a variable was replaced with in `<>`, such as the agent's
+    /// own name where it wrote `{{!self}}`
+    #[clap(long)]
+    mark_bound: bool,
+
     /// The agent name to show actions for
     agent: String,
 }
@@ -34,35 +39,54 @@ pub fn command(parameters: &Parameters) {
         println!("Agent {} not found", parameters.agent);
         process::exit(1);
     };
+    // A name as this agent declares it, marked when asked for. Display only:
+    // the rows keep the plain names.
+    let shown = |name: &String| -> String {
+        if parameters.mark_bound {
+            tracker
+                .marked_name(&parameters.agent, name)
+                .unwrap_or_else(|| name.clone())
+        } else {
+            name.clone()
+        }
+    };
     if !parameters.conditions {
         // One line per behavior and per pattern, as the CLI always printed.
         let mut behaviors: Vec<&String> = provides.provides.iter().map(|r| &r.behavior).collect();
         behaviors.dedup();
         for behavior in behaviors {
-            println!("{}", behavior);
+            println!("{}", shown(behavior));
         }
         let mut patterns: Vec<&String> = provides.patterns.iter().map(|r| &r.pattern).collect();
         patterns.dedup();
         for pattern in patterns {
-            println!("{}\t(pattern)", pattern);
+            println!("{}\t(pattern)", shown(pattern));
         }
         return;
     }
     for row in provides.provides {
         if row.conditions.is_empty() {
-            println!("{}", row.behavior);
+            println!("{}", shown(&row.behavior));
         } else {
-            println!("{}\tif {}", row.behavior, conditions(&row.conditions));
+            let marked: Vec<ConditionStatus> = row
+                .conditions
+                .iter()
+                .map(|c| ConditionStatus {
+                    behavior: shown(&c.behavior),
+                    held: c.held,
+                })
+                .collect();
+            println!("{}\tif {}", shown(&row.behavior), conditions(&marked));
         }
     }
     for row in provides.patterns {
         if row.conditions.is_empty() {
-            println!("{}\t(pattern)", row.pattern);
+            println!("{}\t(pattern)", shown(&row.pattern));
         } else {
             println!(
                 "{}\t(pattern) if {}",
-                row.pattern,
-                row.conditions.join(", ")
+                shown(&row.pattern),
+                row.conditions.iter().map(shown).collect::<Vec<_>>().join(", ")
             );
         }
     }

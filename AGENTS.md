@@ -79,6 +79,8 @@ Commands: `agents`, `behavior`, `check-unsatisfied`, `provides` (alias
 `schema`. Display flags matching the UI toggles, where meaningful:
 `--unfold` (SuperAgent members as agents), `--fold-self`, `--bundle`;
 `check-unsatisfied --summary` lists unsatisfied wants with leaf causes.
+`provides --mark-bound` wraps substituted values in `<>` (see
+`docs/design/self-and-open-variables.md`).
 `provides` / `providers` / `unused` / `check-unsatisfied --summary` are thin
 printers over `src/query.rs`, which the UI's Inventory tab shares.
 
@@ -101,6 +103,12 @@ Key concepts:
 - **Agent**: Entity that makes promises (provides) and has needs (wants)
 - **SuperAgent**: Groups of agents with optional instances/tags
 - **Behavior**: Named promises with optional conditions
+- **`{{!self}}`** (or `{{!SELF}}`): in a behavior name, condition or want,
+  replaced with the declaring agent's own name (the instance's name for an
+  Instance, the member's for a SuperAgent member) before resolution
+- **`{{?x}}`**: an open variable in a condition or want, met by any behavior
+  some agent promises outright that matches; not allowed in a provides name
+  or as a CLI behavior argument
 
 ## Technology Stack
 

@@ -486,7 +486,18 @@ pub fn TraceView(
                                                 let behavior_for_click = w.behavior.clone();
                                                 let agent_for_active = w.agent.clone();
                                                 let behavior_for_active = w.behavior.clone();
-                                                let label = w.behavior.clone();
+                                                // The want as its agent declares it,
+                                                // marked when asked for.
+                                                let label = options
+                                                    .get()
+                                                    .mark_bound
+                                                    .then(|| {
+                                                        tracker.with(|t| {
+                                                            t.as_ref()?.marked_name(&w.agent, &w.behavior)
+                                                        })
+                                                    })
+                                                    .flatten()
+                                                    .unwrap_or_else(|| w.behavior.clone());
                                                 let held = w.satisfied;
                                                 view! {
                                                     <button

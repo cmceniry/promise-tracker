@@ -30,6 +30,7 @@ pub fn command(parameters: &Parameters) {
         fold_self: parameters.fold_self,
         bundle: parameters.bundle,
     };
+    cli::require_concrete(&parameters.behavior);
     let Some(found) = query::behavior_use(&tracker, &parameters.behavior, options) else {
         println!("Behavior {} not found", parameters.behavior);
         process::exit(1);

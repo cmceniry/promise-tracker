@@ -162,6 +162,9 @@ struct Panel {
     state: InventoryState,
     tracker: Signal<Option<Tracker>>,
     qopts: Memo<QueryOptions>,
+    /// Wrap values a variable was replaced with in `<>`, where one agent's
+    /// own declarations are listed.
+    mark_bound: Signal<bool>,
     unsat: Memo<Vec<UnsatisfiedRow>>,
     on_trace: Callback<(String, String)>,
 }
@@ -254,10 +257,13 @@ pub fn InventoryView(
         })
     });
 
+    let mark_bound = Signal::derive(move || options.get().mark_bound);
+
     provide_context(Panel {
         state,
         tracker,
         qopts,
+        mark_bound,
         unsat,
         on_trace,
     });
@@ -444,7 +450,13 @@ fn Picker(
 
 /// A name inside a list: a click peeks at it in a small popover.
 #[component]
-fn Name(subject: Subject) -> impl IntoView {
+fn Name(
+    subject: Subject,
+    /// What to show in place of the subject's own name; the subject stays
+    /// what a click peeks at
+    #[prop(optional)]
+    shown: Option<String>,
+) -> impl IntoView {
     let panel = expect_context::<Panel>();
     let peek = panel.state.peek;
     let id = next_name_id();
@@ -453,6 +465,7 @@ fn Name(subject: Subject) -> impl IntoView {
         Subject::Agent(n) => (n.clone(), "inv-name inv-name-agent"),
         Subject::Behavior(n) => (n.clone(), "inv-name"),
     };
+    let label = shown.unwrap_or(label);
     view! {
         <span class="inv-name-wrap">
             <button
@@ -671,11 +684,14 @@ fn TraceLink(agent: String, behavior: String) -> impl IntoView {
 }
 
 /// A condition, marked held or broken.
-fn condition_chip(c: ConditionStatus) -> impl IntoView {
+///
+/// `shown` is the text to display when it differs from the behavior's name.
+fn condition_chip(c: ConditionStatus, shown: Option<String>) -> impl IntoView {
     let held = c.held;
+    let shown = shown.unwrap_or_else(|| c.behavior.clone());
     view! {
         <span class="inv-cond" class:inv-cond-broken=!held>
-            <Name subject=Subject::Behavior(c.behavior) />
+            <Name subject=Subject::Behavior(c.behavior) shown=shown />
             {if held { " \u{2713}" } else { " \u{2717}" }}
         </span>
     }
@@ -685,7 +701,7 @@ fn conditions_view(conditions: Vec<ConditionStatus>) -> Option<impl IntoView> {
     (!conditions.is_empty()).then(|| {
         view! {
             <span class="trail-muted">"if"</span>
-            {conditions.into_iter().map(condition_chip).collect_view()}
+            {conditions.into_iter().map(|c| condition_chip(c, None)).collect_view()}
         }
     })
 }
@@ -754,16 +770,43 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
             } else {
                 format!("{}: {}, {} broken.", p.agent, count, broken)
             };
+            // A name as this agent declares it, marked when asked for.
+            let mark = panel.mark_bound.get();
+            let agent = p.agent.clone();
+            let shown = move |name: &str| -> String {
+                mark.then(|| {
+                    panel
+                        .tracker
+                        .with(|t| t.as_ref()?.marked_name(&agent, name))
+                })
+                .flatten()
+                .unwrap_or_else(|| name.to_string())
+            };
             let rows = p
                 .provides
                 .into_iter()
                 .map(|r| {
                     let held = r.held;
+                    let label = shown(&r.behavior);
+                    let conditions = (!r.conditions.is_empty()).then(|| {
+                        let chips = r
+                            .conditions
+                            .into_iter()
+                            .map(|c| {
+                                let label = shown(&c.behavior);
+                                condition_chip(c, Some(label))
+                            })
+                            .collect_view();
+                        view! {
+                            <span class="trail-muted">"if"</span>
+                            {chips}
+                        }
+                    });
                     view! {
                         <div class="inv-row">
                             <span class="trail-dot" class:trail-dot-broken=!held></span>
-                            <Name subject=Subject::Behavior(r.behavior) />
-                            {conditions_view(r.conditions)}
+                            <Name subject=Subject::Behavior(r.behavior) shown=label />
+                            {conditions}
                         </div>
                     }
                 })
@@ -773,11 +816,20 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
                     .patterns
                     .into_iter()
                     .map(|r| {
-                        let conditions = (!r.conditions.is_empty())
-                            .then(|| format!("if {}", r.conditions.join(", ")));
+                        let conditions = (!r.conditions.is_empty()).then(|| {
+                            format!(
+                                "if {}",
+                                r.conditions
+                                    .iter()
+                                    .map(|c| shown(c))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        });
+                        let pattern = shown(&r.pattern);
                         view! {
                             <div class="inv-row">
-                                <code class="inv-pattern">{r.pattern}</code>
+                                <code class="inv-pattern">{pattern}</code>
                                 <span class="inv-tag">"pattern"</span>
                                 {conditions.map(|c| view! { <span class="trail-muted inv-mono">{c}</span> })}
                             </div>

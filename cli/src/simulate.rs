@@ -23,5 +23,6 @@ pub fn command(parameters: &Parameters) {
             Err(e) => cli::abort(e),
         }
     }
+    cli::require_concrete(&parameters.behavior);
     println!("{:?}", tracker.resolve(&parameters.behavior));
 }

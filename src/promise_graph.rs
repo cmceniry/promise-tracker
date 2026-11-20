@@ -152,11 +152,15 @@ impl PromiseGraphBuilder {
             self.merge_edge(requirer, &ghost, behavior, kind, false);
             return;
         }
+        // An offer answering an open goal is drawn under the concrete
+        // behavior it keeps; the goal itself names none.
         for offer in satisfied {
-            self.emit_offer(requirer, kind, behavior, offer, true);
+            let kept = offer.get_behavior().unwrap_or(behavior);
+            self.emit_offer(requirer, kind, kept, offer, true);
         }
         for offer in unsatisfied {
-            self.emit_offer(requirer, kind, behavior, offer, false);
+            let kept = offer.get_behavior().unwrap_or(behavior);
+            self.emit_offer(requirer, kind, kept, offer, false);
         }
     }
 
@@ -306,6 +310,30 @@ mod tests {
             ]
         );
         assert!(graph.unsatisfied.is_empty());
+    }
+
+    #[test]
+    fn test_open_want_draws_each_match_under_its_own_name() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("{{?who}} backs up")]));
+        tracker.add_agent(Agent::build("b1").with_provides(vec![Behavior::build("b1 backs up")]));
+        tracker.add_agent(Agent::build("b2").with_provides(vec![Behavior::build("b2 backs up")]));
+
+        let graph = promise_graph(&tracker);
+        assert_eq!(
+            graph.edges,
+            vec![
+                edge("a1", "b1", "b1 backs up", PromiseKind::Want, true),
+                edge("a1", "b2", "b2 backs up", PromiseKind::Want, true),
+            ]
+        );
+        assert!(graph.unsatisfied.is_empty());
+
+        // with nothing to match, the pattern itself is what is missing
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("{{?who}} backs up")]));
+        let graph = promise_graph(&tracker);
+        assert_eq!(node_ids(&graph), vec!["a1", "missing:{{?who}} backs up"]);
     }
 
     #[test]
