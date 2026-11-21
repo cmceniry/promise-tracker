@@ -1,6 +1,7 @@
 # Self-Reference and Open Variables
 
-**Status**: phases 1 and 2 implemented; phase 3 not started
+**Status**: phases 1 and 2 implemented; of phase 3, sideways flow (a value
+shared between conditions) is implemented and upward flow is not started
 **Date**: 2026-11-19
 **Scope**: core library, CLI, frontend
 **Builds on**: `docs/design/parameterized-behaviors.md` (P0–P3 landed)
@@ -195,9 +196,9 @@ As built:
 - An open goal matches **ground provided behaviors only**: the names working
   agents declare, after self-substitution and instance bindings. It does not
   match parameterized provides.
-- An open variable is scoped to the one condition or want it appears in. A
-  repeat inside that one name must bind consistently. Its value flows nowhere
-  else.
+- An open variable in a want is scoped to that want. A repeat inside one name
+  must bind consistently. In a condition, its value may also be used by sibling
+  conditions (§5); it never flows up into the promise name.
 - Several matches: the goal is satisfied if any one match is satisfied. Each
   match is its own offer, shown under its ground name. This is today's
   multi-provider rule.
@@ -232,14 +233,16 @@ its unsatisfied report that parameterized providers are not considered.
 
 ### Validation — reserving phase 3's meaning
 
-These are errors in phase 2, so that no contract acquires a meaning phase 3
-would change:
+These are errors, so that no contract acquires a meaning upward flow would
+change:
 
-- the same open name in two conditions of one promise (`{{?doc}}` twice)
-- a plain `{{doc}}` in a condition whose only binder is a sibling's `{{?doc}}`
 - `{{?x}}` in a provides name
 - one name used both as `{{x}}` in the promise name and `{{?x}}` in its
   conditions
+
+Phase 2 also rejected a plain `{{doc}}` bound only by a sibling's `{{?doc}}`.
+That shape now has a meaning (§5). The same open name in two conditions of one
+promise is still an error, for the reason given there.
 
 ### SuperAgent reduction
 
@@ -302,21 +305,105 @@ Not yet done:
   parameterized provider not matched, with the report saying so; each
   reserved shape rejected by validation; an open condition surviving
   `reduce()`; the CLI rejecting an open argument.
+- **shared values** — a value found by one condition used by a sibling, in
+  either declaration order; one offer per candidate, satisfied and not; a
+  candidate from one match never paired with another's sibling; nothing found
+  leaving the siblings as written; values chained through three conditions; a
+  loop through a shared value reported; conditions judged together in the
+  provides listing; a waiting sibling not reported as a cause; the rejected
+  shapes.
 - **regression** — every existing test passes untouched; contracts with no
   `!` or `?` behave exactly as before.
 
-## 5. Phase 3 — binding direction (open problem)
+## 5. Phase 3 — binding direction
 
-Today a variable's value always comes from the promise name, matched against a
-ground goal, and flows down into the conditions. Phase 3 asks what happens
-when the value comes from the provider's side instead. Under it a variable has
-exactly one binding occurrence, marked `?`; every plain `{{x}}` is a use.
-Several matches become one offer per set of bindings.
+Before this phase a variable's value always came from the promise name,
+matched against a ground goal, and flowed down into the conditions. Phase 3
+asks what happens when the value comes from the provider's side instead. Under
+it a variable has exactly one binding occurrence, marked `?`; every plain
+`{{x}}` is a use.
 
-Not specified. Phases 1 and 2 are to be used first. It needs real unification
-and a termination argument to replace the numeric caps.
+It has two parts. Sideways flow is built. Upward flow is still an open
+problem.
 
-### Upward flow — the main interest
+### Sideways flow — a value shared between conditions
+
+```yaml
+provides:
+- name: configured
+  conditions:
+    - "will support {{?thing}}"
+    - "{{thing}} does stuff"
+```
+
+- **One binder.** Exactly one condition of a promise opens a name, as
+  `{{?thing}}`. Sibling conditions that use it write plain `{{thing}}` and take
+  the value the binder finds. Declaration order does not matter.
+- **Candidates.** Each behavior the binder condition matches is one candidate
+  value. Matching is phase 2's: only behaviors promised outright.
+- **One offer per candidate.** The promise is read once per candidate: the
+  binder condition answered by that one match, the siblings with the value
+  filled in. Each reading is its own offer, satisfying when all its conditions
+  hold. The promise is kept if any reading is. Every candidate is recorded,
+  whether it holds or not.
+- **Nothing found.** One unsatisfying offer, the binder condition under its
+  pattern text and its siblings left as written. Only the binder is reported
+  as the cause.
+- **Chains.** A binder may itself use a sibling's value
+  (`{{?replica}} runs in {{region}}` beside `{{?region}} hosts {{team}}`).
+  Binders are taken in whatever order lets each have what it waits on, and the
+  candidates multiply.
+- **Not shared.** An open variable no sibling uses behaves as in phase 2: the
+  condition gathers every match and any one satisfies it.
+
+Why one binder, and not `{{?thing}}` in both conditions: two open occurrences
+would each search on their own, and the pair would have to be intersected
+afterwards. One finding and the rest using it says which condition the
+candidates come from, and keeps a typo in the plain use an error.
+
+Validation:
+
+- a plain `{{x}}` in a condition must be named by the promise or opened as
+  `{{?x}}` by a different condition of the same promise
+- the same open name in two conditions is an error, with the fix in the
+  message (write `{{x}}` in the second)
+- binder conditions that wait on each other's values are an error
+
+Limits:
+
+- A promise's conditions get at most 256 readings; further candidates are
+  dropped.
+- Values do not flow between a promise's conditions and its name, or between
+  wants.
+- In a folded SuperAgent, conditions that share a value are not ground, so
+  `reduce()` leaves them on the collective as external conditions.
+
+As built:
+
+- `Tracker::condition_readings` turns a promise's conditions, with the goal's
+  bindings filled in, into one list of goals per reading. `resolve_goal` and
+  `walk_for_cycles` descend through every reading. The binder's resolution in
+  a reading keeps the pattern text as its name and carries only the chosen
+  match's offers, each with the concrete behavior it keeps, so the graph, trace
+  and sequence diagram label it as they do any open goal.
+- `Tracker::resolve_conditions` gives the same readings to `src/query.rs`,
+  which judges conditions that share a value together: a provides listing
+  shows them by the candidate that lets the most of them hold.
+- `leaf_causes` skips a sibling still waiting on a value when the binder is
+  the real cause.
+
+Not yet done:
+
+- Nothing in the UI or CLI says which value an offer stands on, other than the
+  names of its conditions.
+- `Index::consumers` counts a sharing condition as a consumer of anything its
+  text could match (`{{thing}} does stuff` uses every `… does stuff`), not
+  only the candidates the binder found.
+
+### Upward flow (open problem)
+
+Not specified. It needs real unification and a termination argument to replace
+the numeric caps.
 
 **Provider's literal text answers the asker's open variable.** The example in
 §3: `{{?svc}} grants A1 read on R1` meets `S1 grants {{agent}} read on R1`.
@@ -355,24 +442,7 @@ name and back to A1, and A1's want gets two satisfied offers. Had A1 written a
 ground want, the goal would fix `region` first and the condition would only
 check it.
 
-### Sideways flow — secondary
-
-A value bound by one condition used in a sibling:
-
-```yaml
-conditions:
-  - "{{?doc}} shows usage of R1 by {{agent}}"
-  - "{{doc}} is approved"
-```
-
-With D1 approved and D2 not, `doc = D1` is a satisfied offer and `doc = D2` an
-unsatisfied one. Phase 2 can reach the same result by making D1's own usage
-promise conditional on `{{!self}} is approved`, but that moves the
-requirement: the document decides it needs approval, rather than the consumer
-demanding it. Sideways flow is needed only when the consumer imposes the
-linked requirement.
-
-### Constraint on phases 1 and 2
+### Constraint on what is built
 
 `?` remains the binder marker, and the shapes listed under phase 2 validation
-stay errors until phase 3 gives them meaning.
+stay errors until upward flow gives them meaning.

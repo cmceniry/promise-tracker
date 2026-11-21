@@ -13,6 +13,7 @@ use components::Instance;
 use components::Item;
 use components::Pattern;
 use components::SuperAgent;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -848,10 +849,20 @@ impl Tracker {
             };
             for variant_agent in variants {
                 for (behavior, bindings) in variant_agent.get_matching_provides(goal) {
-                    for condition in behavior.get_condition_patterns() {
-                        let sub_goal = condition.substitute(&bindings);
-                        complete &=
-                            self.walk_for_cycles(sub_goal.source(), in_progress, clean, found);
+                    let conditions: Vec<Pattern> = behavior
+                        .get_condition_patterns()
+                        .iter()
+                        .map(|c| c.substitute(&bindings))
+                        .collect();
+                    for reading in self.condition_readings(&conditions) {
+                        for condition in reading {
+                            let sub_goal = match condition {
+                                ConditionGoal::Goal(sub_goal) => sub_goal,
+                                ConditionGoal::Chosen { name, .. } => name,
+                                ConditionGoal::Unbound(_) => continue,
+                            };
+                            complete &= self.walk_for_cycles(&sub_goal, in_progress, clean, found);
+                        }
                     }
                 }
             }
@@ -926,27 +937,30 @@ impl Tracker {
                         continue;
                     }
                     // resolve conditions, with whatever the goal bound
-                    // substituted into them
-                    let mut resolved_conditions = Vec::new();
-                    for condition in behavior.get_condition_patterns() {
-                        let sub_goal = condition.substitute(&bindings);
-                        let (resolved, stands_alone) =
-                            self.resolve_goal(sub_goal.source(), in_progress, settled);
+                    // substituted into them — once for every reading, where
+                    // a value one condition finds is shared with the others
+                    let conditions: Vec<Pattern> = behavior
+                        .get_condition_patterns()
+                        .iter()
+                        .map(|c| c.substitute(&bindings))
+                        .collect();
+                    for reading in self.condition_readings(&conditions) {
+                        let (resolved_conditions, stands_alone) =
+                            self.resolve_reading(reading, in_progress, settled);
                         self_contained &= stands_alone;
-                        resolved_conditions.push(resolved);
-                    }
-                    // if all conditions are satisfied, add this as a satisfied Offer
-                    if resolved_conditions.iter().all(|x| x.is_satisfied()) {
-                        r = r.add_satisfying_offer(Offer::new_conditional(
-                            agent_name,
-                            resolved_conditions,
-                        ));
-                    // otherwise, add this as an unsatisfied Offer
-                    } else {
-                        r = r.add_unsatisfying_offer(Offer::new_conditional(
-                            agent_name,
-                            resolved_conditions,
-                        ));
+                        // if all conditions are satisfied, add this as a satisfied Offer
+                        if resolved_conditions.iter().all(|x| x.is_satisfied()) {
+                            r = r.add_satisfying_offer(Offer::new_conditional(
+                                agent_name,
+                                resolved_conditions,
+                            ));
+                        // otherwise, add this as an unsatisfied Offer
+                        } else {
+                            r = r.add_unsatisfying_offer(Offer::new_conditional(
+                                agent_name,
+                                resolved_conditions,
+                            ));
+                        }
                     }
                 }
             }
@@ -992,6 +1006,192 @@ impl Tracker {
             }
         }
         Some(matches)
+    }
+}
+
+/// How many readings one promise's conditions may be given. Each condition
+/// that shares a value multiplies them by its matches, so a contract can ask
+/// for far more than is worth resolving.
+const MAX_CONDITION_READINGS: usize = 256;
+
+/// How one condition is to be resolved under one reading of its promise.
+enum ConditionGoal {
+    /// Resolve this goal as it stands.
+    Goal(String),
+    /// An open condition whose value its siblings share, answered here by the
+    /// one concrete behavior `name`.
+    Chosen { pattern: String, name: String },
+    /// Still holding a variable nothing supplied a value for.
+    Unbound(String),
+}
+
+impl Tracker {
+    /// A promise's conditions, resolved together: one list per reading, in
+    /// the order the conditions were given. There is more than one reading
+    /// only where a condition finds a value its siblings share, and then one
+    /// for each value found.
+    pub fn resolve_conditions(&self, conditions: &[String]) -> Vec<Vec<Resolution>> {
+        let patterns: Vec<Pattern> = conditions.iter().map(|c| Pattern::parse_lossy(c)).collect();
+        let mut settled: HashMap<String, Resolution> = HashMap::new();
+        self.condition_readings(&patterns)
+            .into_iter()
+            .map(|reading| self.resolve_reading(reading, &mut vec![], &mut settled).0)
+            .collect()
+    }
+
+    /// Resolve the conditions of one reading, and say whether the answers
+    /// stand on their own (see [`Tracker::resolve_goal`]).
+    fn resolve_reading(
+        &self,
+        reading: Vec<ConditionGoal>,
+        in_progress: &mut Vec<String>,
+        settled: &mut HashMap<String, Resolution>,
+    ) -> (Vec<Resolution>, bool) {
+        let mut self_contained = true;
+        let mut resolved_conditions = Vec::new();
+        for condition in reading {
+            match condition {
+                ConditionGoal::Goal(sub_goal) => {
+                    let (resolved, stands_alone) =
+                        self.resolve_goal(&sub_goal, in_progress, settled);
+                    self_contained &= stands_alone;
+                    resolved_conditions.push(resolved);
+                }
+                // The one match this reading stands on, kept under the
+                // condition as written.
+                ConditionGoal::Chosen { pattern, name } => {
+                    let (resolved, stands_alone) = self.resolve_goal(&name, in_progress, settled);
+                    self_contained &= stands_alone;
+                    let mut chosen = Resolution::new(&pattern);
+                    for offer in resolved.get_satisfying_offers() {
+                        chosen = chosen.add_satisfying_offer(offer.clone().answering(&name));
+                    }
+                    for offer in resolved.get_unsatisfying_offers() {
+                        chosen = chosen.add_unsatisfying_offer(offer.clone().answering(&name));
+                    }
+                    resolved_conditions.push(chosen);
+                }
+                ConditionGoal::Unbound(source) => {
+                    resolved_conditions.push(Resolution::new(&source));
+                }
+            }
+        }
+        (resolved_conditions, self_contained)
+    }
+
+    /// The ways a promise's conditions can be read together.
+    ///
+    /// `conditions` are the promise's, with whatever the goal bound already
+    /// filled in. Usually nothing more is needed and there is one reading:
+    /// each condition is a goal of its own. But a condition may open a
+    /// variable, `will support {{?thing}}`, that a sibling uses plainly,
+    /// `{{thing}} does stuff`. The two then have to agree on the value, so
+    /// every behavior the open condition matches is one candidate, and each
+    /// candidate is a reading of its own: the open condition answered by that
+    /// match alone, its siblings with the value filled in.
+    ///
+    /// When the open condition matches nothing there is still one reading, so
+    /// that the promise shows as an offer that cannot be kept, with the
+    /// waiting conditions left as written.
+    fn condition_readings(&self, conditions: &[Pattern]) -> Vec<Vec<ConditionGoal>> {
+        fn plain<'a>(p: &'a Pattern) -> impl Iterator<Item = &'a str> {
+            p.vars().into_iter().filter(|v| !components::is_open(v))
+        }
+        let shared: BTreeSet<String> = conditions
+            .iter()
+            .flat_map(|c| plain(c).map(str::to_string))
+            .collect();
+        if shared.is_empty() {
+            return vec![conditions
+                .iter()
+                .map(|c| ConditionGoal::Goal(c.source().clone()))
+                .collect()];
+        }
+        let as_written = |c: &Pattern| {
+            if c.needs_binding() {
+                ConditionGoal::Unbound(c.source().clone())
+            } else {
+                ConditionGoal::Goal(c.source().clone())
+            }
+        };
+
+        // The conditions that find a shared value, each taken once whatever
+        // it waits on itself has been found.
+        let mut pending: Vec<usize> = (0..conditions.len())
+            .filter(|i| {
+                conditions[*i]
+                    .vars()
+                    .into_iter()
+                    .any(|v| components::is_open(v) && shared.contains(&v[1..]))
+            })
+            .collect();
+        let mut known: BTreeSet<String> = BTreeSet::new();
+        // One entry per reading so far: the values found, and which match
+        // each finding condition was answered by.
+        let mut readings: Vec<(components::Bindings, BTreeMap<usize, (String, String)>)> =
+            vec![(components::Bindings::new(), BTreeMap::new())];
+        while let Some(at) = pending
+            .iter()
+            .position(|i| plain(&conditions[*i]).all(|v| known.contains(v)))
+        {
+            let i = pending.remove(at);
+            let mut next = vec![];
+            for (bindings, chosen) in &readings {
+                let pattern = conditions[i].substitute(bindings);
+                for name in self.open_matches(pattern.source()).unwrap_or_default() {
+                    let Some(found) = pattern.match_ground(&name) else {
+                        continue;
+                    };
+                    let mut bindings = bindings.clone();
+                    let mut agrees = true;
+                    for (variable, value) in found {
+                        let key = &variable[1..];
+                        if !components::is_open(&variable) || !shared.contains(key) {
+                            continue;
+                        }
+                        match bindings.get(key) {
+                            Some(held) if held != &value => agrees = false,
+                            _ => {
+                                bindings.insert(key.to_string(), value);
+                            }
+                        }
+                    }
+                    if agrees && next.len() < MAX_CONDITION_READINGS {
+                        let mut chosen = chosen.clone();
+                        chosen.insert(i, (pattern.source().clone(), name));
+                        next.push((bindings, chosen));
+                    }
+                }
+            }
+            if next.is_empty() {
+                return vec![conditions.iter().map(as_written).collect()];
+            }
+            readings = next;
+            known.extend(
+                conditions[i]
+                    .vars()
+                    .into_iter()
+                    .filter(|v| components::is_open(v))
+                    .map(|v| v[1..].to_string()),
+            );
+        }
+
+        readings
+            .into_iter()
+            .map(|(bindings, chosen)| {
+                conditions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| match chosen.get(&i) {
+                        Some((pattern, name)) => ConditionGoal::Chosen {
+                            pattern: pattern.clone(),
+                            name: name.clone(),
+                        },
+                        None => as_written(&c.substitute(&bindings)),
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -2269,6 +2469,139 @@ provides:
         assert_eq!(
             t.non_ground_wants(),
             vec![("W".to_string(), "{{?a}} and {{b}}".to_string())]
+        );
+    }
+
+    /// O1 keeps `configured` when something it will support also does
+    /// stuff: the two conditions have to be about the same thing.
+    fn shared_value(does_stuff: &[&str]) -> Tracker {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("configured")
+            .with_conditions(vec![
+                String::from("will support {{?thing}}"),
+                String::from("{{thing}} does stuff"),
+            ])]));
+        t.add_agent(Agent::build("S1").with_provides(vec![
+            Behavior::build("will support T1"),
+            Behavior::build("will support T2"),
+        ]));
+        for thing in does_stuff {
+            t.add_agent(
+                Agent::build(thing)
+                    .with_provides(vec![Behavior::build(&format!("{} does stuff", thing))]),
+            );
+        }
+        t
+    }
+
+    fn supports(thing: &str) -> Resolution {
+        Resolution::new("will support {{?thing}}").add_satisfying_offer(
+            Offer::new("S1").answering(&format!("will support {}", thing)),
+        )
+    }
+
+    #[test]
+    fn test_shared_value_is_found_by_one_condition_and_used_by_another() {
+        let t = shared_value(&["T2"]);
+        assert_eq!(
+            t.resolve("configured"),
+            Resolution::new("configured")
+                // T1 is supported, but does nothing
+                .add_unsatisfying_offer(Offer::new_conditional(
+                    "O1",
+                    vec![supports("T1"), Resolution::new("T1 does stuff")]
+                ))
+                .add_satisfying_offer(Offer::new_conditional(
+                    "O1",
+                    vec![
+                        supports("T2"),
+                        Resolution::new("T2 does stuff").add_satisfying_offer(Offer::new("T2"))
+                    ]
+                ))
+        );
+    }
+
+    #[test]
+    fn test_shared_value_records_every_candidate_that_holds() {
+        let t = shared_value(&["T1", "T2"]);
+        let r = t.resolve("configured");
+        assert_eq!(r.get_satisfying_offers().len(), 2);
+        assert!(r.get_unsatisfying_offers().is_empty());
+    }
+
+    #[test]
+    fn test_shared_value_does_not_mix_candidates() {
+        // T3 does stuff, but nothing will support it
+        let t = shared_value(&["T3"]);
+        let r = t.resolve("configured");
+        assert!(!r.is_satisfied());
+        assert_eq!(r.get_unsatisfying_offers().len(), 2);
+    }
+
+    #[test]
+    fn test_shared_value_nothing_found_leaves_the_rest_as_written() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("configured")
+            .with_conditions(vec![
+                String::from("{{thing}} does stuff"),
+                String::from("will support {{?thing}}"),
+            ])]));
+        assert_eq!(
+            t.resolve("configured"),
+            Resolution::new("configured").add_unsatisfying_offer(Offer::new_conditional(
+                "O1",
+                vec![
+                    Resolution::new("{{thing}} does stuff"),
+                    Resolution::new("will support {{?thing}}")
+                ]
+            ))
+        );
+        assert!(t.dependency_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_shared_values_chain_through_several_conditions() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build(
+            "placed for {{team}}",
+        )
+        .with_conditions(vec![
+            String::from("{{replica}} is healthy"),
+            String::from("{{?replica}} runs in {{region}}"),
+            String::from("{{?region}} hosts {{team}}"),
+        ])]));
+        t.add_agent(Agent::build("infra").with_provides(vec![
+            Behavior::build("east hosts blue"),
+            Behavior::build("west hosts red"),
+            Behavior::build("r1 runs in east"),
+            Behavior::build("r2 runs in west"),
+            Behavior::build("r1 is healthy"),
+            Behavior::build("r2 is healthy"),
+        ]));
+        let r = t.resolve("placed for blue");
+        assert_eq!(r.get_satisfying_offers().len(), 1);
+        let conditions = r.get_satisfying_offers()[0].get_resolved_conditions();
+        assert_eq!(conditions[0].get_behavior_name(), "r1 is healthy");
+        assert_eq!(conditions[1].get_behavior_name(), "{{?replica}} runs in east");
+        assert!(!t.resolve("placed for green").is_satisfied());
+    }
+
+    #[test]
+    fn test_shared_value_on_a_loop_is_reported() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("configured")
+            .with_conditions(vec![
+                String::from("will support {{?thing}}"),
+                String::from("{{thing}} does stuff"),
+            ])]));
+        t.add_agent(Agent::build("T1").with_provides(vec![
+            Behavior::build("will support T1"),
+            Behavior::build("T1 does stuff").with_conditions(vec![String::from("configured")]),
+        ]));
+        assert!(!t.resolve("configured").is_satisfied());
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec![String::from("T1 does stuff"), String::from("configured")]]
         );
     }
 

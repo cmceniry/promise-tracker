@@ -407,8 +407,19 @@ fn leaf_causes(
         return;
     }
     for offer in offers {
-        for condition in offer.get_resolved_conditions() {
-            if condition.is_satisfied() {
+        // A condition still waiting on a value a sibling was to find is not
+        // itself a cause: the sibling that found nothing is.
+        let waiting = |c: &Resolution| {
+            c.get_satisfying_offers().is_empty()
+                && c.get_unsatisfying_offers().is_empty()
+                && Pattern::parse_lossy(c.get_behavior_name()).needs_binding()
+        };
+        let conditions = offer.get_resolved_conditions();
+        let other_cause = conditions
+            .iter()
+            .any(|c| !c.is_satisfied() && !waiting(c));
+        for condition in conditions {
+            if condition.is_satisfied() || (other_cause && waiting(condition)) {
                 continue;
             }
             let site = CauseSite {
@@ -472,13 +483,36 @@ impl<'a> Resolver<'a> {
             .clone()
     }
 
+    /// Whether each of a promise's conditions holds. Conditions that share a
+    /// value are judged together, by the value that lets the most of them
+    /// hold — all of them, where any value does.
     fn conditions(&mut self, conditions: Vec<String>) -> Vec<ConditionStatus> {
+        let shares = conditions
+            .iter()
+            .any(|c| Pattern::parse_lossy(c).needs_binding());
+        let held: Vec<bool> = if shares {
+            let readings = self.tracker.resolve_conditions(&conditions);
+            let count = |r: &Vec<Resolution>| r.iter().filter(|c| c.is_satisfied()).count();
+            let mut best: Option<&Vec<Resolution>> = None;
+            for reading in &readings {
+                if best.map_or(true, |b| count(reading) > count(b)) {
+                    best = Some(reading);
+                }
+            }
+            match best {
+                Some(reading) => reading.iter().map(|c| c.is_satisfied()).collect(),
+                None => vec![false; conditions.len()],
+            }
+        } else {
+            conditions
+                .iter()
+                .map(|c| self.resolve(c).is_satisfied())
+                .collect()
+        };
         conditions
             .into_iter()
-            .map(|behavior| ConditionStatus {
-                held: self.resolve(&behavior).is_satisfied(),
-                behavior,
-            })
+            .zip(held)
+            .map(|(behavior, held)| ConditionStatus { held, behavior })
             .collect()
     }
 }
@@ -708,6 +742,51 @@ mod tests {
                 }],
             }]
         );
+    }
+
+    #[test]
+    fn a_condition_waiting_on_a_sibling_is_not_a_cause() {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("o1")
+                .with_provides(vec![Behavior::build("configured").with_conditions(vec![
+                    String::from("will support {{?thing}}"),
+                    String::from("{{thing}} does stuff"),
+                ])])
+                .with_wants(vec![Behavior::build("configured")]),
+        );
+        let rows = unsatisfied(&t, PLAIN);
+        let causes: Vec<&str> = rows
+            .iter()
+            .flat_map(|r| r.causes.iter().map(|c| c.behavior.as_str()))
+            .collect();
+        assert_eq!(causes, vec!["will support {{?thing}}"]);
+    }
+
+    #[test]
+    fn conditions_sharing_a_value_are_judged_together() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("o1").with_provides(vec![Behavior::build(
+            "configured",
+        )
+        .with_conditions(vec![
+            String::from("will support {{?thing}}"),
+            String::from("{{thing}} does stuff"),
+        ])]));
+        t.add_agent(Agent::build("s1").with_provides(vec![
+            Behavior::build("will support t1"),
+            Behavior::build("will support t2"),
+        ]));
+        let held = |t: &Tracker| -> Vec<bool> {
+            agent_provides(t, "o1", PLAIN).unwrap().provides[0]
+                .conditions
+                .iter()
+                .map(|c| c.held)
+                .collect()
+        };
+        assert_eq!(held(&t), vec![true, false]);
+        t.add_agent(Agent::build("t2").with_provides(vec![Behavior::build("t2 does stuff")]));
+        assert_eq!(held(&t), vec![true, true]);
     }
 
     #[test]

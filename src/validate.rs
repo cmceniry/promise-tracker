@@ -7,7 +7,7 @@
 //! all run this pass, so a contract is judged the same way wherever it loads.
 
 use crate::components::{is_builtin, is_open, Behavior, Bindings, Item, Pattern};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,10 +96,10 @@ fn check_behaviors(
                 ),
             );
         }
-        // Open names seen in this promise's earlier conditions. One shared
-        // between conditions would mean a value found by one flows to the
-        // other, which is not supported; rejecting it keeps that meaning free.
-        let mut opened: BTreeSet<&str> = BTreeSet::new();
+        // Which condition opens each name. A value one condition finds is
+        // shared with its siblings, which use the name plainly, so a name has
+        // exactly one condition that opens it.
+        let mut opened: BTreeMap<&str, usize> = BTreeMap::new();
         for (j, condition) in promise.get_condition_patterns().iter().enumerate() {
             let at = format!("{}.conditions[{}]", name_at, j);
             for variable in condition.vars().into_iter().filter(|v| is_open(v)) {
@@ -114,15 +114,18 @@ fn check_behaviors(
                         ),
                     );
                 }
-                if !opened.insert(variable) {
+                if opened.contains_key(&variable[1..]) {
                     report(
                         &at,
                         condition.source(),
                         format!(
-                            "`{{{{{}}}}}` is already open in another condition of this promise; each condition finds its own value, so give it another name",
-                            variable
+                            "`{{{{{}}}}}` is already open in another condition of this promise; to use the value it finds, write `{{{{{}}}}}` here",
+                            variable,
+                            &variable[1..]
                         ),
                     );
+                } else {
+                    opened.insert(&variable[1..], j);
                 }
             }
         }
@@ -136,18 +139,69 @@ fn check_behaviors(
                 if is_builtin(variable) || is_open(variable) {
                     continue;
                 }
-                if !bound.contains(variable) {
-                    errors.push(SemanticError {
-                        item: item.to_string(),
-                        location: at.clone(),
-                        name: condition.source().clone(),
-                        message: format!(
-                            "`{{{{{}}}}}` is not named by the promise, so nothing supplies a value for it",
-                            variable
-                        ),
-                    });
+                // A sibling that opens the name supplies it.
+                if bound.contains(variable) || opened.get(variable).is_some_and(|by| *by != j) {
+                    continue;
                 }
+                let message = if opened.contains_key(variable) {
+                    format!(
+                        "`{{{{{}}}}}` is opened by this same condition as `{{{{?{}}}}}`; write it one way",
+                        variable, variable
+                    )
+                } else {
+                    format!(
+                        "`{{{{{}}}}}` is not named by the promise or opened as `{{{{?{}}}}}` by another condition, so nothing supplies a value for it",
+                        variable, variable
+                    )
+                };
+                errors.push(SemanticError {
+                    item: item.to_string(),
+                    location: at.clone(),
+                    name: condition.source().clone(),
+                    message,
+                });
             }
+        }
+        // Conditions that find a value are taken in whatever order lets each
+        // have what it waits on. Two waiting on each other never get a turn.
+        let mut known: BTreeSet<&str> = bound.clone();
+        let mut pending: Vec<usize> = opened.values().copied().collect();
+        pending.sort();
+        pending.dedup();
+        let conditions = promise.get_condition_patterns();
+        while let Some(ready) = pending.iter().position(|j| {
+            conditions[*j]
+                .vars()
+                .into_iter()
+                .filter(|v| !is_open(v) && !is_builtin(v) && opened.contains_key(v))
+                .all(|v| known.contains(v))
+        }) {
+            let j = pending.remove(ready);
+            known.extend(
+                conditions[j]
+                    .vars()
+                    .into_iter()
+                    .filter(|v| is_open(v))
+                    .map(|v| &v[1..]),
+            );
+        }
+        for j in pending {
+            // one that names its own value is reported above
+            if conditions[j]
+                .vars()
+                .into_iter()
+                .any(|v| opened.get(v) == Some(&j))
+            {
+                continue;
+            }
+            errors.push(SemanticError {
+                item: item.to_string(),
+                location: format!("{}.conditions[{}]", at, j),
+                name: conditions[j].source().clone(),
+                message: String::from(
+                    "waits on a value from a condition that waits on this one, so neither can be found first",
+                ),
+            });
         }
     }
 
@@ -311,20 +365,60 @@ provides:
     conditions:
       - \"{{?doc}} shows usage\"
       - \"{{?doc}} is approved\"
-  - name: reviewed
-    conditions:
-      - \"{{?doc}} shows usage\"
-      - \"{{doc}} is approved\"
   - name: \"copy in {{region}}\"
     conditions:
       - \"{{?region}} replica is healthy\"
 ",
         );
-        assert_eq!(found.len(), 4, "{:#?}", found);
+        assert_eq!(found.len(), 3, "{:#?}", found);
         assert!(found[0].contains("provides[0]") && found[0].contains("open variable"));
         assert!(found[1].contains("provides[1].conditions[1]") && found[1].contains("already open"));
-        assert!(found[2].contains("provides[2].conditions[1]") && found[2].contains("not named by the promise"));
-        assert!(found[3].contains("provides[3].conditions[0]") && found[3].contains("already named by the promise"));
+        assert!(found[2].contains("provides[2].conditions[0]") && found[2].contains("already named by the promise"));
+    }
+
+    #[test]
+    fn a_value_one_condition_finds_may_be_used_by_its_siblings() {
+        assert!(check(
+            "kind: Agent
+name: o1
+provides:
+  - name: reviewed
+    conditions:
+      - \"{{doc}} is approved\"
+      - \"{{?doc}} shows usage\"
+  - name: \"placed for {{team}}\"
+    conditions:
+      - \"{{?region}} hosts {{team}}\"
+      - \"{{?replica}} runs in {{region}}\"
+      - \"{{replica}} is healthy\"
+"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_shared_value_needs_a_condition_that_can_find_it() {
+        let found = messages(
+            "kind: Agent
+name: o1
+provides:
+  - name: reviewed
+    conditions:
+      - \"{{doc}} is approved\"
+  - name: mirrored
+    conditions:
+      - \"{{?doc}} copies {{doc}}\"
+  - name: paired
+    conditions:
+      - \"{{?a}} follows {{b}}\"
+      - \"{{?b}} follows {{a}}\"
+",
+        );
+        assert_eq!(found.len(), 4, "{:#?}", found);
+        assert!(found[0].contains("provides[0].conditions[0]") && found[0].contains("nothing supplies"));
+        assert!(found[1].contains("provides[1].conditions[0]") && found[1].contains("this same condition"));
+        assert!(found[2].contains("provides[2].conditions[0]") && found[2].contains("waits on a value"));
+        assert!(found[3].contains("provides[2].conditions[1]") && found[3].contains("waits on a value"));
     }
 
     #[test]

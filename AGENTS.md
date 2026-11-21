@@ -108,7 +108,9 @@ Key concepts:
   Instance, the member's for a SuperAgent member) before resolution
 - **`{{?x}}`**: an open variable in a condition or want, met by any behavior
   some agent promises outright that matches; not allowed in a provides name
-  or as a CLI behavior argument
+  or as a CLI behavior argument. A sibling condition of the same promise may
+  use the value it finds as plain `{{x}}`; each match is then tried as one
+  candidate across those conditions, one offer per candidate
 
 ## Technology Stack
 
