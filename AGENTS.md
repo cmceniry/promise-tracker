@@ -47,6 +47,9 @@ just build-wasm       # Build legacy WASM package
 - `resolve.rs` - Resolution logic (who provides what)
 - `query.rs` - Inventory queries as data: an agent's provides, a behavior's
   providers/consumers, unsatisfied wants with leaf causes, unused promises
+- `marks.rs` - Where substituted values sit in behavior names, by the agent
+  that needs and the agent that promises; the one source for the "Mark: Bound
+  values" display option (labels only, never identity)
 - `components/` - Domain models: `Agent`, `Behavior`, `SuperAgent`, `Item`
 
 ### API Server (`api/`)
@@ -79,8 +82,8 @@ Commands: `agents`, `behavior`, `check-unsatisfied`, `provides` (alias
 `schema`. Display flags matching the UI toggles, where meaningful:
 `--unfold` (SuperAgent members as agents), `--fold-self`, `--bundle`;
 `check-unsatisfied --summary` lists unsatisfied wants with leaf causes.
-`provides --mark-bound` wraps substituted values in `<>` (see
-`docs/design/self-and-open-variables.md`).
+`--mark-bound` on `provides` / `providers` / `unused` wraps substituted
+values in `<>` (see `docs/design/self-and-open-variables.md`).
 `provides` / `providers` / `unused` / `check-unsatisfied --summary` are thin
 printers over `src/query.rs`, which the UI's Inventory tab shares.
 

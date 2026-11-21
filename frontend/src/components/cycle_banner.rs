@@ -15,6 +15,7 @@
 //! reason.
 
 use leptos::prelude::*;
+use promise_tracker::marks::Marks;
 use promise_tracker::Tracker;
 
 /// How many loops to name before summarizing the rest.
@@ -62,7 +63,14 @@ fn CycleList(#[prop(into)] cycles: Signal<Vec<Vec<String>>>) -> impl IntoView {
 /// Renders nothing when there is no loop, so it can sit unconditionally at the
 /// top of any panel.
 #[component]
-pub fn CycleBanner(#[prop(into)] tracker: Signal<Option<Tracker>>) -> impl IntoView {
+pub fn CycleBanner(
+    #[prop(into)] tracker: Signal<Option<Tracker>>,
+    /// Whether substituted values in the looping behaviors are wrapped in
+    /// `<>`. A loop belongs to no one agent, so each name is marked with
+    /// whatever any agent substituted in it.
+    #[prop(into)]
+    mark_bound: Signal<bool>,
+) -> impl IntoView {
     // Both walks cover the whole contract, so they are memoized against the
     // tracker rather than run per render.
     let membership = Memo::new(move |_| {
@@ -76,6 +84,21 @@ pub fn CycleBanner(#[prop(into)] tracker: Signal<Option<Tracker>>) -> impl IntoV
             .get()
             .map(|t| t.dependency_cycles())
             .unwrap_or_default()
+    });
+    // What the loops are shown as. Nothing to mark without a loop, so the
+    // marks are only read when there is one.
+    let dependency_shown = Memo::new(move |_| {
+        let cycles = dependency.get();
+        if cycles.is_empty() || !mark_bound.get() {
+            return cycles;
+        }
+        match tracker.with(|t| t.as_ref().map(Marks::new)) {
+            Some(marks) => cycles
+                .iter()
+                .map(|cycle| cycle.iter().map(|goal| marks.any(goal)).collect())
+                .collect(),
+            None => cycles,
+        }
     });
 
     // Both blocks are alerts of the same weight. They differ in what is wrong
@@ -123,7 +146,7 @@ pub fn CycleBanner(#[prop(into)] tracker: Signal<Option<Tracker>>) -> impl IntoV
                      Resolution stops at the loop, and every behavior below it reads \
                      as unpromised."
                 </div>
-                <CycleList cycles=dependency />
+                <CycleList cycles=dependency_shown />
             </div>
         </Show>
     }

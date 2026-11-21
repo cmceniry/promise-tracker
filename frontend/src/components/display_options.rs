@@ -12,8 +12,8 @@ pub struct ViewOptions {
     pub bundle: bool,
     /// Promises an agent makes to itself are folded away.
     pub fold_self: bool,
-    /// Values a variable was replaced with are wrapped in `<>` where an
-    /// agent's own declarations are listed. Display only.
+    /// Values a variable was replaced with are wrapped in `<>` wherever a
+    /// behavior is named. Display only.
     pub mark_bound: bool,
 }
 
@@ -41,10 +41,16 @@ impl ViewOptions {
         if self.fold_self {
             folded.push("self-fulfilling promises folded");
         }
-        if folded.is_empty() {
+        let folded = if folded.is_empty() {
             "nothing folded".to_string()
         } else {
             folded.join(", ")
+        };
+        // Said only when on, so an export without it reads as it always has.
+        if self.mark_bound {
+            format!("{}, bound values marked", folded)
+        } else {
+            folded
         }
     }
 }
@@ -138,7 +144,7 @@ pub fn DisplayOptions(
             <OptionToggle
                 on=mark_bound
                 label="Bound values"
-                about="Wrap values a variable was replaced with in <>, such as an agent's own name where it wrote {{!self}}, in the Inventory and the Trace wants list"
+                about="Wrap values a variable was replaced with in <>, such as an agent's own name where it wrote {{!self}} or what a {{variable}} matched, wherever a behavior is named"
                 on_click=Callback::new(move |_| set_options.update(|o| o.mark_bound = !o.mark_bound))
             >
                 // Angle brackets around a value.

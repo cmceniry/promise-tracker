@@ -316,22 +316,76 @@ impl Pattern {
         !self.bound.is_empty()
     }
 
+    /// The byte ranges of the source a substitution filled in, in order.
+    pub fn bound(&self) -> &[(usize, usize)] {
+        &self.bound
+    }
+
     /// The source with every substituted value wrapped in `<>`, to show what
     /// was written as a variable. For display only: `<A1> reads R1` and
     /// `A1 reads R1` are the same name.
     pub fn marked(&self) -> String {
-        let mut out = String::new();
-        let mut at = 0;
-        for (start, end) in &self.bound {
-            out.push_str(&self.source[at..*start]);
-            out.push('<');
-            out.push_str(&self.source[*start..*end]);
-            out.push('>');
-            at = *end;
-        }
-        out.push_str(&self.source[at..]);
-        out
+        mark_spans(&self.source, &self.bound)
     }
+
+    /// Where this pattern's variables, and whatever was substituted into it
+    /// earlier, fall in a concrete `name` it matches: `{{who}} backs up`
+    /// against `b1 backs up` gives the range of `b1`. None when it does not
+    /// match.
+    pub fn spans_on(&self, name: &str) -> Option<Vec<(usize, usize)>> {
+        let bindings = self.match_ground(name)?;
+        Some(self.substitute(&bindings).bound)
+    }
+}
+
+/// `text` with each of `spans` wrapped in `<>`. For display only.
+///
+/// Spans are byte ranges. One that falls outside the text, splits a
+/// character or runs into the one before it is left unmarked rather than
+/// trusted.
+pub fn mark_spans(text: &str, spans: &[(usize, usize)]) -> String {
+    mark_spans_with(text, spans, "<", ">")
+}
+
+/// [`mark_spans`] with the marks spelled some other way, for a renderer that
+/// reads `<` and `>` as markup.
+pub fn mark_spans_with(text: &str, spans: &[(usize, usize)], open: &str, close: &str) -> String {
+    let mut out = String::new();
+    let mut at = 0;
+    for (start, end) in spans {
+        let (start, end) = (*start, *end);
+        if start < at
+            || end <= start
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            continue;
+        }
+        out.push_str(&text[at..start]);
+        out.push_str(open);
+        out.push_str(&text[start..end]);
+        out.push_str(close);
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// Two sets of spans over the same text as one: in order, each once, with
+/// spans that overlap run together. Spans that only touch stay apart, so two
+/// values side by side still read as two.
+pub fn merge_spans(a: &[(usize, usize)], b: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut all: Vec<(usize, usize)> = a.iter().chain(b.iter()).copied().collect();
+    all.sort();
+    let mut out: Vec<(usize, usize)> = vec![];
+    for (start, end) in all {
+        match out.last_mut() {
+            Some(last) if start < last.1 || (start, end) == *last => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
 }
 
 /// Match `segs` against `input`, shortest binding first, backtracking when a
@@ -752,6 +806,51 @@ mod tests {
         let third = second.substitute(&binds(&[("tenant", "t1")]));
         assert_eq!(third.source(), "x/prod/db/t1/y");
         assert_eq!(third.marked(), "x/<prod>/<db>/<t1>/y");
+    }
+
+    #[test]
+    fn spans_on_finds_what_the_variables_matched() {
+        let p = Pattern::parse("{{who}} backs up {{what}}").unwrap();
+        assert_eq!(p.spans_on("b1 backs up db"), Some(vec![(0, 2), (12, 14)]));
+        assert_eq!(p.spans_on("b1 restores db"), None);
+        // What was substituted earlier is carried onto the match.
+        let open = Pattern::parse("{{app}} has role {{?role}}")
+            .unwrap()
+            .substitute(&Bindings::from([("app".to_string(), "é1".to_string())]));
+        let spans = open.spans_on("é1 has role admin").unwrap();
+        assert_eq!(
+            mark_spans("é1 has role admin", &spans),
+            "<é1> has role <admin>"
+        );
+        // A written-out name has nothing to find.
+        assert_eq!(
+            Pattern::parse("b1 backs up")
+                .unwrap()
+                .spans_on("b1 backs up"),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn mark_spans_skips_what_it_cannot_trust() {
+        // Out of range, splitting a character, overlapping, empty.
+        assert_eq!(mark_spans("ab", &[(1, 9)]), "ab");
+        assert_eq!(mark_spans("é/x", &[(1, 3)]), "é/x");
+        assert_eq!(mark_spans("abcd", &[(0, 2), (1, 3)]), "<ab>cd");
+        assert_eq!(mark_spans("abcd", &[(2, 2)]), "abcd");
+        assert_eq!(
+            mark_spans_with("abcd", &[(1, 2)], "#lt;", "#gt;"),
+            "a#lt;b#gt;cd"
+        );
+    }
+
+    #[test]
+    fn merge_spans_joins_overlaps_and_keeps_neighbors_apart() {
+        assert_eq!(merge_spans(&[(0, 2)], &[(0, 2)]), vec![(0, 2)]);
+        assert_eq!(merge_spans(&[(0, 3)], &[(2, 5)]), vec![(0, 5)]);
+        assert_eq!(merge_spans(&[(4, 6)], &[(0, 2)]), vec![(0, 2), (4, 6)]);
+        assert_eq!(merge_spans(&[(0, 2)], &[(2, 4)]), vec![(0, 2), (2, 4)]);
+        assert_eq!(merge_spans(&[], &[]), vec![]);
     }
 
     #[test]

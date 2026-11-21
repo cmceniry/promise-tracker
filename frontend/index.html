@@ -756,7 +756,8 @@
                                 id: 'p:' + k + ':' + p.behavior + ':' + p.kind + ':' + i,
                                 source: e.source,
                                 target: e.target,
-                                label: p.behavior,
+                                // What is drawn; `behavior` stays the identity.
+                                label: p.label || p.behavior,
                                 behavior: p.behavior,
                                 kind: p.kind,
                                 satisfied: p.satisfied,
@@ -1228,7 +1229,7 @@
          * is what drops the edge-tap jump to the Detailed view, the one thing
          * a page holding a single view cannot honour.
          *
-         * meta: { title, subtitle, unsatisfied: [{ agent, behavior }] }
+         * meta: { title, subtitle, unsatisfied: [{ agent, behavior, label? }] }
          */
         window.export_promise_graph = function(containerId, meta) {
             const snap = RT.snapshot(containerId);
@@ -1283,7 +1284,7 @@
                 '} else DATA.unsatisfied.forEach(function(u) {',
                 '  var b = document.createElement("button");',
                 '  b.className = "pt-chip";',
-                '  b.textContent = u.agent + " ✗ " + u.behavior;',
+                '  b.textContent = u.agent + " ✗ " + (u.label || u.behavior);',
                 '  b.addEventListener("click", function() { RT.focus(DATA.id, u.agent, u.behavior); });',
                 '  strip.appendChild(b);',
                 '});',

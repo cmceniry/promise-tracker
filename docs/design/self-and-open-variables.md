@@ -142,18 +142,54 @@ editor.
 An optional marking wraps substituted values in `<>`: `<A1> reads R1`.
 
 - Display only, off by default. The behavior's identity is the plain text;
-  `<A1> reads R1` and `A1 reads R1` are the same behavior.
-- A UI toggle in the options bar ("Mark: Bound values") and a `--mark-bound`
-  flag on CLI `provides`.
-- Shown wherever one agent's own declaration is listed: the Inventory tab's
-  Agents detail (promises, their conditions, patterns), the trace wants list,
-  and CLI `provides`. CLI `agents` and `behavior` list names that belong to no
-  single declaration, so they carry no marking.
-- Not on graph edge labels. An edge joins two declarations of one name, which
-  may have been written differently, so there is no single right marking.
-- Covers every substituted value. Phase 1 delivers it for `{{!self}}` and
-  Instance `bindings:`, both fixed at build time. Values bound by matching a
-  goal (`<A1> reads R1` against `{{agent}} reads R1`) follow in phase 2.
+  `<A1> reads R1` and `A1 reads R1` are the same behavior. Marked text is
+  never a key: node ids, selections, lookups and search all use the plain
+  name.
+- A UI toggle in the options bar ("Mark: Bound values"), above the tabs and
+  so on every one of them, and a `--mark-bound` flag on CLI `provides`,
+  `providers` and `unused`.
+- Covers every substituted value:
+  - `{{!self}}` and Instance `bindings:`, fixed when the working agents are
+    built;
+  - what a parameterized promise name took from the goal it keeps
+    (`<A1> reads R1` against `{{agent}} reads R1`), and that value where it
+    went on into the promise's conditions;
+  - a value one condition found with `{{?x}}`, where a sibling uses it;
+  - the part of a promised behavior an open goal's `{{?x}}` matched.
+- A name is marked by who is looking at it. The agent that needs a behavior
+  (a want, or a condition on its promise) marks what its side filled in; the
+  agent that promises it marks what its own declaration names through a
+  variable. So a want reads `Read Secret appsecret by <appname>` in its own
+  agent's lists, while the provider that keeps it under
+  `Read Secret {{secret}} by {{app}}` has `Read Secret <appsecret> by
+  <appname>`.
+- Where the two meet, both show. A graph edge, a sequence arrow, a trace
+  card and a text row each stand for one behavior between a needing and a
+  promising agent, and are marked with what either substituted. This reverses
+  the earlier decision to keep marks off edge labels: the two declarations
+  may be written differently, and the union is the reading that hides
+  nothing. `<appname> has IAM role <approle>` is `appname`'s own
+  `{{!self}}` together with the asker's `{{?approle}}`.
+- Where a name belongs to no one agent — the Inventory's behavior list and a
+  behavior's heading, a dependency loop in the cycle banner, a line ending
+  in a scratch group — it is marked with what any agent substituted.
+- CLI `agents`, `behavior`, `simulate` and `check-unsatisfied` carry no
+  marking.
+
+Where each view takes its label from, with the option on:
+
+| View | Label |
+|---|---|
+| Overview graph | `fold::mark`: each promise on a line by `Marks::edge(source, target, behavior)`; a missing behavior's node by `Marks::needed`; the unsatisfied strip by `Marks::need(agent, want)` |
+| Detailed, Text | the resolution itself: heading `Resolution::marked_name` (from `Tracker::resolve_want`), each row under it `marked_name_with_offers` |
+| Detailed, Sequence | `DiagramOptions::mark_bound`: each arrow by the offer's and the needing side's spans together; the marks are written `#lt;` `#gt;` so Mermaid draws them rather than reading markup |
+| Detailed, behavior select | `Tracker::marked_name(component, want)` |
+| Trace | wants list `Marks::need(agent, want)`; cards and their needs `Trail::labels` (want card as its agent wrote it, promise card `Marks::kept`, missing `Marks::needed`) |
+| Inventory, Agents | promises `Marks::promise(agent, …)`, conditions `Marks::need(agent, …)` |
+| Inventory, Behaviors | list and heading `Marks::any`; a provider's pattern and a consumer's promise `promise_by(row agents, …)`; conditions `need_by(row agents, …)` |
+| Inventory, Unsatisfied | the want `need_by(row agents, …)`; a cause as the promise's agent needs it; the promise it is a condition of `Marks::kept` |
+| Inventory, Unused | the promise `promise_by(its agents, …)`; conditions `need_by(row agents, …)` |
+| Cycle banner | `Marks::any` |
 
 ### Validation
 
@@ -180,9 +216,26 @@ As built:
   `rebuild()` binds every agent that stands on its own. No working agent holds
   an unsubstituted `{{!self}}`.
 - `Tracker::marked_name(agent, name)` returns a name as that agent declares
-  it, marked, or None when nothing in it was substituted. The display sites
-  call it; the query rows in `src/query.rs` are unchanged and keep plain
-  names.
+  it, marked, or None when nothing in it was substituted.
+- `Resolution` and `Offer` carry the spans resolution filled in
+  (`src/resolve.rs`): a resolution, the parts of its name the needing side
+  substituted; an offer, the parts of the behavior it keeps that its promise
+  names through a variable, and under an open goal the parts the goal filled
+  in or matched. They are set in `Tracker::resolve_goal` and
+  `resolve_reading` from the substituted condition `Pattern`s. The spans take
+  no part in equality or `Debug`, and are serialized only when not empty.
+- The per-goal cache in `resolve_goal` is keyed on goal text, and what it
+  holds does not depend on how the goal was reached. The one thing that does
+  — which parts of the goal's own name were substituted — is put on after the
+  lookup (`as_reached_by`), never stored. `Tracker::resolve_want(agent,
+  want)` does the same for a top-level want.
+- `src/marks.rs`: `Marks::new(tracker)` reads every declaration and walks
+  every resolution once, and keeps the spans by (agent that needs, name) and
+  (agent that promises, name). The graph, trail and query rows are unchanged
+  and keep plain names; a view asked to mark looks its label up by the same
+  plain name (`need`, `promise`, `kept`, `edge`, `needed`, `any`). Views that
+  already walk a resolution — the text view, the sequence diagram — read the
+  spans off it directly.
 
 ## 3. Phase 2 — open variables
 
@@ -283,10 +336,12 @@ As built:
 
 Not yet done:
 
-- `<>` marking for values bound by matching a goal (phase 1 marking covers
-  `{{!self}}` and Instance bindings only).
-- `network_diagram.rs` still labels an open want's providers under the
-  pattern text.
+- `network_diagram.rs` (the legacy graph, drawn by no tab) still labels an open want's providers under the
+  pattern text, and carries no marking.
+- The Detailed text view names an open condition and who answers it, but not
+  the behavior it matched, so the open match's own marks
+  (`<appname> has IAM role <approle>`) show in the other views and not there.
+- CLI `simulate`, `check-unsatisfied` have no `--mark-bound`.
 - The Inventory tab shows an unmatched open want as plainly "not provided",
   without the note the CLI gives.
 
@@ -297,8 +352,12 @@ Not yet done:
   instances of one Agent base yield distinct wants; a SuperAgent member keeps
   its own name folded and unfolded; the instanced-SuperAgent overlap asserted
   as the documented behavior.
-- **marking** — `<>` present on declaration listings with the option on,
-  absent with it off, never on edge labels; identity unaffected.
+- **marking** — `<>` present with the option on and absent with it off, in
+  each renderer: the marks table (`marks.rs`), the folded graph's lines and
+  missing nodes, the sequence diagram (as entity codes), the trail's cards
+  and needs, bundled and not, and the text rows; every kind of substitution
+  on the IAM chain; a goal reached two ways marked each its own way despite
+  the cache; identity, equality, `Debug` and empty serialization unaffected.
 - **open** — the motivating chain end to end; two matching documents giving
   two offers, satisfied if either is; no match unsatisfied under the pattern
   text; an open want; a repeat within one name binding consistently; a
@@ -395,7 +454,8 @@ As built:
 Not yet done:
 
 - Nothing in the UI or CLI says which value an offer stands on, other than the
-  names of its conditions.
+  names of its conditions. With "Mark: Bound values" on, the value is at least
+  set apart in them (`… to <approle>`).
 - `Index::consumers` counts a sharing condition as a consumer of anything its
   text could match (`{{thing}} does stuff` uses every `… does stuff`), not
   only the candidates the binder found.

@@ -215,12 +215,15 @@ pub fn ContractGraph(
         }
 
         // Generate the actual diagram
-        let resolution = pt.resolve(&behavior);
+        // Resolved as the component wants it, so that marking can show what
+        // its own declaration filled in.
+        let resolution = pt.resolve_want(&component, &behavior);
         diagram_with(&component, &behavior, &resolution, {
             let o = options.get();
             DiagramOptions {
                 show_self_promises: !o.fold_self,
                 bundle: o.bundle,
+                mark_bound: o.mark_bound,
             }
         })
     });

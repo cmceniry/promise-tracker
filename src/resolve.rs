@@ -1,11 +1,25 @@
+use crate::components::{mark_spans, merge_spans};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Byte ranges of a behavior name that a substitution filled in. Only ever
+/// used to draw the name with those values wrapped in `<>`.
+pub type Spans = Vec<(usize, usize)>;
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Resolution {
     behavior_name: String,
     satisfying_offers: Vec<Offer>,
     unsatisfying_offers: Vec<Offer>,
+    /// The parts of `behavior_name` that whoever needs it filled in: its own
+    /// `{{!self}}` or Instance binding, a value the promise's goal bound, or
+    /// one a sibling condition found. Empty when the name was written out.
+    ///
+    /// Display only. It depends on how the goal was reached, not only on its
+    /// text, so it takes no part in equality, and it is left out of the
+    /// serialized form when empty so that output is as it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bound: Spans,
 }
 
 impl Resolution {
@@ -14,7 +28,60 @@ impl Resolution {
             behavior_name: String::from(behavior_name),
             satisfying_offers: vec![],
             unsatisfying_offers: vec![],
+            bound: vec![],
         }
+    }
+
+    /// This resolution, with the parts of its name a substitution filled in.
+    pub fn with_bound(mut self, bound: Spans) -> Resolution {
+        self.bound = bound;
+        self
+    }
+
+    /// The parts of the name whoever needs it filled in. Display only.
+    pub fn get_bound(&self) -> &[(usize, usize)] {
+        &self.bound
+    }
+
+    /// The name as whoever needs it wrote it, substituted values in `<>`:
+    /// `<A1> reads R1`. The plain name when nothing was substituted. Display
+    /// only; never a behavior name.
+    pub fn marked_name(&self) -> String {
+        mark_spans(&self.behavior_name, &self.bound)
+    }
+
+    /// The name with what either side filled in marked: the needing side as
+    /// in [`Resolution::marked_name`], and every promise that names it
+    /// through a variable. An offer answering an open goal keeps a behavior
+    /// of its own and adds nothing here.
+    pub fn marked_name_with_offers(&self) -> String {
+        let mut spans = self.bound.clone();
+        for offer in self
+            .satisfying_offers
+            .iter()
+            .chain(&self.unsatisfying_offers)
+        {
+            if offer.behavior.is_none() {
+                spans = merge_spans(&spans, &offer.bound);
+            }
+        }
+        mark_spans(&self.behavior_name, &spans)
+    }
+
+    /// The behavior `offer` keeps for this resolution, with what both sides
+    /// filled in marked. For an open goal that is the concrete behavior the
+    /// offer matched, marked where the goal's variables fell.
+    pub fn marked_offer(&self, offer: &Offer) -> String {
+        mark_spans(
+            offer.get_behavior().unwrap_or(&self.behavior_name),
+            &offer.kept_spans(&self.bound),
+        )
+    }
+
+    pub(crate) fn offers_mut(&mut self) -> impl Iterator<Item = &mut Offer> {
+        self.satisfying_offers
+            .iter_mut()
+            .chain(self.unsatisfying_offers.iter_mut())
     }
 
     pub fn add_satisfying_offer(mut self, offer: Offer) -> Resolution {
@@ -203,6 +270,21 @@ impl Resolution {
     }
 }
 
+/// Written out so that it prints what it always has: CLI `simulate` shows a
+/// resolution this way, and the display-only spans are not part of it.
+impl std::fmt::Debug for Resolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Resolution")
+            .field("behavior_name", &self.behavior_name)
+            .field("satisfying_offers", &self.satisfying_offers)
+            .field("unsatisfying_offers", &self.unsatisfying_offers)
+            .finish()
+    }
+}
+
+/// Equal when the name and the offers are, in any order. `bound` is left out:
+/// it only says how to draw the name, and the same goal reached two ways is
+/// the same resolution.
 impl PartialEq for Resolution {
     fn eq(&self, other: &Self) -> bool {
         if self.behavior_name != other.behavior_name {
@@ -319,7 +401,7 @@ mod tests_resolution {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Offer {
     agent_name: String,
     resolved_conditions: Vec<Resolution>,
@@ -328,6 +410,16 @@ pub struct Offer {
     /// concrete goal, whose name already says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     behavior: Option<String>,
+    /// The parts of the behavior this offer keeps that the promise names
+    /// through a variable: its agent's `{{!self}}` or Instance binding, or
+    /// what a parameterized name took from the goal. Display only, and like
+    /// [`Resolution`]'s no part of equality.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bound: Spans,
+    /// Under an open goal, the parts of `behavior` the goal filled in or
+    /// its `{{?x}}` matched. Display only; no part of equality.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matched: Spans,
 }
 
 impl Offer {
@@ -336,6 +428,8 @@ impl Offer {
             agent_name: String::from(agent_name),
             resolved_conditions: vec![],
             behavior: None,
+            bound: vec![],
+            matched: vec![],
         }
     }
 
@@ -344,6 +438,8 @@ impl Offer {
             agent_name: String::from(agent_name),
             resolved_conditions,
             behavior: None,
+            bound: vec![],
+            matched: vec![],
         }
     }
 
@@ -352,6 +448,42 @@ impl Offer {
     pub fn answering(mut self, behavior: &str) -> Offer {
         self.behavior = Some(behavior.to_string());
         self
+    }
+
+    /// This offer, with the parts of the behavior it keeps that its promise
+    /// names through a variable.
+    pub fn with_bound(mut self, bound: Spans) -> Offer {
+        self.bound = bound;
+        self
+    }
+
+    /// This offer, with the parts of the behavior it keeps that the open
+    /// goal it answers filled in or matched.
+    pub fn with_matched(mut self, matched: Spans) -> Offer {
+        self.matched = matched;
+        self
+    }
+
+    /// The parts of the kept behavior the promise names through a variable.
+    pub fn get_bound(&self) -> &[(usize, usize)] {
+        &self.bound
+    }
+
+    /// The parts of the kept behavior an open goal filled in or matched.
+    pub fn get_matched(&self) -> &[(usize, usize)] {
+        &self.matched
+    }
+
+    /// The substituted parts of the behavior this offer keeps, from both
+    /// sides. `needed` is what whoever needs the goal filled in on its name
+    /// ([`Resolution::get_bound`]); under an open goal the offer keeps a
+    /// behavior of its own and carries the goal's side itself.
+    pub fn kept_spans(&self, needed: &[(usize, usize)]) -> Spans {
+        if self.behavior.is_some() {
+            merge_spans(&self.matched, &self.bound)
+        } else {
+            merge_spans(needed, &self.bound)
+        }
     }
 
     /// The concrete behavior this offer keeps, when the goal was open.
@@ -461,6 +593,20 @@ impl Offer {
     }
 }
 
+/// As [`Resolution`]'s: without the display-only spans.
+impl std::fmt::Debug for Offer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Offer")
+            .field("agent_name", &self.agent_name)
+            .field("resolved_conditions", &self.resolved_conditions)
+            .field("behavior", &self.behavior)
+            .finish()
+    }
+}
+
+/// Equal when the agent, the kept behavior and the conditions are, in any
+/// order. `bound` and `matched` are left out: they only say how to draw the
+/// behavior.
 impl PartialEq for Offer {
     fn eq(&self, other: &Self) -> bool {
         if self.agent_name != other.agent_name {
@@ -492,6 +638,55 @@ impl Eq for Offer {}
 #[cfg(test)]
 mod tests_offer {
     use super::*;
+
+    #[test]
+    fn test_display_spans_are_not_identity_and_not_serialized_when_empty() {
+        let plain = Resolution::new("a1 reads r1").add_satisfying_offer(Offer::new("s1"));
+        let marked = Resolution::new("a1 reads r1")
+            .with_bound(vec![(0, 2)])
+            .add_satisfying_offer(Offer::new("s1").with_bound(vec![(9, 11)]));
+        assert_eq!(plain, marked);
+
+        assert_eq!(plain.marked_name(), "a1 reads r1");
+        assert_eq!(marked.marked_name(), "<a1> reads r1");
+        assert_eq!(marked.marked_name_with_offers(), "<a1> reads <r1>");
+        assert_eq!(
+            marked.marked_offer(&marked.get_satisfying_offers()[0]),
+            "<a1> reads <r1>"
+        );
+        // Under an open goal the offer carries the goal's side itself.
+        let open = Resolution::new("{{?who}} reads r1")
+            .with_bound(vec![(15, 17)])
+            .add_satisfying_offer(
+                Offer::new("s1")
+                    .answering("a1 reads r1")
+                    .with_matched(vec![(0, 2), (9, 11)]),
+            );
+        assert_eq!(open.marked_name(), "{{?who}} reads <r1>");
+        assert_eq!(open.marked_name_with_offers(), "{{?who}} reads <r1>");
+        assert_eq!(
+            open.marked_offer(&open.get_satisfying_offers()[0]),
+            "<a1> reads <r1>"
+        );
+
+        // Printed for CLI `simulate` as it always was, spans or not.
+        assert_eq!(format!("{:?}", marked), format!("{:?}", plain));
+        assert_eq!(format!("{:#?}", marked), format!("{:#?}", plain));
+        assert_eq!(
+            format!("{:?}", Offer::new("s1")),
+            "Offer { agent_name: \"s1\", resolved_conditions: [], behavior: None }"
+        );
+
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("bound") && !json.contains("matched"),
+            "{}",
+            json
+        );
+        let back: Resolution =
+            serde_json::from_str(&serde_json::to_string(&marked).unwrap()).unwrap();
+        assert_eq!(back.marked_name_with_offers(), "<a1> reads <r1>");
+    }
 
     #[test]
     fn test_eq() {

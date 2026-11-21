@@ -6,7 +6,8 @@
 //! the card that reached it again shows a pointer back instead.
 
 use leptos::prelude::*;
-use promise_tracker::trace::{trail, wants, CardKind, Trail, TrailCard, WantSummary};
+use promise_tracker::marks::Marks;
+use promise_tracker::trace::{trail, wants, CardKind, CardLabels, Trail, TrailCard, WantSummary};
 use promise_tracker::Tracker;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -14,7 +15,7 @@ use wasm_bindgen::prelude::*;
 
 use super::display_options::ViewOptions;
 use super::view_frame::ViewFrame;
-use crate::utils::{escape_html, generated_at, html_document, slugify};
+use crate::utils::{escape_html, generated_at, html_document, search_key, slugify};
 
 // JS interop for the connector overlay in index.html
 #[wasm_bindgen]
@@ -107,13 +108,28 @@ fn card_agent_line(card: &TrailCard) -> String {
     }
 }
 
-/// The behavior line of a card: a bundle counts its promises.
-fn card_behavior_line(card: &TrailCard) -> String {
+/// The behavior line of a card: a bundle counts its promises. `behavior` is
+/// what the card says its behavior is — its name, or its marked form.
+fn card_behavior_line(card: &TrailCard, behavior: &str) -> String {
     if card.promises.is_empty() {
-        card.behavior.clone()
+        behavior.to_string()
     } else {
-        format!("{} \u{00d7}{}", card.behavior, card.count())
+        format!("{} \u{00d7}{}", behavior, card.count())
     }
+}
+
+/// What a card says, falling back to its plain names if the labels were
+/// made for some other trail.
+fn labels_for(labels: &[CardLabels], card: &TrailCard) -> CardLabels {
+    labels
+        .get(card.id)
+        .filter(|l| l.needs.len() == card.needs.len() && l.promises.len() == card.promises.len())
+        .cloned()
+        .unwrap_or_else(|| CardLabels {
+            behavior: card.behavior.clone(),
+            promises: card.promises.iter().map(|p| p.behavior.clone()).collect(),
+            needs: card.needs.iter().map(|n| n.behavior.clone()).collect(),
+        })
 }
 
 /// Everything the status strip says about a trail.
@@ -170,7 +186,7 @@ fn other_offers(trail: &Trail, card: &TrailCard) -> Vec<String> {
 
 /// The trail as static markup for the downloaded page: the same columns and
 /// cards, without the hover and selection.
-fn trail_html(trail: &Trail, summary: &str) -> String {
+fn trail_html(trail: &Trail, labels: &[CardLabels], summary: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "<div class=\"trail-status {}\">{}</div>\n<div class=\"trail-columns\">\n",
@@ -187,15 +203,16 @@ fn trail_html(trail: &Trail, summary: &str) -> String {
             column_heading(depth)
         ));
         for card in trail.column(depth) {
+            let said = labels_for(labels, card);
             out.push_str(&format!(
                 "<div class=\"trail-card {}\"><div class=\"trail-card-behavior\">{}</div><div class=\"trail-card-agent\">{}</div>",
                 card_status_class(card),
-                escape_html(&card_behavior_line(card)),
+                escape_html(&card_behavior_line(card, &said.behavior)),
                 escape_html(&card_agent_line(card))
             ));
             if !card.promises.is_empty() {
                 out.push_str("<ul class=\"trail-card-promises\">");
-                for p in &card.promises {
+                for (p, label) in card.promises.iter().zip(&said.promises) {
                     out.push_str(&format!(
                         "<li{}>{}{}</li>",
                         if p.satisfied {
@@ -203,7 +220,7 @@ fn trail_html(trail: &Trail, summary: &str) -> String {
                         } else {
                             " class=\"trail-text-broken\""
                         },
-                        escape_html(&p.behavior),
+                        escape_html(label),
                         if p.satisfied { "" } else { " \u{2717}" }
                     ));
                 }
@@ -211,7 +228,7 @@ fn trail_html(trail: &Trail, summary: &str) -> String {
             }
             if !card.needs.is_empty() {
                 out.push_str("<div class=\"trail-needs\">");
-                for need in &card.needs {
+                for (need, label) in card.needs.iter().zip(&said.needs) {
                     let mut classes = vec!["trail-need"];
                     if need.reference {
                         classes.push("trail-need-ref");
@@ -226,7 +243,7 @@ fn trail_html(trail: &Trail, summary: &str) -> String {
                         "<span class=\"{}\">{}{}</span>",
                         classes.join(" "),
                         if need.reference { "\u{21a9} " } else { "" },
-                        escape_html(&need.behavior)
+                        escape_html(label)
                     ));
                 }
                 out.push_str("</div>");
@@ -288,6 +305,23 @@ pub fn TraceView(
             t
         };
         Some(if o.bundle { t.bundled() } else { t })
+    });
+
+    // Where substituted values sit, read only while marking is on.
+    let marks = Memo::new(move |_| {
+        options
+            .get()
+            .mark_bound
+            .then(|| tracker.get().map(|t| Marks::new(&t)))
+            .flatten()
+    });
+    // What each card says, by card id: plain names, or marked ones. The
+    // cards keep plain names either way, for selection and lookups.
+    let card_labels = Memo::new(move |_| {
+        current_trail
+            .get()
+            .map(|t| t.labels(&marks.get().unwrap_or_default()))
+            .unwrap_or_default()
     });
 
     // Card selection is by id, which changes with the trail. When the trail
@@ -388,7 +422,7 @@ pub fn TraceView(
 
     let export = Callback::new(move |_: ()| {
         let t = current_trail.get_untracked()?;
-        let body = trail_html(&t, &summary.get_untracked());
+        let body = trail_html(&t, &card_labels.get_untracked(), &summary.get_untracked());
         Some(html_document(
             &frame_title.get_untracked(),
             &frame_subtitle.get_untracked(),
@@ -488,15 +522,10 @@ pub fn TraceView(
                                                 let behavior_for_active = w.behavior.clone();
                                                 // The want as its agent declares it,
                                                 // marked when asked for.
-                                                let label = options
-                                                    .get()
-                                                    .mark_bound
-                                                    .then(|| {
-                                                        tracker.with(|t| {
-                                                            t.as_ref()?.marked_name(&w.agent, &w.behavior)
-                                                        })
+                                                let label = marks
+                                                    .with(|m| {
+                                                        m.as_ref().map(|m| m.need(&w.agent, &w.behavior))
                                                     })
-                                                    .flatten()
                                                     .unwrap_or_else(|| w.behavior.clone());
                                                 let held = w.satisfied;
                                                 view! {
@@ -556,11 +585,14 @@ pub fn TraceView(
                             "trail-status trail-status-broken"
                         };
                         let width = t.width();
+                        let labels = card_labels.get();
+                        let labels_for_inspector = labels.clone();
                         let columns = (0..width)
                             .map(|depth| {
                                 let cards: Vec<TrailCard> =
                                     t.column(depth).into_iter().cloned().collect();
                                 let trail_for_cards = t.clone();
+                                let labels = labels.clone();
                                 view! {
                                     <div class="trail-column">
                                         <div class="trail-column-head">{column_heading(depth)}</div>
@@ -570,10 +602,21 @@ pub fn TraceView(
                                                 let id = card.id;
                                                 let status = card_status_class(&card);
                                                 let agent_line = card_agent_line(&card);
-                                                let behavior = card_behavior_line(&card);
-                                                let promises = card.promises.clone();
+                                                let said = labels_for(&labels, &card);
+                                                let behavior = card_behavior_line(&card, &said.behavior);
+                                                let promises: Vec<(String, bool)> = said
+                                                    .promises
+                                                    .iter()
+                                                    .cloned()
+                                                    .zip(card.promises.iter().map(|p| p.satisfied))
+                                                    .collect();
                                                 let expandable = !promises.is_empty();
-                                                let needs = card.needs.clone();
+                                                let needs: Vec<_> = card
+                                                    .needs
+                                                    .iter()
+                                                    .cloned()
+                                                    .zip(said.needs.iter().cloned())
+                                                    .collect();
                                                 // On the chain in front, or faded behind it.
                                                 let on_chain = move || {
                                                     chain.get().map(|c| c.contains(&id)).unwrap_or(false)
@@ -617,11 +660,11 @@ pub fn TraceView(
                                                                     <ul class="trail-card-promises">
                                                                         {promises
                                                                             .iter()
-                                                                            .map(|p| {
-                                                                                let broken = !p.satisfied;
+                                                                            .map(|(label, satisfied)| {
+                                                                                let broken = !satisfied;
                                                                                 view! {
                                                                                     <li class:trail-text-broken=broken>
-                                                                                        {p.behavior.clone()}
+                                                                                        {label.clone()}
                                                                                         {if broken { " \u{2717}" } else { "" }}
                                                                                     </li>
                                                                                 }
@@ -636,7 +679,7 @@ pub fn TraceView(
                                                         } else {
                                                             let chips = needs
                                                                 .into_iter()
-                                                                .map(|need| {
+                                                                .map(|(need, label)| {
                                                                     let target = need.card;
                                                                     let broken = !trail_for_cards.cards[target].satisfied;
                                                                     let title = if need.reference {
@@ -649,7 +692,7 @@ pub fn TraceView(
                                                                     let text = format!(
                                                                         "{}{}",
                                                                         if need.reference { "\u{21a9} " } else { "" },
-                                                                        need.behavior
+                                                                        label
                                                                     );
                                                                     view! {
                                                                         <span
@@ -717,19 +760,24 @@ pub fn TraceView(
                                         )
                                     })
                                     .unwrap_or((None, None));
+                                let said = labels_for(&labels_for_inspector, &card);
                                 let conditions: Vec<(String, bool, bool)> = card
                                     .needs
                                     .iter()
-                                    .map(|n| (n.behavior.clone(), t.cards[n.card].satisfied, n.own))
+                                    .zip(&said.needs)
+                                    .map(|(n, label)| (label.clone(), t.cards[n.card].satisfied, n.own))
                                     .collect();
                                 let dependents: Vec<String> = needed_by(&t, id)
                                     .into_iter()
-                                    .map(|c| match &c.agent {
-                                        Some(a) if c.kind == CardKind::Offer => {
-                                            format!("{} by {}", c.behavior, a)
+                                    .map(|c| {
+                                        let behavior = labels_for(&labels_for_inspector, c).behavior;
+                                        match &c.agent {
+                                            Some(a) if c.kind == CardKind::Offer => {
+                                                format!("{} by {}", behavior, a)
+                                            }
+                                            Some(a) => format!("{} wanted by {}", behavior, a),
+                                            None => behavior,
                                         }
-                                        Some(a) => format!("{} wanted by {}", c.behavior, a),
-                                        None => c.behavior.clone(),
                                     })
                                     .collect();
                                 let others = other_offers(&t, &card);
@@ -737,7 +785,7 @@ pub fn TraceView(
                                 view! {
                                     <div class="trail-inspector">
                                         <div class="trail-inspector-kind">{kind_label}</div>
-                                        <div class="trail-inspector-title">{card_behavior_line(&card)}</div>
+                                        <div class="trail-inspector-title">{card_behavior_line(&card, &said.behavior)}</div>
                                         <div class="trail-muted">{agent_line}</div>
                                         {behavior_comment.map(|c| view! { <p class="trail-inspector-comment">{c}</p> })}
                                         {agent_comment.map(|c| view! {
@@ -818,24 +866,25 @@ pub fn TraceView(
 
 /// Narrow the grouped want list to a search: an agent whose name matches keeps
 /// all its wants, any other agent keeps the wants whose behavior matches.
-/// Case-insensitive; a blank query keeps everything.
+/// Compared by `search_key`: case-insensitive and blind to `{}<>`; a query
+/// that is blank once normalised keeps everything.
 fn filter_wants(
     groups: &[(String, Vec<WantSummary>)],
     query: &str,
 ) -> Vec<(String, Vec<WantSummary>)> {
-    let q = query.trim().to_lowercase();
+    let q = search_key(query);
     if q.is_empty() {
         return groups.to_vec();
     }
     groups
         .iter()
         .filter_map(|(agent, items)| {
-            if agent.to_lowercase().contains(&q) {
+            if search_key(agent).contains(&q) {
                 return Some((agent.clone(), items.clone()));
             }
             let kept: Vec<WantSummary> = items
                 .iter()
-                .filter(|w| w.behavior.to_lowercase().contains(&q))
+                .filter(|w| search_key(&w.behavior).contains(&q))
                 .cloned()
                 .collect();
             (!kept.is_empty()).then(|| (agent.clone(), kept))
@@ -898,5 +947,33 @@ mod tests {
             ]
         );
         assert!(filter_wants(&groups, "nope").is_empty());
+    }
+
+    #[test]
+    fn filter_wants_ignores_braces_and_angle_brackets() {
+        let groups = vec![
+            (
+                "<A1>".to_string(),
+                vec![want("<A1>", "<A1> reads R1"), want("<A1>", "cache")],
+            ),
+            ("viewer".to_string(), vec![want("viewer", "{{?doc}} shows usage")]),
+            ("plain".to_string(), vec![want("plain", "B2 reads R1")]),
+        ];
+        let behaviors = |q: &str| -> Vec<String> {
+            filter_wants(&groups, q)
+                .into_iter()
+                .flat_map(|(_, ws)| ws.into_iter().map(|w| w.behavior))
+                .collect()
+        };
+        // Marks in the text, none in the query
+        assert_eq!(behaviors("a1 reads"), vec!["<A1> reads R1"]);
+        assert_eq!(behaviors("?doc shows"), vec!["{{?doc}} shows usage"]);
+        // Marks in the query, with or without them in the text
+        assert_eq!(behaviors("{{?doc}}"), vec!["{{?doc}} shows usage"]);
+        assert_eq!(behaviors("<B2> reads"), vec!["B2 reads R1"]);
+        // An agent name matches the same way and keeps the agent whole
+        assert_eq!(behaviors("{a1}"), vec!["<A1> reads R1", "cache"]);
+        // Nothing left once stripped: keeps everything, like a blank query
+        assert_eq!(filter_wants(&groups, " <>{} ").len(), 3);
     }
 }

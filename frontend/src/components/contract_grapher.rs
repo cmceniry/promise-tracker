@@ -209,7 +209,7 @@ pub fn ContractGrapher(
             .and_then(|t| {
                 if t.has_agent(component.clone()) {
                     let agent_wants: Vec<String> =
-                        t.get_agent_wants(component).into_iter().collect();
+                        t.get_agent_wants(component.clone()).into_iter().collect();
                     if agent_wants.is_empty() {
                         Some(vec![(
                             "---".to_string(),
@@ -220,7 +220,16 @@ pub fn ContractGrapher(
                             vec![("---".to_string(), "Select a behavior".to_string())];
                         let mut sorted_wants = agent_wants;
                         sorted_wants.sort();
-                        options.extend(sorted_wants.into_iter().map(|w| (w.clone(), w)));
+                        // The option's value is the want; what it reads as is
+                        // the want as the component wrote it, when marking.
+                        let mark = view_options.get().mark_bound;
+                        options.extend(sorted_wants.into_iter().map(|w| {
+                            let label = mark
+                                .then(|| t.marked_name(&component, &w))
+                                .flatten()
+                                .unwrap_or_else(|| w.clone());
+                            (w, label)
+                        }));
                         Some(options)
                     }
                 } else {
@@ -433,11 +442,15 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
-                                            <CycleBanner tracker=tracker_signal />
+                                            <CycleBanner
+                                                tracker=tracker_signal
+                                                mark_bound=Signal::derive(move || view_options.get().mark_bound)
+                                            />
                                             <PromiseGraphView
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
                                                 fold_options=effective_fold
+                                                mark_bound=Signal::derive(move || view_options.get().mark_bound)
                                                 groups=groups
                                                 on_groups_change=on_groups_change
                                                 sim_label=sim_for_graph.clone()
@@ -528,7 +541,10 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
-                                            <CycleBanner tracker=tracker_signal />
+                                            <CycleBanner
+                                                tracker=tracker_signal
+                                                mark_bound=Signal::derive(move || view_options.get().mark_bound)
+                                            />
 
                                             // Inner tabs for Text View / Sequence Diagram
                                             <ul class="nav nav-tabs mb-2">
@@ -610,7 +626,10 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
-                                            <CycleBanner tracker=tracker_signal />
+                                            <CycleBanner
+                                                tracker=tracker_signal
+                                                mark_bound=Signal::derive(move || view_options.get().mark_bound)
+                                            />
                                             <TraceView
                                                 tracker=tracker_signal
                                                 selected_component=d_component
@@ -649,7 +668,10 @@ pub fn ContractGrapher(
                                             <div style="font-weight: bold; margin-bottom: 0.5rem; text-align: center;">
                                                 "Simulation " {sim_display}
                                             </div>
-                                            <CycleBanner tracker=tracker_signal />
+                                            <CycleBanner
+                                                tracker=tracker_signal
+                                                mark_bound=Signal::derive(move || view_options.get().mark_bound)
+                                            />
                                             <InventoryView
                                                 tracker=tracker_signal
                                                 state=inventory

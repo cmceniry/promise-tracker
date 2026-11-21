@@ -12,6 +12,7 @@
 //! is not kept still counts against its node, and a bundle with a broken
 //! promise inside is drawn broken.
 
+use crate::marks::Marks;
 use crate::promise_graph::{PromiseGraphData, PromiseKind, PromiseNodeKind, UnsatisfiedWant};
 use crate::Tracker;
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,11 @@ pub struct FoldedPromise {
     pub behavior: String,
     pub kind: PromiseKind,
     pub satisfied: bool,
+    /// What to draw in place of `behavior` when substituted values are
+    /// marked: `<A1> reads R1`. Set only by [`mark`], and only where it
+    /// differs. Never the promise's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A line between two agents: one promise, or a bundle of them.
@@ -148,7 +154,7 @@ impl FoldedGraph {
 /// The label on a line.
 fn edge_label(promises: &[FoldedPromise], unsatisfied: usize) -> String {
     match promises {
-        [one] => one.behavior.clone(),
+        [one] => one.label.clone().unwrap_or_else(|| one.behavior.clone()),
         many if unsatisfied == 0 => format!("\u{00d7}{}", many.len()),
         many => format!("\u{00d7}{} ({}\u{2717})", many.len(), unsatisfied),
     }
@@ -257,6 +263,7 @@ pub fn fold(graph: &PromiseGraphData, tracker: &Tracker, options: FoldOptions) -
             behavior: e.behavior.clone(),
             kind: e.kind,
             satisfied: e.satisfied,
+            label: None,
         };
         if s == t {
             nodes[s].own += 1;
@@ -323,6 +330,36 @@ pub fn fold(graph: &PromiseGraphData, tracker: &Tracker, options: FoldOptions) -
         unsatisfied: graph.unsatisfied.clone(),
         stats,
     }
+}
+
+/// The folded graph with every substituted value marked, for the "Mark:
+/// Bound values" option.
+///
+/// Only what is drawn changes: a promise gains a `label`, a line of one
+/// promise is relabelled with it, and a missing behavior's node says its
+/// marked name. Ids, `behavior` and everything the canvas selects or looks
+/// up by stay as they were. A line shows what either end substituted; an end
+/// that is a scratch group stands for every agent ([`Marks::edge`]).
+pub fn mark(mut graph: FoldedGraph, marks: &Marks) -> FoldedGraph {
+    if marks.is_empty() {
+        return graph;
+    }
+    for node in graph.nodes.iter_mut() {
+        if node.kind != FoldedNodeKind::Missing {
+            continue;
+        }
+        if let Some(behavior) = node.id.strip_prefix("missing:") {
+            node.label = format!("missing: {}", marks.needed(behavior));
+        }
+    }
+    for edge in graph.edges.iter_mut() {
+        for promise in edge.promises.iter_mut() {
+            let label = marks.edge(&edge.source, &edge.target, &promise.behavior);
+            promise.label = (label != promise.behavior).then_some(label);
+        }
+        edge.label = edge_label(&edge.promises, edge.unsatisfied);
+    }
+    graph
 }
 
 #[cfg(test)]
@@ -556,5 +593,125 @@ mod tests {
         assert!(g.nodes.iter().all(|n| n.id != "team"));
         assert_eq!(node(&g, "m1").kind, FoldedNodeKind::Agent);
         assert_eq!(edge(&g, "c", "m1").count(), 1);
+    }
+
+    #[test]
+    fn mark_relabels_what_is_drawn_and_nothing_else() {
+        use crate::promise_graph::promise_graph;
+        let tracker = crate::marks::tracker(crate::marks::IAM);
+        let marks = Marks::new(&tracker);
+        let options = FoldOptions {
+            bundle: false,
+            own_inside: false,
+            ..FoldOptions::default()
+        };
+        let plain = fold(&promise_graph(&tracker), &tracker, options.clone());
+        let marked = mark(plain.clone(), &marks);
+
+        let labels = |g: &FoldedGraph| -> Vec<(String, String, String)> {
+            g.edges
+                .iter()
+                .map(|e| (e.source.clone(), e.target.clone(), e.label.clone()))
+                .collect()
+        };
+        let has = |g: &FoldedGraph, s: &str, t: &str, l: &str| {
+            assert!(
+                labels(g).contains(&(s.to_string(), t.to_string(), l.to_string())),
+                "no {} -> {}: {} in {:#?}",
+                s,
+                t,
+                l,
+                labels(g)
+            )
+        };
+        has(&plain, "AWSSM", "appname", "appname has IAM role approle");
+        has(
+            &marked,
+            "appname",
+            "AWSSM",
+            "Read Secret Contents <appsecret> by <appname>",
+        );
+        has(
+            &marked,
+            "AWSSM",
+            "appname",
+            "<appname> has IAM role <approle>",
+        );
+        has(
+            &marked,
+            "AWSSM",
+            "infrateam",
+            "IAM access granted for reading Secret <appsecret> to <approle>",
+        );
+        has(
+            &marked,
+            "infrateam",
+            "manager",
+            "Design approval access to Secret <appsecret> for <appname>",
+        );
+
+        // Identity is untouched: strip the labels and it is the same graph.
+        let mut stripped = marked.clone();
+        for (edge, was) in stripped.edges.iter_mut().zip(&plain.edges) {
+            for promise in edge.promises.iter_mut() {
+                assert!(promise.label.is_some());
+                promise.label = None;
+            }
+            edge.label = was.label.clone();
+        }
+        assert_eq!(stripped, plain);
+    }
+
+    #[test]
+    fn mark_leaves_a_bundle_count_and_names_a_missing_behavior() {
+        use crate::promise_graph::promise_graph;
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![
+            Behavior::build("{{!self}} is fed"),
+            Behavior::build("{{!self}} is up"),
+            Behavior::build("{{!self}} is nowhere"),
+        ]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("a1 is fed"),
+            Behavior::build("a1 is up"),
+        ]));
+        let marks = Marks::new(&tracker);
+        let graph = mark(
+            fold(&promise_graph(&tracker), &tracker, FoldOptions::default()),
+            &marks,
+        );
+
+        let bundle = edge(&graph, "a1", "a2");
+        assert_eq!(bundle.label, "\u{00d7}2");
+        assert_eq!(
+            bundle
+                .promises
+                .iter()
+                .map(|p| (p.behavior.as_str(), p.label.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a1 is fed", Some("<a1> is fed")),
+                ("a1 is up", Some("<a1> is up"))
+            ]
+        );
+        let ghost = node(&graph, "missing:a1 is nowhere");
+        assert_eq!(ghost.label, "missing: <a1> is nowhere");
+        assert_eq!(
+            edge(&graph, "a1", "missing:a1 is nowhere").label,
+            "<a1> is nowhere"
+        );
+    }
+
+    #[test]
+    fn mark_with_nothing_substituted_changes_nothing() {
+        use crate::promise_graph::promise_graph;
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![Behavior::build("b1")]));
+        let graph = fold(&promise_graph(&tracker), &tracker, FoldOptions::default());
+        assert_eq!(mark(graph.clone(), &Marks::new(&tracker)), graph);
+        assert!(!serde_json::to_string(&graph)
+            .unwrap()
+            .contains("\"label\":null"));
     }
 }

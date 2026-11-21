@@ -57,14 +57,20 @@ fn only_self_offers(
 /// A hidden self-fulfilling promise contributes its conditions to the caller's
 /// list instead of a row of its own, so whatever the hidden provider needs from
 /// other agents stays visible.
-fn offer_rows(requirer: &str, offer: &Offer, is_satisfied: bool, show_self: bool) -> Vec<Row> {
+fn offer_rows(
+    requirer: &str,
+    offer: &Offer,
+    is_satisfied: bool,
+    show_self: bool,
+    mark: bool,
+) -> Vec<Row> {
     let agent_name = offer.get_agent_name().to_string();
     let conditions = offer.get_resolved_conditions();
 
     if !show_self && agent_name == requirer {
         return conditions
             .iter()
-            .flat_map(|c| resolution_rows(&agent_name, c, show_self))
+            .flat_map(|c| resolution_rows(&agent_name, c, show_self, mark))
             .collect();
     }
 
@@ -92,7 +98,7 @@ fn offer_rows(requirer: &str, offer: &Offer, is_satisfied: bool, show_self: bool
     // needs the conditions.
     let children: Vec<Row> = conditions
         .iter()
-        .flat_map(|c| resolution_rows(&agent_name, c, show_self))
+        .flat_map(|c| resolution_rows(&agent_name, c, show_self, mark))
         .collect();
 
     vec![Row {
@@ -107,16 +113,17 @@ fn option_rows(
     satisfying: &[Offer],
     unsatisfying: &[Offer],
     show_self: bool,
+    mark: bool,
 ) -> Vec<Row> {
     let mut options: Vec<Row> = satisfying
         .iter()
-        .flat_map(|offer| offer_rows(requirer, offer, true, show_self))
+        .flat_map(|offer| offer_rows(requirer, offer, true, show_self, mark))
         .collect();
 
     options.extend(
         unsatisfying
             .iter()
-            .flat_map(|offer| offer_rows(requirer, offer, false, show_self)),
+            .flat_map(|offer| offer_rows(requirer, offer, false, show_self, mark)),
     );
 
     options
@@ -126,8 +133,20 @@ fn option_rows(
 ///
 /// Yields nothing when the behavior was only ever self-provided; whatever that
 /// hidden provider needed from other agents rises to the caller's list.
-fn resolution_rows(requirer: &str, resolution: &Resolution, show_self: bool) -> Vec<Row> {
-    let behavior_name = resolution.get_behavior_name().to_string();
+///
+/// With `mark`, the name is shown with every substituted value in `<>`: what
+/// the requirer filled in, and what a provider names through a variable.
+fn resolution_rows(
+    requirer: &str,
+    resolution: &Resolution,
+    show_self: bool,
+    mark: bool,
+) -> Vec<Row> {
+    let behavior_name = if mark {
+        resolution.marked_name_with_offers()
+    } else {
+        resolution.get_behavior_name().to_string()
+    };
     let satisfying = resolution.get_satisfying_offers();
     let unsatisfying = resolution.get_unsatisfying_offers();
 
@@ -139,7 +158,7 @@ fn resolution_rows(requirer: &str, resolution: &Resolution, show_self: bool) -> 
         )];
     }
 
-    let options = option_rows(requirer, satisfying, unsatisfying, show_self);
+    let options = option_rows(requirer, satisfying, unsatisfying, show_self, mark);
 
     if only_self_offers(requirer, satisfying, unsatisfying, show_self) {
         // Drop the behavior itself, hand its downstream needs upwards
@@ -160,8 +179,25 @@ fn resolution_rows(requirer: &str, resolution: &Resolution, show_self: bool) -> 
 ///
 /// Empty when the selected behavior is entirely self-provided and self promises
 /// are hidden; the caller says so instead of showing a bare heading.
+#[cfg(test)]
 fn contract_rows(component: &str, resolution: &Resolution, show_self: bool) -> Vec<Row> {
-    let behavior_name = resolution.get_behavior_name().to_string();
+    contract_rows_with(component, resolution, show_self, false)
+}
+
+/// [`contract_rows`], optionally with substituted values marked. The heading
+/// shows the want as the component wrote it, so the resolution should come
+/// from `Tracker::resolve_want`.
+fn contract_rows_with(
+    component: &str,
+    resolution: &Resolution,
+    show_self: bool,
+    mark: bool,
+) -> Vec<Row> {
+    let behavior_name = if mark {
+        resolution.marked_name()
+    } else {
+        resolution.get_behavior_name().to_string()
+    };
     let satisfying = resolution.get_satisfying_offers();
     let unsatisfying = resolution.get_unsatisfying_offers();
 
@@ -173,7 +209,7 @@ fn contract_rows(component: &str, resolution: &Resolution, show_self: bool) -> V
         )];
     }
 
-    let options = option_rows(component, satisfying, unsatisfying, show_self);
+    let options = option_rows(component, satisfying, unsatisfying, show_self, mark);
 
     if options.is_empty() {
         return vec![];
@@ -348,7 +384,12 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
 
 /// The rows for the view: the resolution tree, with the view options applied.
 fn view_rows(component: &str, resolution: &Resolution, options: ViewOptions) -> Vec<Row> {
-    let rows = contract_rows(component, resolution, !options.fold_self);
+    let rows = contract_rows_with(
+        component,
+        resolution,
+        !options.fold_self,
+        options.mark_bound,
+    );
     if options.bundle {
         bundle_rows(rows)
     } else {
@@ -442,7 +483,11 @@ pub fn ContractText(
         if component == "---" || behavior == "---" || !pt.has_ground_behavior(&behavior) {
             return None;
         }
-        let rows = view_rows(&component, &pt.resolve(&behavior), options.get_untracked());
+        let rows = view_rows(
+            &component,
+            &pt.resolve_want(&component, &behavior),
+            options.get_untracked(),
+        );
         if rows.is_empty() {
             None
         } else {
@@ -537,7 +582,9 @@ pub fn ContractText(
         }
 
         // Resolve the behavior and render the result
-        let resolution = pt.resolve(&behavior);
+        // Resolved as the component wants it, so that marking can show
+        // what its own declaration filled in.
+        let resolution = pt.resolve_want(&component, &behavior);
         let rows = view_rows(&component, &resolution, options.get());
 
         if rows.is_empty() {
@@ -893,5 +940,70 @@ mod tests {
              \x20           p5\n\
              \x20               OPTION: d\n"
         );
+    }
+
+    fn iam_tracker() -> Tracker {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("AWSSM").with_provides(vec![behavior_with(
+            "Read Secret Contents {{secret_name}} by {{application}}",
+            &[
+                "{{application}} has IAM role {{?approle}}",
+                "IAM access granted for reading Secret {{secret_name}} to {{approle}}",
+            ],
+        )]));
+        tracker.add_agent(Agent::build("infrateam").with_provides(vec![behavior_with(
+            "IAM access granted for reading Secret {{secret_name}} to {{approle}}",
+            &["Design approval access to Secret {{secret_name}} for {{?application}}"],
+        )]));
+        tracker.add_agent(Agent::build("manager").with_provides(vec![Behavior::build(
+            "Design approval access to Secret appsecret for appname",
+        )]));
+        tracker.add_agent(
+            Agent::build("appname")
+                .with_wants(vec![Behavior::build(
+                    "Read Secret Contents appsecret by {{!self}}",
+                )])
+                .with_provides(vec![Behavior::build("{{!self}} has IAM role approle")]),
+        );
+        tracker
+    }
+
+    #[test]
+    fn marking_wraps_substituted_values_and_changes_nothing_else() {
+        let tracker = iam_tracker();
+        let want = "Read Secret Contents appsecret by appname";
+        let resolution = tracker.resolve_want("appname", want);
+        let off = ViewOptions {
+            bundle: false,
+            ..ViewOptions::default()
+        };
+        let on = ViewOptions {
+            mark_bound: true,
+            ..off
+        };
+
+        let plain = outline(&view_rows("appname", &resolution, off));
+        assert!(!plain.contains('<'), "{}", plain);
+        assert_eq!(
+            plain,
+            outline(&view_rows("appname", &tracker.resolve(want), off))
+        );
+
+        let marked = outline(&view_rows("appname", &resolution, on));
+        for line in [
+            "appname --> Read Secret Contents appsecret by <appname>",
+            "<appname> has IAM role {{?approle}}",
+            "IAM access granted for reading Secret <appsecret> to <approle>",
+            "Design approval access to Secret <appsecret> for {{?application}}",
+        ] {
+            assert!(marked.contains(line), "no `{}` in:\n{}", line, marked);
+        }
+        // Take the marks away (sparing the heading's arrow) and it is the
+        // same tree.
+        let unmarked = marked
+            .replace("-->", "\u{1}")
+            .replace(['<', '>'], "")
+            .replace('\u{1}', "-->");
+        assert_eq!(unmarked, plain);
     }
 }

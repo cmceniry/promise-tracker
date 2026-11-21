@@ -3,6 +3,7 @@
 //! Generates Mermaid sequence diagram DSL showing promise resolution flows
 //! between components and behaviors.
 
+use crate::components::mark_spans_with;
 use crate::resolve::{Offer, Resolution};
 
 /// Input data for generating a sequence diagram.
@@ -11,6 +12,9 @@ pub struct DiagramInput<'a> {
     pub behavior: &'a str,
     pub satisfied: &'a [Offer],
     pub unsatisfied: &'a [Offer],
+    /// The parts of `behavior` whoever needs it filled in; see
+    /// [`Resolution::get_bound`]. Only read when marking is on.
+    pub bound: &'a [(usize, usize)],
 }
 
 /// What to draw.
@@ -23,6 +27,9 @@ pub struct DiagramOptions {
     /// When true, every promise from one participant to another becomes one
     /// arrow, labelled with all of them; see [`bundle`].
     pub bundle: bool,
+    /// When true, every value that took the place of a variable is wrapped
+    /// in `<>` on the arrow that names it. Display only.
+    pub mark_bound: bool,
 }
 
 impl Default for DiagramOptions {
@@ -33,6 +40,7 @@ impl Default for DiagramOptions {
         DiagramOptions {
             show_self_promises: true,
             bundle: false,
+            mark_bound: false,
         }
     }
 }
@@ -47,10 +55,33 @@ enum Step {
     Arrow {
         from: String,
         to: String,
-        promises: Vec<(String, bool)>,
+        promises: Vec<Promise>,
     },
-    /// Nobody provides the behavior.
+    /// Nobody provides the behavior. `behavior` is what is drawn.
     Missing { who: String, behavior: String },
+}
+
+/// One promise on an arrow.
+#[derive(Debug, Clone, PartialEq)]
+struct Promise {
+    /// Which promise it is.
+    behavior: String,
+    held: bool,
+    /// What the arrow says: the behavior, or its marked form.
+    label: String,
+}
+
+/// `text` with `spans` marked, when marking is on.
+///
+/// Mermaid reads `<` and `>` in a message as markup, so the marks are written
+/// as its entity codes, which it draws as the characters themselves. Only the
+/// marks are: the name's own text goes out as it always has.
+fn marked(text: &str, spans: &[(usize, usize)], options: DiagramOptions) -> String {
+    if options.mark_bound {
+        mark_spans_with(text, spans, "#lt;", "#gt;")
+    } else {
+        text.to_string()
+    }
 }
 
 const HELD: &str = "rgb(0,255,0)";
@@ -95,16 +126,16 @@ impl Step {
 
 /// One promise names itself; a bundle names them all, marks the broken
 /// ones, and counts.
-fn arrow_label(promises: &[(String, bool)]) -> String {
+fn arrow_label(promises: &[Promise]) -> String {
     match promises {
-        [(behavior, _)] => behavior.clone(),
+        [one] => one.label.clone(),
         many => format!(
             "{} \u{00d7}{}",
             many.iter()
-                .map(|(b, held)| if *held {
-                    b.clone()
+                .map(|p| if p.held {
+                    p.label.clone()
                 } else {
-                    format!("{} \u{2717}", b)
+                    format!("{} \u{2717}", p.label)
                 })
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -117,6 +148,7 @@ fn arrow_label(promises: &[(String, bool)]) -> String {
 fn offer_steps(
     component: &str,
     behavior: &str,
+    bound: &[(usize, usize)],
     offer: &Offer,
     held: bool,
     options: DiagramOptions,
@@ -132,7 +164,11 @@ fn offer_steps(
         ret.push(Step::Arrow {
             from: component.to_string(),
             to: agent_name.to_string(),
-            promises: vec![(behavior.to_string(), held)],
+            promises: vec![Promise {
+                behavior: behavior.to_string(),
+                held,
+                label: marked(behavior, &offer.kept_spans(bound), options),
+            }],
         });
     }
 
@@ -144,6 +180,7 @@ fn offer_steps(
                 behavior: condition.get_behavior_name(),
                 satisfied: condition.get_satisfying_offers(),
                 unsatisfied: condition.get_unsatisfying_offers(),
+                bound: condition.get_bound(),
             },
             options,
         ));
@@ -169,13 +206,14 @@ fn only_self_offers(component: &str, offers: &[Offer], options: DiagramOptions) 
 fn group_step(
     component: &str,
     behavior: &str,
+    bound: &[(usize, usize)],
     offers: &[Offer],
     held: bool,
     options: DiagramOptions,
 ) -> Step {
     let body: Vec<Step> = offers
         .iter()
-        .flat_map(|offer| offer_steps(component, behavior, offer, held, options))
+        .flat_map(|offer| offer_steps(component, behavior, bound, offer, held, options))
         .collect();
     let rect = if only_self_offers(component, offers, options) {
         None
@@ -192,11 +230,12 @@ fn generate_steps(input: DiagramInput, options: DiagramOptions) -> Vec<Step> {
         behavior,
         satisfied,
         unsatisfied,
+        bound,
     } = input;
 
     let mut ret = vec![
-        group_step(component, behavior, satisfied, true, options),
-        group_step(component, behavior, unsatisfied, false, options),
+        group_step(component, behavior, bound, satisfied, true, options),
+        group_step(component, behavior, bound, unsatisfied, false, options),
     ];
 
     // Handle case with no offers (error state - red rectangle with X).
@@ -208,7 +247,7 @@ fn generate_steps(input: DiagramInput, options: DiagramOptions) -> Vec<Step> {
             rect: Some(false),
             body: vec![Step::Missing {
                 who: component.to_string(),
-                behavior: behavior.to_string(),
+                behavior: marked(behavior, bound, options),
             }],
         });
     }
@@ -235,7 +274,7 @@ fn prune(steps: &mut Vec<Step>) {
 /// looking held: it gets a red rect of its own there.
 fn bundle(steps: &mut Vec<Step>) {
     /// A pair of participants, and every promise between them in order.
-    type Pair = ((String, String), Vec<(String, bool)>);
+    type Pair = ((String, String), Vec<Promise>);
 
     fn collect(steps: &[Step], into: &mut Vec<Pair>) {
         for step in steps {
@@ -254,10 +293,10 @@ fn bundle(steps: &mut Vec<Step>) {
                     // that needs it; it is still one promise, held only if
                     // every time it is reached it is.
                     let all = &mut into[at].1;
-                    for (behavior, held) in promises {
-                        match all.iter_mut().find(|(b, _)| b == behavior) {
-                            Some((_, h)) => *h &= *held,
-                            None => all.push((behavior.clone(), *held)),
+                    for promise in promises {
+                        match all.iter_mut().find(|p| p.behavior == promise.behavior) {
+                            Some(p) => p.held &= promise.held,
+                            None => all.push(promise.clone()),
                         }
                     }
                 }
@@ -290,7 +329,7 @@ fn bundle(steps: &mut Vec<Step>) {
                         .find(|(k, _)| *k == key)
                         .map(|(_, p)| p.clone())
                         .unwrap_or_default();
-                    let broken = promises.iter().any(|(_, held)| !held);
+                    let broken = promises.iter().any(|p| !p.held);
                     placed.push(key);
                     let arrow = Step::Arrow { from, to, promises };
                     if broken && in_held_rect {
@@ -340,6 +379,7 @@ pub fn diagram_with(
             behavior,
             satisfied: resolution.get_satisfying_offers(),
             unsatisfied: resolution.get_unsatisfying_offers(),
+            bound: resolution.get_bound(),
         },
         options,
     );
@@ -356,7 +396,8 @@ pub fn diagram_with(
         // "sequenceDiagram" renders as a blank with no explanation.
         result.push(format!(
             "    Note over {}: {} is self-provided and hidden",
-            component, behavior
+            component,
+            marked(behavior, resolution.get_bound(), options)
         ));
     } else {
         for step in &steps {
@@ -624,6 +665,78 @@ mod tests {
         assert!(result.contains("c1 ->> a1: b1"), "{}", result);
         assert!(!result.contains("a1 ->> a1: b2"), "{}", result);
         assert_no_empty_rect(&result);
+    }
+
+    fn marked_options() -> DiagramOptions {
+        DiagramOptions {
+            mark_bound: true,
+            ..DiagramOptions::default()
+        }
+    }
+
+    #[test]
+    fn test_marking_wraps_substituted_values_in_entity_codes() {
+        let tracker = crate::marks::tracker(crate::marks::IAM);
+        let want = "Read Secret Contents appsecret by appname";
+        let resolution = tracker.resolve_want("appname", want);
+
+        // Off: exactly what it was, however the resolution was made.
+        let off = diagram("appname", want, &resolution);
+        assert_eq!(off, diagram("appname", want, &tracker.resolve(want)));
+        assert!(!off.contains("#lt;") && !off.contains('<'), "{}", off);
+        assert!(off.contains("AWSSM ->> appname: appname has IAM role approle"));
+
+        let on = diagram_with("appname", want, &resolution, marked_options());
+        // Never a raw `<`, which Mermaid would read as markup.
+        assert!(!on.contains('<') && !on.contains("&lt;"), "{}", on);
+        for line in [
+            "appname ->> AWSSM: Read Secret Contents #lt;appsecret#gt; by #lt;appname#gt;",
+            "AWSSM ->> appname: #lt;appname#gt; has IAM role #lt;approle#gt;",
+            "AWSSM ->> infrateam: IAM access granted for reading Secret #lt;appsecret#gt; to #lt;approle#gt;",
+            "infrateam ->> manager: Design approval access to Secret #lt;appsecret#gt; for #lt;appname#gt;",
+        ] {
+            assert!(on.contains(line), "no `{}` in:\n{}", line, on);
+        }
+        // The shape is the same; only labels differ.
+        assert_eq!(on.replace("#lt;", "").replace("#gt;", ""), off);
+    }
+
+    #[test]
+    fn test_marking_a_missing_behavior_and_a_bundle() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec![
+                "{{!self}} is fed".to_string(),
+                "{{!self}} is up".to_string(),
+                "{{!self}} is nowhere".to_string(),
+            ]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("a2 is fed"),
+            Behavior::build("a2 is up"),
+        ]));
+        let resolution = tracker.resolve("b1");
+
+        let on = diagram_with("a1", "b1", &resolution, marked_options());
+        assert!(on.contains("a2 -X a2: #lt;a2#gt; is nowhere"), "{}", on);
+
+        let both = DiagramOptions {
+            bundle: true,
+            ..marked_options()
+        };
+        let on = diagram_with("a1", "b1", &resolution, both);
+        assert!(
+            on.contains("a2 ->> a3: #lt;a2#gt; is fed, #lt;a2#gt; is up \u{00d7}2"),
+            "{}",
+            on
+        );
+        let off = diagram_with("a1", "b1", &resolution, bundled());
+        assert!(
+            off.contains("a2 ->> a3: a2 is fed, a2 is up \u{00d7}2"),
+            "{}",
+            off
+        );
     }
 
     fn bundled() -> DiagramOptions {

@@ -1,4 +1,6 @@
 use clap::Parser;
+use promise_tracker::marks::Marks;
+use promise_tracker::query::ConditionStatus;
 use promise_tracker::query::{self, ConsumerKind, QueryOptions};
 use std::process;
 
@@ -20,6 +22,11 @@ pub struct Parameters {
     #[clap(long)]
     bundle: bool,
 
+    /// Wrap values a variable was replaced with in `<>`, as each row's
+    /// agents have them
+    #[clap(long)]
+    mark_bound: bool,
+
     /// The behavior to show providers and consumers for
     behavior: String,
 }
@@ -35,16 +42,38 @@ pub fn command(parameters: &Parameters) {
         println!("Behavior {} not found", parameters.behavior);
         process::exit(1);
     };
+    // Display only: the rows keep the plain names.
+    let marks = parameters.mark_bound.then(|| Marks::new(&tracker));
+    let promised = |agents: &[String], name: &String| -> String {
+        match &marks {
+            Some(marks) => marks.promise_by(agents, name),
+            None => name.clone(),
+        }
+    };
     println!("providers:");
     for row in &found.providers {
         let mut line = format!("  {}", cli::agent_list(&row.agents));
         if let Some(pattern) = &row.pattern {
-            line.push_str(&format!("\tvia {} (pattern)", pattern));
+            line.push_str(&format!(
+                "\tvia {} (pattern)",
+                promised(&row.agents, pattern)
+            ));
         }
         if !row.conditions.is_empty() {
+            let conditions: Vec<ConditionStatus> = row
+                .conditions
+                .iter()
+                .map(|c| ConditionStatus {
+                    behavior: match &marks {
+                        Some(marks) => marks.need_by(&row.agents, &c.behavior),
+                        None => c.behavior.clone(),
+                    },
+                    held: c.held,
+                })
+                .collect();
             line.push_str(&format!(
                 "\tif {}",
-                crate::provides::conditions(&row.conditions)
+                crate::provides::conditions(&conditions)
             ));
         }
         println!("{}", line);
@@ -53,7 +82,9 @@ pub fn command(parameters: &Parameters) {
     for row in &found.consumers {
         let how = match &row.kind {
             ConsumerKind::Want => "wants".to_string(),
-            ConsumerKind::Condition { provide } => format!("condition of {}", provide),
+            ConsumerKind::Condition { provide } => {
+                format!("condition of {}", promised(&row.agents, provide))
+            }
         };
         println!("  {}\t{}", cli::agent_list(&row.agents), how);
     }

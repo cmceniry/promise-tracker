@@ -7,8 +7,9 @@
 //! one line, and self promises stay inside their node.
 
 use leptos::prelude::*;
-use promise_tracker::fold::{fold, FoldOptions, GroupSpec};
-use promise_tracker::promise_graph::{promise_graph, UnsatisfiedWant};
+use promise_tracker::fold::{fold, mark, FoldOptions, GroupSpec};
+use promise_tracker::marks::Marks;
+use promise_tracker::promise_graph::promise_graph;
 use promise_tracker::Tracker;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -50,7 +51,28 @@ extern "C" {
 struct GraphExportMeta {
     title: String,
     subtitle: String,
-    unsatisfied: Vec<UnsatisfiedWant>,
+    unsatisfied: Vec<UnsatisfiedChip>,
+}
+
+/// One unsatisfied want on the status strip. `behavior` is what a click
+/// looks for on the canvas; `label` is what the chip says in its place when
+/// substituted values are marked.
+#[derive(Clone, Serialize)]
+struct UnsatisfiedChip {
+    agent: String,
+    behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+impl UnsatisfiedChip {
+    fn text(&self) -> String {
+        format!(
+            "{} ✗ {}",
+            self.agent,
+            self.label.as_deref().unwrap_or(&self.behavior)
+        )
+    }
 }
 
 #[component]
@@ -107,6 +129,9 @@ pub fn PromiseGraphView(
     /// Which folding rules to apply before drawing
     #[prop(into)]
     fold_options: Signal<FoldOptions>,
+    /// Whether substituted values are drawn wrapped in `<>`
+    #[prop(into)]
+    mark_bound: Signal<bool>,
     /// The reader's scratch groups, shared by every panel
     #[prop(into)]
     groups: Signal<Vec<GroupSpec>>,
@@ -182,12 +207,49 @@ pub fn PromiseGraphView(
     // PartialEq on FoldedGraph makes this memo gate re-renders: a rule that
     // changes nothing in this panel's graph yields an equal value, so the
     // panel is never told to re-render and keeps its layout.
+    // Where substituted values sit, read only while marking is on.
+    let marks = Memo::new(move |_| {
+        mark_bound
+            .get()
+            .then(|| tracker.get().map(|t| Marks::new(&t)))
+            .flatten()
+    });
+
+    // Marking only relabels: ids and behaviors are untouched, so the canvas
+    // keeps its layout when the option is switched.
     let graph_data = Memo::new(move |_| {
         tracker
             .get()
-            .map(|t| fold(&full_graph.get(), &t, fold_options.get()))
+            .map(|t| {
+                let folded = fold(&full_graph.get(), &t, fold_options.get());
+                match marks.get() {
+                    Some(marks) => mark(folded, &marks),
+                    None => folded,
+                }
+            })
             .unwrap_or_default()
     });
+
+    // The status strip's chips: each want as its agent wrote it.
+    let unsatisfied_chips = move || -> Vec<UnsatisfiedChip> {
+        let marks = marks.get();
+        graph_data
+            .get()
+            .unsatisfied
+            .into_iter()
+            .map(|u| {
+                let label = marks
+                    .as_ref()
+                    .map(|m| m.need(&u.agent, &u.behavior))
+                    .filter(|label| *label != u.behavior);
+                UnsatisfiedChip {
+                    agent: u.agent,
+                    behavior: u.behavior,
+                    label,
+                }
+            })
+            .collect()
+    };
 
     // Determine the current state for conditional rendering
     let state = Memo::new(move |_| {
@@ -259,6 +321,7 @@ pub fn PromiseGraphView(
     let frame_title = Signal::derive(move || format!("Overview - Simulation {}", sim_for_title));
     let frame_subtitle = Signal::derive(move || {
         let opts = fold_options.get();
+        let marking = mark_bound.get();
         let mut rules: Vec<&str> = vec![];
         if opts.collectives {
             rules.push("SuperAgents folded");
@@ -274,7 +337,12 @@ pub fn PromiseGraphView(
         } else {
             rules.join(", ")
         };
-        format!("{} - generated {}", folded, generated_at())
+        format!(
+            "{}{} - generated {}",
+            folded,
+            if marking { ", bound values marked" } else { "" },
+            generated_at()
+        )
     });
     let frame_filename =
         Signal::derive(move || format!("promise-tracker-overview-{}", slugify(&sim_for_file)));
@@ -285,7 +353,7 @@ pub fn PromiseGraphView(
         let meta = GraphExportMeta {
             title: frame_title.get_untracked(),
             subtitle: frame_subtitle.get_untracked(),
-            unsatisfied: graph_data.get_untracked().unsatisfied,
+            unsatisfied: untrack(unsatisfied_chips),
         };
         let meta = serde_wasm_bindgen::to_value(&meta).ok()?;
         js_export_promise_graph(&container_id_for_export, meta)
@@ -413,7 +481,7 @@ pub fn PromiseGraphView(
                 {
                     let strip_id = container_id_for_strip.clone();
                     move || {
-                        let unsatisfied = graph_data.get().unsatisfied;
+                        let unsatisfied = unsatisfied_chips();
                         if unsatisfied.is_empty() {
                             view! {
                                 <div style="margin-bottom: 0.5rem; color: #2E7D32; font-size: 0.85em;">
@@ -431,7 +499,7 @@ pub fn PromiseGraphView(
                                             let id = strip_id.clone();
                                             let agent = u.agent.clone();
                                             let behavior = u.behavior.clone();
-                                            let label = format!("{} ✗ {}", u.agent, u.behavior);
+                                            let label = u.text();
                                             view! {
                                                 <button
                                                     class="btn btn-sm btn-outline-danger"
