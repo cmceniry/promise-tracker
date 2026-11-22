@@ -27,6 +27,11 @@ pub struct Parameters {
     #[clap(long)]
     mark_bound: bool,
 
+    /// Leave out the agent's promises that are not kept, where something
+    /// else keeps the same behavior; one nobody keeps is still listed
+    #[clap(long)]
+    fold_alternatives: bool,
+
     /// The agent name to show actions for
     agent: String,
 }
@@ -36,6 +41,7 @@ pub fn command(parameters: &Parameters) {
     let options = QueryOptions {
         fold_self: parameters.fold_self,
         bundle: false,
+        fold_alternatives: parameters.fold_alternatives,
     };
     let Some(provides) = query::agent_provides(&tracker, &parameters.agent, options) else {
         println!("Agent {} not found", parameters.agent);

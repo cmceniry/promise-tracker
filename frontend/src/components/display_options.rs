@@ -13,6 +13,10 @@ pub struct ViewOptions {
     pub bundle: bool,
     /// Promises an agent makes to itself are folded away.
     pub fold_self: bool,
+    /// Offers that are not kept are folded away, with everything they rest
+    /// on, where another offer already keeps the same behavior. A behavior
+    /// nobody keeps still shows every offer. Display only.
+    pub fold_alternatives: bool,
     /// Values a variable was replaced with are wrapped in `<>` wherever a
     /// behavior is named. Display only.
     pub mark_bound: bool,
@@ -24,6 +28,7 @@ impl Default for ViewOptions {
             collectives: true,
             bundle: true,
             fold_self: false,
+            fold_alternatives: false,
             mark_bound: false,
         }
     }
@@ -41,6 +46,10 @@ impl ViewOptions {
         }
         if self.fold_self {
             folded.push("self-fulfilling promises folded");
+        }
+        // Said only when on, like the mark below.
+        if self.fold_alternatives {
+            folded.push("unneeded alternatives folded");
         }
         let folded = if folded.is_empty() {
             "nothing folded".to_string()
@@ -122,6 +131,7 @@ pub fn DisplayOptions(
     let collectives = Signal::derive(move || options.get().collectives);
     let bundle = Signal::derive(move || options.get().bundle);
     let fold_self = Signal::derive(move || options.get().fold_self);
+    let fold_alternatives = Signal::derive(move || options.get().fold_alternatives);
     let mark_bound = Signal::derive(move || options.get().mark_bound);
 
     view! {
@@ -162,6 +172,19 @@ pub fn DisplayOptions(
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M8 3a5 5 0 1 0 5 5" fill="none" stroke="currentColor" stroke-width="1.5"></path>
                     <path d="M8 0.5 5 3 8 5.5z"></path>
+                </svg>
+            </OptionToggle>
+            <OptionToggle
+                on=fold_alternatives
+                label="Unneeded alternatives"
+                about="Fold away offers that are not kept, and everything they rest on, where another offer already keeps the same behavior; a behavior nobody keeps still shows every offer"
+                on_click=Callback::new(move |_| set_options.update(|o| o.fold_alternatives = !o.fold_alternatives))
+            >
+                // Two ways to the same point: one kept, one dashed and struck out.
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16">
+                    <path d="M1 8 C5 8 6 4 14 4"></path>
+                    <path d="M1 8 C5 8 6 12 14 12" stroke-dasharray="2 1.5"></path>
+                    <path d="M9 9.5 12 13.5 M12 9.5 9 13.5"></path>
                 </svg>
             </OptionToggle>
             <span style="font-weight: bold;">"Mark:"</span>
@@ -247,5 +270,38 @@ mod tests {
             "a1 -> <a1> reads r1 - SuperAgents folded, parallel promises bundled, \
              bound values marked - generated now"
         );
+    }
+
+    #[test]
+    fn describe_names_alternative_folding_only_when_on() {
+        let off = ViewOptions::default();
+        assert!(!off.fold_alternatives);
+        assert_eq!(off.describe(), "SuperAgents folded, parallel promises bundled");
+        let on = ViewOptions {
+            fold_alternatives: true,
+            ..off
+        };
+        assert_eq!(
+            on.describe(),
+            "SuperAgents folded, parallel promises bundled, unneeded alternatives folded"
+        );
+        // after the other folds, before the mark
+        let all = ViewOptions {
+            fold_self: true,
+            mark_bound: true,
+            ..on
+        };
+        assert_eq!(
+            all.describe(),
+            "SuperAgents folded, parallel promises bundled, self-fulfilling promises folded, \
+             unneeded alternatives folded, bound values marked"
+        );
+        // alone, it is still something folded
+        let only = ViewOptions {
+            collectives: false,
+            bundle: false,
+            ..on
+        };
+        assert_eq!(only.describe(), "unneeded alternatives folded");
     }
 }

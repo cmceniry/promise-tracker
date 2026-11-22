@@ -137,6 +137,32 @@ impl Resolution {
         self.satisfying_offers.len() > 0
     }
 
+    /// This resolution without the alternatives it does not need: wherever a
+    /// behavior is kept, the offers that fail to keep it are dropped, each
+    /// with everything it rests on. This is the "Fold: Unneeded
+    /// alternatives" display option (`--fold-alternatives`).
+    ///
+    /// The rule holds at every depth, inside an unsatisfied want's chain
+    /// too: a condition that is kept loses its failing offers even when the
+    /// promise it belongs to is broken for another reason. A behavior nobody
+    /// keeps still shows every offer, and every offer that keeps a behavior
+    /// stays. An offer answering an open goal is an offer like any other.
+    ///
+    /// Display only: whether anything is satisfied never changes, and doing
+    /// it twice changes nothing more.
+    pub fn without_unneeded_alternatives(mut self) -> Resolution {
+        if self.is_satisfied() {
+            self.unsatisfying_offers.clear();
+        }
+        for offer in self.offers_mut() {
+            offer.resolved_conditions = std::mem::take(&mut offer.resolved_conditions)
+                .into_iter()
+                .map(Resolution::without_unneeded_alternatives)
+                .collect();
+        }
+        self
+    }
+
     /// Returns the behavior name
     pub fn get_behavior_name(&self) -> &str {
         &self.behavior_name
@@ -362,6 +388,151 @@ impl Eq for Resolution {}
 #[cfg(test)]
 mod tests_resolution {
     use super::*;
+
+    #[test]
+    fn test_without_unneeded_alternatives_satisfied_root_drops_broken_offer_and_subtree() {
+        let r = Resolution::new("b1")
+            .add_satisfying_offer(Offer::new("good"))
+            .add_unsatisfying_offer(Offer::new_conditional(
+                "alt",
+                vec![
+                    Resolution::new("c").add_satisfying_offer(Offer::new("cprov")),
+                    Resolution::new("d"),
+                ],
+            ));
+        assert_eq!(
+            r.without_unneeded_alternatives(),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("good"))
+        );
+    }
+
+    #[test]
+    fn test_without_unneeded_alternatives_keeps_every_satisfying_offer() {
+        let r = Resolution::new("b1")
+            .add_satisfying_offer(Offer::new("a1"))
+            .add_satisfying_offer(Offer::new_conditional(
+                "a2",
+                vec![Resolution::new("c")
+                    .add_satisfying_offer(Offer::new("c1"))
+                    .add_unsatisfying_offer(Offer::new_conditional(
+                        "c2",
+                        vec![Resolution::new("d")],
+                    ))],
+            ))
+            .add_unsatisfying_offer(Offer::new_conditional("a3", vec![Resolution::new("e")]));
+        assert_eq!(
+            r.without_unneeded_alternatives(),
+            Resolution::new("b1")
+                .add_satisfying_offer(Offer::new("a1"))
+                .add_satisfying_offer(Offer::new_conditional(
+                    "a2",
+                    vec![Resolution::new("c").add_satisfying_offer(Offer::new("c1"))],
+                ))
+        );
+    }
+
+    #[test]
+    fn test_without_unneeded_alternatives_unsatisfied_root_keeps_offers_prunes_nested() {
+        let r = Resolution::new("top").add_unsatisfying_offer(Offer::new_conditional(
+            "p",
+            vec![
+                Resolution::new("z1")
+                    .add_satisfying_offer(Offer::new("az1"))
+                    .add_unsatisfying_offer(Offer::new_conditional(
+                        "ay1",
+                        vec![Resolution::new("y1")],
+                    )),
+                Resolution::new("z2"),
+            ],
+        ));
+        let pruned = r.without_unneeded_alternatives();
+        assert!(!pruned.is_satisfied());
+        assert_eq!(
+            pruned,
+            Resolution::new("top").add_unsatisfying_offer(Offer::new_conditional(
+                "p",
+                vec![
+                    Resolution::new("z1").add_satisfying_offer(Offer::new("az1")),
+                    Resolution::new("z2"),
+                ],
+            ))
+        );
+
+        // nobody keeps it: every offer stays, as it was
+        let all_broken = Resolution::new("b1")
+            .add_unsatisfying_offer(Offer::new_conditional("a1", vec![Resolution::new("c")]))
+            .add_unsatisfying_offer(Offer::new_conditional("a2", vec![Resolution::new("d")]));
+        assert_eq!(all_broken.clone().without_unneeded_alternatives(), all_broken);
+    }
+
+    #[test]
+    fn test_without_unneeded_alternatives_no_offers_unchanged() {
+        assert_eq!(
+            Resolution::new("b1").without_unneeded_alternatives(),
+            Resolution::new("b1")
+        );
+    }
+
+    #[test]
+    fn test_without_unneeded_alternatives_open_goal_offers_are_ordinary() {
+        let open = Resolution::new("{{?who}} is up")
+            .add_satisfying_offer(Offer::new("a").answering("a is up"))
+            .add_unsatisfying_offer(
+                Offer::new_conditional("b", vec![Resolution::new("power")]).answering("b is up"),
+            );
+        assert_eq!(
+            open.without_unneeded_alternatives(),
+            Resolution::new("{{?who}} is up")
+                .add_satisfying_offer(Offer::new("a").answering("a is up"))
+        );
+
+        // no candidate keeps it: both stay
+        let broken = Resolution::new("{{?who}} is up")
+            .add_unsatisfying_offer(
+                Offer::new_conditional("a", vec![Resolution::new("fuel")]).answering("a is up"),
+            )
+            .add_unsatisfying_offer(
+                Offer::new_conditional("b", vec![Resolution::new("power")]).answering("b is up"),
+            );
+        assert_eq!(broken.clone().without_unneeded_alternatives(), broken);
+    }
+
+    #[test]
+    fn test_without_unneeded_alternatives_idempotent_and_keeps_satisfaction() {
+        let cases = vec![
+            Resolution::new("b1"),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("a1")),
+            Resolution::new("b1")
+                .add_satisfying_offer(Offer::new("a1"))
+                .add_unsatisfying_offer(Offer::new_conditional("a2", vec![Resolution::new("c")])),
+            Resolution::new("top").add_unsatisfying_offer(Offer::new_conditional(
+                "p",
+                vec![
+                    Resolution::new("z1")
+                        .add_satisfying_offer(Offer::new("az1"))
+                        .add_unsatisfying_offer(Offer::new_conditional(
+                            "ay1",
+                            vec![Resolution::new("y1")],
+                        )),
+                    Resolution::new("z2"),
+                ],
+            )),
+        ];
+        for case in cases {
+            let once = case.clone().without_unneeded_alternatives();
+            assert_eq!(once.is_satisfied(), case.is_satisfied());
+            assert_eq!(once.clone().without_unneeded_alternatives(), once);
+        }
+    }
+
+    #[test]
+    fn test_without_unneeded_alternatives_keeps_display_spans() {
+        let r = Resolution::new("a1 reads r1")
+            .with_bound(vec![(0, 2)])
+            .add_satisfying_offer(Offer::new("a1"))
+            .add_unsatisfying_offer(Offer::new("a2"));
+        assert_eq!(r.without_unneeded_alternatives().get_bound(), &[(0, 2)]);
+    }
 
     #[test]
     fn test_eq() {

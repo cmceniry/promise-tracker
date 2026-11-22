@@ -422,7 +422,18 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
 }
 
 /// The rows for the view: the resolution tree, with the view options applied.
+///
+/// Unneeded alternatives are folded first, on the tree, so the self and
+/// bundle options see only what is left. The view and its export both come
+/// through here.
 fn view_rows(component: &str, resolution: &Resolution, options: ViewOptions) -> Vec<Row> {
+    let folded;
+    let resolution = if options.fold_alternatives {
+        folded = resolution.clone().without_unneeded_alternatives();
+        &folded
+    } else {
+        resolution
+    };
     let rows = contract_rows_with(
         component,
         resolution,
@@ -1195,6 +1206,72 @@ mod tests {
              \x20       p3\n\
              \x20           POSSIBLE: c\n\
              \x20               px UNSATISFIED\n"
+        );
+    }
+
+    #[test]
+    fn unneeded_alternatives_fold_out_of_the_rows() {
+        // x wants b1: good keeps it, alt offers it on c (kept) and d
+        // (nobody's). top is nobody's: p offers it on z1, which az1 keeps
+        // and ay1 only offers, and on z2.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(
+            Agent::build("x").with_wants(vec![Behavior::build("b1"), Behavior::build("top")]),
+        );
+        tracker.add_agent(Agent::build("good").with_provides(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("alt").with_provides(vec![behavior_with("b1", &["c", "d"])]));
+        tracker.add_agent(Agent::build("cprov").with_provides(vec![Behavior::build("c")]));
+        tracker.add_agent(Agent::build("p").with_provides(vec![behavior_with("top", &["z1", "z2"])]));
+        tracker.add_agent(Agent::build("az1").with_provides(vec![Behavior::build("z1")]));
+        tracker.add_agent(Agent::build("ay1").with_provides(vec![behavior_with("z1", &["y1"])]));
+
+        let off = iam_options(false, false);
+        let on = ViewOptions {
+            fold_alternatives: true,
+            ..off
+        };
+
+        let b1 = tracker.resolve_want("x", "b1");
+        let full = outline(&view_rows("x", &b1, off));
+        assert!(full.contains("alt"), "{}", full);
+        assert!(full.contains("cprov"), "{}", full);
+        let folded = view_rows("x", &b1, on);
+        // exactly the rows of the folded tree, so the view and its export
+        // (both made from these rows) agree
+        assert_eq!(
+            folded,
+            view_rows("x", &b1.clone().without_unneeded_alternatives(), off)
+        );
+        let text = outline(&folded);
+        assert!(text.starts_with("x --> b1\n"), "{}", text);
+        assert!(text.contains("good"), "{}", text);
+        for gone in ["alt", "cprov", "UNSATISFIED"] {
+            assert!(!text.contains(gone), "`{}` in:\n{}", gone, text);
+        }
+        assert_eq!(text.lines().count(), 2, "{}", text);
+
+        // An unsatisfied want keeps its offers; the kept condition inside
+        // it loses the offer that fails.
+        let top = tracker.resolve_want("x", "top");
+        let full = outline(&view_rows("x", &top, off));
+        assert!(full.contains("ay1"), "{}", full);
+        let text = outline(&view_rows("x", &top, on));
+        assert!(!text.contains("ay1"), "{}", text);
+        assert!(!text.contains("y1"), "{}", text);
+        for kept in ["POSSIBLE: p", "az1", "z2 UNSATISFIED"] {
+            assert!(text.contains(kept), "no `{}` in:\n{}", kept, text);
+        }
+        assert_eq!(text.lines().count(), full.lines().count() - 2, "{}", full);
+
+        // Bundling runs on what is left.
+        let bundled = ViewOptions { bundle: true, ..on };
+        assert_eq!(
+            view_rows("x", &b1, bundled),
+            view_rows(
+                "x",
+                &b1.clone().without_unneeded_alternatives(),
+                ViewOptions { bundle: true, ..off }
+            )
         );
     }
 }

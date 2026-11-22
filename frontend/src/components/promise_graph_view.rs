@@ -9,7 +9,7 @@
 use leptos::prelude::*;
 use promise_tracker::fold::{fold, mark, FoldOptions, GroupSpec};
 use promise_tracker::marks::Marks;
-use promise_tracker::promise_graph::promise_graph;
+use promise_tracker::promise_graph::promise_graph_with;
 use promise_tracker::Tracker;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -129,6 +129,10 @@ pub fn PromiseGraphView(
     /// Which folding rules to apply before drawing
     #[prop(into)]
     fold_options: Signal<FoldOptions>,
+    /// Whether offers that are not kept are left out where another offer
+    /// keeps the same behavior, with the agents only they reached
+    #[prop(into)]
+    fold_alternatives: Signal<bool>,
     /// Whether substituted values are drawn wrapped in `<>`
     #[prop(into)]
     mark_bound: Signal<bool>,
@@ -199,10 +203,19 @@ pub fn PromiseGraphView(
         on_groups_change.run(next);
     });
 
-    // The tree walk is the expensive half and does not depend on the display
-    // options, so it stays in its own memo.
-    let full_graph =
-        Memo::new(move |_| tracker.get().map(|t| promise_graph(&t)).unwrap_or_default());
+    // The tree walk is the expensive half. Of the display options only
+    // "Unneeded alternatives" reaches into it, since that one folds the
+    // resolution before it is drawn, so the walk stays in its own memo and
+    // the other options never repeat it. The switch arrives derived from the
+    // whole options value, so it is memoized here for the same reason.
+    let fold_alternatives = Memo::new(move |_| fold_alternatives.get());
+    let full_graph = Memo::new(move |_| {
+        let fold_alternatives = fold_alternatives.get();
+        tracker
+            .get()
+            .map(|t| promise_graph_with(&t, fold_alternatives))
+            .unwrap_or_default()
+    });
 
     // PartialEq on FoldedGraph makes this memo gate re-renders: a rule that
     // changes nothing in this panel's graph yields an equal value, so the
@@ -335,6 +348,10 @@ pub fn PromiseGraphView(
         }
         if opts.bundle {
             rules.push("bundled");
+        }
+        // Said only when on, so an export without it reads as it always has.
+        if fold_alternatives.get() {
+            rules.push("unneeded alternatives folded");
         }
         let folded = if rules.is_empty() {
             "nothing folded".to_string()

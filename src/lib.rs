@@ -3266,4 +3266,127 @@ bindings:
         assert!(t.has_provider("db-main"));
         assert!(!t.has_provider("y"));
     }
+
+    // --- Fold: Unneeded alternatives ---------------------------------------
+
+    fn conditional(name: &str, conditions: &[&str]) -> Behavior {
+        Behavior::build(name).with_conditions(conditions.iter().map(|c| c.to_string()).collect())
+    }
+
+    #[test]
+    fn test_unneeded_alternatives_fold_inside_an_unsatisfied_chain() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w").with_wants(vec![Behavior::build("top")]));
+        t.add_agent(Agent::build("p").with_provides(vec![conditional("top", &["z1", "z2"])]));
+        t.add_agent(Agent::build("az1").with_provides(vec![Behavior::build("z1")]));
+        t.add_agent(Agent::build("ay1").with_provides(vec![conditional("z1", &["y1"])]));
+
+        let full = t.resolve("top");
+        assert_eq!(
+            full.to_strings_compressed(false),
+            vec![
+                "top |-> p &-> z1 |-> az1",
+                "                 |-> ay1 &-> y1 |-> ?",
+                "          &-> z2 |-> ?",
+            ]
+        );
+        let pruned = full.without_unneeded_alternatives();
+        assert!(!pruned.is_satisfied());
+        assert_eq!(
+            pruned,
+            Resolution::new("top").add_unsatisfying_offer(Offer::new_conditional(
+                "p",
+                vec![
+                    Resolution::new("z1").add_satisfying_offer(Offer::new("az1")),
+                    Resolution::new("z2"),
+                ]
+            ))
+        );
+        assert_eq!(
+            pruned.to_strings_compressed(false),
+            vec!["top |-> p &-> z1 |-> az1", "          &-> z2 |-> ?"]
+        );
+    }
+
+    #[test]
+    fn test_unneeded_alternatives_fold_among_open_variable_candidates() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w").with_wants(vec![Behavior::build("{{?who}} is up")]));
+        t.add_agent(Agent::build("a").with_provides(vec![Behavior::build("a is up")]));
+        t.add_agent(Agent::build("b").with_provides(vec![conditional("b is up", &["power"])]));
+
+        let full = t.resolve("{{?who}} is up");
+        assert_eq!(
+            full.to_strings_compressed(false),
+            vec![
+                "{{?who}} is up |-> a",
+                "               |-> b &-> power |-> ?",
+            ]
+        );
+        let pruned = full.without_unneeded_alternatives();
+        assert_eq!(
+            pruned,
+            Resolution::new("{{?who}} is up")
+                .add_satisfying_offer(Offer::new("a").answering("a is up"))
+        );
+        assert_eq!(
+            pruned.to_strings_compressed(false),
+            vec!["{{?who}} is up |-> a"]
+        );
+    }
+
+    #[test]
+    fn test_unneeded_alternatives_keep_every_candidate_when_none_holds() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("w").with_wants(vec![Behavior::build("{{?who}} is up")]));
+        t.add_agent(Agent::build("a").with_provides(vec![conditional("a is up", &["fuel"])]));
+        t.add_agent(Agent::build("b").with_provides(vec![conditional("b is up", &["power"])]));
+
+        let full = t.resolve("{{?who}} is up");
+        let pruned = full.clone().without_unneeded_alternatives();
+        assert_eq!(pruned, full);
+        assert_eq!(
+            pruned.to_strings_compressed(false),
+            full.to_strings_compressed(false)
+        );
+        assert_eq!(
+            pruned.to_strings_compressed(false),
+            vec![
+                "{{?who}} is up |-> a &-> fuel |-> ?",
+                "               |-> b &-> power |-> ?",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_unneeded_alternatives_fold_a_cycle_away() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("x").with_wants(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("A").with_provides(vec![Behavior::build("b1")]));
+        t.add_agent(Agent::build("B").with_provides(vec![conditional("b1", &["c"])]));
+        t.add_agent(Agent::build("C").with_provides(vec![conditional("c", &["b1"])]));
+
+        let full = t.resolve("b1");
+        assert!(full.is_satisfied());
+        assert_eq!(full.get_unsatisfying_offers().len(), 1);
+        assert_eq!(
+            full.without_unneeded_alternatives(),
+            Resolution::new("b1").add_satisfying_offer(Offer::new("A"))
+        );
+    }
+
+    #[test]
+    fn test_unneeded_alternatives_keep_how_a_want_was_written() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("{{!self}} reads r1")]));
+        t.add_agent(Agent::build("p").with_provides(vec![
+            Behavior::build("a1 reads r1"),
+            conditional("a1 reads r1", &["nothing"]),
+        ]));
+        let pruned = t
+            .resolve_want("a1", "a1 reads r1")
+            .without_unneeded_alternatives();
+        assert_eq!(pruned.marked_name(), "<a1> reads r1");
+        assert!(pruned.get_unsatisfying_offers().is_empty());
+    }
 }

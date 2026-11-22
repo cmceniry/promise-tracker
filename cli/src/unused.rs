@@ -29,6 +29,8 @@ pub fn command(parameters: &Parameters) {
     let options = QueryOptions {
         fold_self: false,
         bundle: parameters.bundle,
+        // An unused promise is nobody's alternative: nothing asks for it.
+        fold_alternatives: false,
     };
     // Display only: the rows keep the plain names.
     let marks = parameters.mark_bound.then(|| Marks::new(&tracker));

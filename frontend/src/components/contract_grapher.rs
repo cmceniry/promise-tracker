@@ -447,6 +447,7 @@ pub fn ContractGrapher(
                                                 tracker=tracker_signal
                                                 sim_id=sim_id
                                                 fold_options=effective_fold
+                                                fold_alternatives=Signal::derive(move || view_options.get().fold_alternatives)
                                                 mark_bound=Signal::derive(move || view_options.get().mark_bound)
                                                 groups=groups
                                                 on_groups_change=on_groups_change

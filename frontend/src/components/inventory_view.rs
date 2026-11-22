@@ -215,7 +215,7 @@ pub fn InventoryView(
     /// Opens the Trace tab on a want, as (agent, behavior)
     on_trace: Callback<(String, String)>,
 ) -> impl IntoView {
-    // Only Self and Bundle shape the lists; SuperAgent folding is already in
+    // Only Self, Bundle and Unneeded alternatives shape the lists; SuperAgent folding is already in
     // the tracker. Memoized so the SuperAgents switch alone recomputes
     // nothing until the tracker is rebuilt.
     let qopts = Memo::new(move |_| {
@@ -223,6 +223,7 @@ pub fn InventoryView(
         QueryOptions {
             fold_self: o.fold_self,
             bundle: o.bundle,
+            fold_alternatives: o.fold_alternatives,
         }
     });
 
@@ -377,7 +378,7 @@ pub fn InventoryView(
                             on_pick=Callback::new(move |name| state.select_agent(name))
                         />
                         <div class="trail-main">
-                            {move || agents_detail(panel, agent_view.get(), qopts.with(|o| o.fold_self))}
+                            {move || agents_detail(panel, agent_view.get(), qopts.with(|o| (o.fold_self, o.fold_alternatives)))}
                         </div>
                     </div>
                 }
@@ -789,7 +790,11 @@ fn status_strip(held: bool, text: String) -> impl IntoView {
 }
 
 /// The Agents tab's right side.
-fn agents_detail(panel: Panel, view: Option<AgentView>, fold_self: bool) -> AnyView {
+fn agents_detail(
+    panel: Panel,
+    view: Option<AgentView>,
+    (fold_self, fold_alternatives): (bool, bool),
+) -> AnyView {
     match view {
         None => empty_note("Pick an agent on the left to see what it provides.".to_string()),
         Some(AgentView::Absent(name)) => {
@@ -830,7 +835,16 @@ fn agents_detail(panel: Panel, view: Option<AgentView>, fold_self: bool) -> AnyV
                 format!(
                     "{} provides nothing{}.",
                     p.agent,
-                    if fold_self { " once self-promises are folded" } else { "" }
+                    // Say which fold may have emptied the list, so it does
+                    // not read as "declares no promises".
+                    match (fold_self, fold_alternatives) {
+                        (true, true) => {
+                            " once self-promises and unneeded alternatives are folded"
+                        }
+                        (true, false) => " once self-promises are folded",
+                        (false, true) => " once unneeded alternatives are folded",
+                        (false, false) => "",
+                    }
                 )
             } else if broken == 0 {
                 format!("{}: {}, all held.", p.agent, count)

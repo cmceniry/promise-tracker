@@ -768,7 +768,18 @@ impl TrailBuilder {
 /// ([`Tracker::resolve_want`]); resolution is by behavior, so two agents
 /// wanting the same thing get the same cards under different headers.
 pub fn trail(tracker: &Tracker, agent: &str, want: &str) -> Trail {
-    let resolution = tracker.resolve_want(agent, want);
+    trail_with(tracker, agent, want, false)
+}
+
+/// [`trail`], with the "Fold: Unneeded alternatives" display option: when
+/// `fold_alternatives` is on, offers that do not keep a behavior another
+/// offer already keeps are left out, with everything they rest on
+/// ([`Resolution::without_unneeded_alternatives`]).
+pub fn trail_with(tracker: &Tracker, agent: &str, want: &str, fold_alternatives: bool) -> Trail {
+    let mut resolution = tracker.resolve_want(agent, want);
+    if fold_alternatives {
+        resolution = resolution.without_unneeded_alternatives();
+    }
     let mut builder = TrailBuilder::new();
     builder.spans.want = resolution.get_bound().to_vec();
     let (root, _) = builder.place(
@@ -1584,5 +1595,40 @@ provides: [{name: z is up}]
         let back: Trail = serde_json::from_str(&json).unwrap();
         assert_eq!(back.cards, t.cards);
         assert!(back.labels(&marks).iter().all(|l| !l.behavior.contains('<')));
+    }
+
+    // --- Fold: Unneeded alternatives ---------------------------------------
+
+    #[test]
+    fn trail_with_folds_unneeded_alternatives() {
+        let conditional = |name: &str, conditions: &[&str]| {
+            Behavior::build(name).with_conditions(conditions.iter().map(|c| c.to_string()).collect())
+        };
+        let mut tracker = Tracker::new();
+        tracker.add_agent(
+            Agent::build("x").with_wants(vec![Behavior::build("b1"), Behavior::build("b2")]),
+        );
+        tracker.add_agent(Agent::build("good").with_provides(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("alt").with_provides(vec![
+            conditional("b1", &["c", "d"]),
+            conditional("b2", &["c"]),
+        ]));
+        tracker.add_agent(Agent::build("cprov").with_provides(vec![Behavior::build("c")]));
+
+        let full = trail_with(&tracker, "x", "b1", false);
+        assert_eq!(full, trail(&tracker, "x", "b1"));
+        assert_eq!(full.promise_count(), 4);
+        assert_eq!(full.broken_count(), 2);
+
+        let folded = trail_with(&tracker, "x", "b1", true);
+        assert!(folded.satisfied);
+        assert_eq!(folded.promise_count(), 1);
+        assert_eq!(folded.broken_count(), 0);
+        assert_eq!(folded.cards.len(), 2);
+        card(&folded, "b1", Some("good"));
+
+        // a want kept only through the alternative's other promise is whole
+        let b2 = trail_with(&tracker, "x", "b2", true);
+        assert_eq!(b2, trail(&tracker, "x", "b2"));
     }
 }

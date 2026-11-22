@@ -217,15 +217,23 @@ pub fn ContractGraph(
         // Generate the actual diagram
         // Resolved as the component wants it, so that marking can show what
         // its own declaration filled in.
-        let resolution = pt.resolve_want(&component, &behavior);
-        diagram_with(&component, &behavior, &resolution, {
-            let o = options.get();
+        let o = options.get();
+        let mut resolution = pt.resolve_want(&component, &behavior);
+        // Unneeded alternatives go first, on the tree; the diagram's own
+        // options apply to what is left.
+        if o.fold_alternatives {
+            resolution = resolution.without_unneeded_alternatives();
+        }
+        diagram_with(
+            &component,
+            &behavior,
+            &resolution,
             DiagramOptions {
                 show_self_promises: !o.fold_self,
                 bundle: o.bundle,
                 mark_bound: o.mark_bound,
-            }
-        })
+            },
+        )
     });
 
     let source_signal = Signal::derive(move || diagram_source.get());

@@ -44,9 +44,17 @@ just build-wasm       # Build legacy WASM package
 
 ### Core Library (`src/`)
 - `lib.rs` - Main `Tracker` struct for managing agents and resolution
-- `resolve.rs` - Resolution logic (who provides what)
+- `resolve.rs` - Resolution logic (who provides what).
+  `Resolution::without_unneeded_alternatives` is the one rule behind the
+  "Fold: Unneeded alternatives" display option (`--fold-alternatives`): at
+  every depth, a behavior that is kept loses its offers that are not kept,
+  each with everything it rests on; a behavior nobody keeps keeps them all.
+  Display only (see `docs/design/fold-alternatives.md`)
 - `query.rs` - Inventory queries as data: an agent's provides, a behavior's
-  providers/consumers, unsatisfied wants with leaf causes, unused promises
+  providers/consumers, unsatisfied wants with leaf causes, unused promises.
+  `QueryOptions::fold_alternatives` drops promises that are not held, for a
+  behavior something else keeps, from a behavior's providers and an agent's
+  provides; unsatisfied and unused ignore it
 - `marks.rs` - Where substituted values sit in behavior names, for the "Mark:
   Bound values" display option (labels only, never identity): by agent and
   name for the Overview graph, and by want, by one promise and by one
@@ -87,6 +95,10 @@ Commands: `agents`, `behavior`, `check-unsatisfied`, `provides` (alias
 `check-unsatisfied --summary` lists unsatisfied wants with leaf causes.
 `--mark-bound` on `provides` / `providers` / `unused` wraps substituted
 values in `<>` (see `docs/design/self-and-open-variables.md`).
+`--fold-alternatives` on `check-unsatisfied` / `simulate` / `providers` /
+`provides` leaves out offers that are not kept where another offer keeps the
+same behavior (a no-op with `check-unsatisfied --summary`; `unused` has no
+such flag; see `docs/design/fold-alternatives.md`).
 `provides` / `providers` / `unused` / `check-unsatisfied --summary` are thin
 printers over `src/query.rs`, which the UI's Inventory tab shares.
 

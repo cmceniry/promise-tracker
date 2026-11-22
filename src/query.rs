@@ -21,6 +21,13 @@
 //! - **Bundling** ([`QueryOptions::bundle`]) collapses rows that differ only
 //!   by agent into one row whose `agents` lists them all. Unbundled, every
 //!   such row names exactly one agent.
+//! - An **unneeded alternative** is a promise that is not held, for a
+//!   behavior something else keeps. With [`QueryOptions::fold_alternatives`]
+//!   on these leave a behavior's providers ([`behavior_use`]) and an agent's
+//!   provides ([`agent_provides`]); a behavior nobody keeps still shows every
+//!   promise for it. It is the Inventory's reading of
+//!   [`Resolution::without_unneeded_alternatives`], and it never touches
+//!   [`unsatisfied`] or [`unused`].
 
 use crate::components::{Behavior, Pattern};
 use crate::resolve::Resolution;
@@ -35,6 +42,11 @@ pub struct QueryOptions {
     pub fold_self: bool,
     /// Collapse rows that differ only by agent; see the module docs.
     pub bundle: bool,
+    /// Drop promises that are not kept where the behavior is kept anyway;
+    /// see the module docs. Absent from older serialized options, where it
+    /// is off.
+    #[serde(default)]
+    pub fold_alternatives: bool,
 }
 
 /// One condition on a promise, resolved against the tracker.
@@ -216,9 +228,18 @@ pub fn agent_provides(
             continue;
         }
         let conditions = resolver.conditions(promise.get_conditions());
+        let held = conditions.iter().all(|c| c.held);
+        // An unneeded alternative: this promise is not held, so if the
+        // behavior is kept at all, some other offer keeps it.
+        if options.fold_alternatives
+            && !held
+            && resolver.resolve(promise.get_name()).is_satisfied()
+        {
+            continue;
+        }
         provides.push(ProvideRow {
             behavior: promise.get_name().clone(),
-            held: conditions.iter().all(|c| c.held),
+            held,
             conditions,
         });
     }
@@ -291,6 +312,12 @@ pub fn behavior_use(
             &b.kind,
         ))
     });
+
+    // Unneeded alternatives: where some promise for the behavior is held,
+    // the ones that are not go. With none held, every one stays.
+    if options.fold_alternatives && providers.iter().any(|r| r.held) {
+        providers.retain(|r| r.held);
+    }
 
     if options.bundle {
         providers = bundle(providers, |r| &mut r.agents);
@@ -652,14 +679,22 @@ mod tests {
     const PLAIN: QueryOptions = QueryOptions {
         fold_self: false,
         bundle: false,
+        fold_alternatives: false,
     };
     const SELF: QueryOptions = QueryOptions {
         fold_self: true,
         bundle: false,
+        fold_alternatives: false,
     };
     const BUNDLE: QueryOptions = QueryOptions {
         fold_self: false,
         bundle: true,
+        fold_alternatives: false,
+    };
+    const ALTERNATIVES: QueryOptions = QueryOptions {
+        fold_self: false,
+        bundle: false,
+        fold_alternatives: true,
     };
 
     fn b(name: &str) -> Behavior {
@@ -1432,5 +1467,156 @@ mod tests {
         assert!(json.contains("\"kind\":\"want\""), "{}", json);
         let back: BehaviorUse = serde_json::from_str(&json).unwrap();
         assert_eq!(back, got);
+    }
+
+    // --- Fold: Unneeded alternatives ---------------------------------------
+
+    fn alternatives() -> Tracker {
+        tracker(vec![
+            agent("x", vec![], &["b1", "b2", "top"]),
+            agent("good", vec![b("b1")], &[]),
+            // b1 is kept by good, so this offer of it is not needed; b2 it
+            // keeps; top nobody keeps
+            agent(
+                "alt",
+                vec![bc("b1", &["c", "d"]), bc("b2", &["c"]), bc("top", &["d"])],
+                &[],
+            ),
+            agent("other", vec![bc("top", &["c", "d"])], &[]),
+            agent("cprov", vec![b("c")], &[]),
+        ])
+    }
+
+    #[test]
+    fn behavior_use_drops_providers_not_held_when_another_is() {
+        let t = alternatives();
+        let plain = behavior_use(&t, "b1", PLAIN).unwrap();
+        assert_eq!(plain.providers.len(), 2);
+
+        let folded = behavior_use(&t, "b1", ALTERNATIVES).unwrap();
+        assert_eq!(
+            folded.providers,
+            vec![ProviderRow {
+                agents: names(&["good"]),
+                pattern: None,
+                conditions: vec![],
+                held: true,
+            }]
+        );
+        assert!(folded.satisfied);
+        assert_eq!(folded.consumers, plain.consumers);
+    }
+
+    #[test]
+    fn behavior_use_keeps_every_provider_when_none_is_held() {
+        let t = alternatives();
+        let plain = behavior_use(&t, "top", PLAIN).unwrap();
+        assert_eq!(plain.providers.len(), 2);
+        assert!(!plain.satisfied);
+        assert_eq!(behavior_use(&t, "top", ALTERNATIVES).unwrap(), plain);
+        // and every one that is held
+        assert_eq!(
+            behavior_use(&t, "b2", ALTERNATIVES).unwrap(),
+            behavior_use(&t, "b2", PLAIN).unwrap()
+        );
+    }
+
+    #[test]
+    fn behavior_use_folds_alternatives_before_bundling() {
+        let t = tracker(vec![
+            agent("x", vec![], &["b1"]),
+            agent("g1", vec![b("b1")], &[]),
+            agent("g2", vec![b("b1")], &[]),
+            agent("n1", vec![bc("b1", &["d"])], &[]),
+            agent("n2", vec![bc("b1", &["d"])], &[]),
+        ]);
+        let both = QueryOptions {
+            bundle: true,
+            ..ALTERNATIVES
+        };
+        let got = behavior_use(&t, "b1", both).unwrap();
+        assert_eq!(got.providers.len(), 1);
+        assert_eq!(got.providers[0].agents, names(&["g1", "g2"]));
+    }
+
+    #[test]
+    fn agent_provides_drops_a_row_only_when_the_behavior_is_kept_elsewhere() {
+        let t = alternatives();
+        let plain = agent_provides(&t, "alt", PLAIN).unwrap();
+        assert_eq!(
+            plain
+                .provides
+                .iter()
+                .map(|r| (r.behavior.as_str(), r.held))
+                .collect::<Vec<_>>(),
+            vec![("b1", false), ("b2", true), ("top", false)]
+        );
+
+        let folded = agent_provides(&t, "alt", ALTERNATIVES).unwrap();
+        // b1 is kept by good: gone. b2 is held: stays. top nobody keeps:
+        // stays, broken as it is.
+        assert_eq!(
+            folded.provides,
+            vec![
+                ProvideRow {
+                    behavior: "b2".to_string(),
+                    conditions: vec![cond("c", true)],
+                    held: true,
+                },
+                ProvideRow {
+                    behavior: "top".to_string(),
+                    conditions: vec![cond("d", false)],
+                    held: false,
+                },
+            ]
+        );
+        // an agent with nothing unneeded reads the same
+        assert_eq!(
+            agent_provides(&t, "good", ALTERNATIVES),
+            agent_provides(&t, "good", PLAIN)
+        );
+        assert_eq!(
+            agent_provides(&t, "other", ALTERNATIVES),
+            agent_provides(&t, "other", PLAIN)
+        );
+    }
+
+    #[test]
+    fn agent_provides_drops_its_own_broken_row_beside_its_own_held_one() {
+        // promised outright and under a condition nobody keeps: the agent
+        // itself keeps the behavior, so its broken row is the alternative
+        let t = tracker(vec![
+            agent("x", vec![], &["b1"]),
+            agent("a", vec![b("b1"), bc("b1", &["d"])], &[]),
+        ]);
+        assert_eq!(agent_provides(&t, "a", PLAIN).unwrap().provides.len(), 2);
+        let folded = agent_provides(&t, "a", ALTERNATIVES).unwrap();
+        assert_eq!(folded.provides.len(), 1);
+        assert!(folded.provides[0].held);
+    }
+
+    #[test]
+    fn unsatisfied_and_unused_ignore_alternative_folding() {
+        let mut agents_tracker = alternatives();
+        agents_tracker.add_agent(agent("idle", vec![b("unasked"), bc("unasked", &["d"])], &[]));
+        let t = agents_tracker;
+        assert_eq!(unsatisfied(&t, ALTERNATIVES), unsatisfied(&t, PLAIN));
+        assert_eq!(unsatisfied(&t, PLAIN).len(), 1);
+        assert_eq!(unused(&t, ALTERNATIVES), unused(&t, PLAIN));
+        assert_eq!(unused_names(&t, PLAIN), names(&["unasked"]));
+        assert_eq!(unused(&t, PLAIN)[0].providers.len(), 2);
+        let bundled = QueryOptions {
+            bundle: true,
+            ..ALTERNATIVES
+        };
+        assert_eq!(unsatisfied(&t, bundled), unsatisfied(&t, BUNDLE));
+        assert_eq!(unused(&t, bundled), unused(&t, BUNDLE));
+    }
+
+    #[test]
+    fn options_without_the_field_read_as_off() {
+        let old: QueryOptions =
+            serde_json::from_str(r#"{"fold_self":true,"bundle":false}"#).unwrap();
+        assert_eq!(old, SELF);
     }
 }

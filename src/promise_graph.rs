@@ -183,6 +183,14 @@ impl PromiseGraphBuilder {
         }
     }
 
+    /// Every node some edge starts or ends at.
+    fn endpoints(&self) -> BTreeSet<String> {
+        self.edges
+            .keys()
+            .flat_map(|(source, target, _, _)| [source.clone(), target.clone()])
+            .collect()
+    }
+
     fn build(self) -> PromiseGraphData {
         PromiseGraphData {
             nodes: self.nodes.into_values().collect(),
@@ -211,11 +219,30 @@ impl PromiseGraphBuilder {
 /// that provider to whoever satisfies them, recursively. Wants that resolve
 /// to nothing are listed in `unsatisfied` for the status strip.
 pub fn promise_graph(tracker: &Tracker) -> PromiseGraphData {
+    promise_graph_with(tracker, false)
+}
+
+/// [`promise_graph`], with the "Fold: Unneeded alternatives" display option.
+///
+/// When `fold_alternatives` is on, every want is drawn from its resolution
+/// without the offers that fail to keep a behavior another offer already
+/// keeps ([`Resolution::without_unneeded_alternatives`]). A promise two
+/// chains share is still drawn when either chain that reaches it is.
+///
+/// An agent that was only on the canvas for such offers goes with them: one
+/// with a promise in the full graph and none in the folded one has no node.
+/// An agent with no promises to begin with keeps its node, as it does with
+/// the option off. `unsatisfied` is the same either way.
+pub fn promise_graph_with(tracker: &Tracker, fold_alternatives: bool) -> PromiseGraphData {
     if tracker.is_empty() {
         return PromiseGraphData::default();
     }
 
     let mut builder = PromiseGraphBuilder::new();
+    // The graph as it is with the option off, kept beside the folded one
+    // only to tell an agent the folding left alone from one that never had
+    // a promise drawn.
+    let mut unfolded = fold_alternatives.then(PromiseGraphBuilder::new);
 
     for agent_name in tracker.get_working_agent_names() {
         builder.add_agent_node(agent_name);
@@ -234,8 +261,23 @@ pub fn promise_graph(tracker: &Tracker) -> PromiseGraphData {
                     behavior: want.clone(),
                 });
             }
-            builder.emit_requirement(agent_name, PromiseKind::Want, &resolution);
+            match unfolded.as_mut() {
+                Some(unfolded) => {
+                    unfolded.emit_requirement(agent_name, PromiseKind::Want, &resolution);
+                    let folded = resolution.without_unneeded_alternatives();
+                    builder.emit_requirement(agent_name, PromiseKind::Want, &folded);
+                }
+                None => builder.emit_requirement(agent_name, PromiseKind::Want, &resolution),
+            }
         }
+    }
+
+    if let Some(unfolded) = unfolded {
+        let had_promise = unfolded.endpoints();
+        let has_promise = builder.endpoints();
+        builder
+            .nodes
+            .retain(|id, _| has_promise.contains(id) || !had_promise.contains(id));
     }
 
     builder.build()
@@ -778,5 +820,149 @@ mod tests {
         // canvas; what it offers belongs to the offered view.
         assert_eq!(node_ids(&graph), vec!["host"]);
         assert!(graph.edges.is_empty());
+    }
+
+    // --- Fold: Unneeded alternatives ---------------------------------------
+
+    fn conditional(name: &str, conditions: &[&str]) -> Behavior {
+        Behavior::build(name).with_conditions(conditions.iter().map(|c| c.to_string()).collect())
+    }
+
+    /// `x` wants `b1` and `b2`. `good` keeps `b1`; `alt` offers `b1` on `c`
+    /// and `d` (nobody provides `d`) and keeps `b2` on `c`.
+    fn shared_chain() -> Tracker {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(
+            Agent::build("x").with_wants(vec![Behavior::build("b1"), Behavior::build("b2")]),
+        );
+        tracker.add_agent(Agent::build("good").with_provides(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("alt").with_provides(vec![
+            conditional("b1", &["c", "d"]),
+            conditional("b2", &["c"]),
+        ]));
+        tracker.add_agent(Agent::build("cprov").with_provides(vec![Behavior::build("c")]));
+        tracker
+    }
+
+    #[test]
+    fn test_fold_alternatives_off_is_the_plain_graph() {
+        let tracker = shared_chain();
+        assert_eq!(promise_graph_with(&tracker, false), promise_graph(&tracker));
+        let graph = promise_graph(&tracker);
+        assert_eq!(
+            node_ids(&graph),
+            vec!["alt", "cprov", "good", "missing:d", "x"]
+        );
+        assert_eq!(
+            graph.edges,
+            vec![
+                edge("alt", "cprov", "c", PromiseKind::Condition, true),
+                edge("alt", "missing:d", "d", PromiseKind::Condition, false),
+                edge("x", "alt", "b1", PromiseKind::Want, false),
+                edge("x", "alt", "b2", PromiseKind::Want, true),
+                edge("x", "good", "b1", PromiseKind::Want, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fold_alternatives_keeps_a_promise_a_kept_chain_still_reaches() {
+        let tracker = shared_chain();
+        let graph = promise_graph_with(&tracker, true);
+        assert_eq!(node_ids(&graph), vec!["alt", "cprov", "good", "x"]);
+        // alt -> cprov is shared: the broken offer of b1 is gone, the kept
+        // offer of b2 still rests on it.
+        assert_eq!(
+            graph.edges,
+            vec![
+                edge("alt", "cprov", "c", PromiseKind::Condition, true),
+                edge("x", "alt", "b2", PromiseKind::Want, true),
+                edge("x", "good", "b1", PromiseKind::Want, true),
+            ]
+        );
+        assert!(graph.unsatisfied.is_empty());
+    }
+
+    #[test]
+    fn test_fold_alternatives_drops_an_agent_left_with_no_promise() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("x").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("good").with_provides(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("alt").with_provides(vec![conditional("b1", &["c", "d"])]));
+        tracker.add_agent(Agent::build("cprov").with_provides(vec![Behavior::build("c")]));
+        // never had a promise drawn, with the option or without
+        tracker.add_agent(Agent::build("idle").with_provides(vec![Behavior::build("unasked")]));
+
+        let plain = promise_graph(&tracker);
+        assert_eq!(
+            node_ids(&plain),
+            vec!["alt", "cprov", "good", "idle", "missing:d", "x"]
+        );
+
+        let folded = promise_graph_with(&tracker, true);
+        // alt and cprov were only there for the offer that is gone, and the
+        // ghost with them; idle stays, as isolated as it always was.
+        assert_eq!(node_ids(&folded), vec!["good", "idle", "x"]);
+        assert_eq!(
+            folded.edges,
+            vec![edge("x", "good", "b1", PromiseKind::Want, true)]
+        );
+        // every edge still ends at a node
+        for e in &folded.edges {
+            assert!(folded.nodes.iter().any(|n| n.id == e.source));
+            assert!(folded.nodes.iter().any(|n| n.id == e.target));
+        }
+    }
+
+    #[test]
+    fn test_fold_alternatives_leaves_an_unsatisfied_want_its_offers() {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("w").with_wants(vec![Behavior::build("top")]));
+        tracker.add_agent(Agent::build("p").with_provides(vec![conditional("top", &["z1", "z2"])]));
+        tracker.add_agent(Agent::build("az1").with_provides(vec![Behavior::build("z1")]));
+        tracker.add_agent(Agent::build("ay1").with_provides(vec![conditional("z1", &["y1"])]));
+
+        let plain = promise_graph(&tracker);
+        let folded = promise_graph_with(&tracker, true);
+        assert_eq!(folded.unsatisfied, plain.unsatisfied);
+        assert_eq!(folded.unsatisfied.len(), 1);
+        // ay1's failing offer of z1 goes, inside the broken chain too
+        assert_eq!(node_ids(&folded), vec!["az1", "missing:z2", "p", "w"]);
+        assert_eq!(
+            folded.edges,
+            vec![
+                edge("p", "az1", "z1", PromiseKind::Condition, true),
+                edge("p", "missing:z2", "z2", PromiseKind::Condition, false),
+                edge("w", "p", "top", PromiseKind::Want, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fold_alternatives_drops_a_collective_left_with_no_promise() {
+        // A folded collective is one node: when its only promise is an
+        // unneeded alternative it goes like any other agent, and nothing is
+        // left pointing at it.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("x").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("good").with_provides(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("m1").with_provides(vec![conditional("b1", &["d"])]));
+        tracker.add_agent(Agent::build("m2"));
+        tracker.add_superagent(
+            SuperAgent::new(String::from("sa"))
+                .with_agent("m1")
+                .with_agent("m2"),
+        );
+
+        assert!(node_ids(&promise_graph(&tracker)).contains(&"sa"));
+        let folded = promise_graph_with(&tracker, true);
+        assert_eq!(node_ids(&folded), vec!["good", "x"]);
+
+        let drawn = crate::fold::fold(&folded, &tracker, crate::fold::FoldOptions::default());
+        assert_eq!(
+            drawn.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec!["good", "x"]
+        );
+        assert_eq!(drawn.edges.len(), 1);
     }
 }

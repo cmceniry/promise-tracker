@@ -117,6 +117,12 @@ With Self on, self-promises disappear entirely:
 - **Unused**: self-promises are *not* reported as unused — they are folded
   away, not unused.
 
+### Unneeded alternatives (`fold_alternatives`)
+
+Added later; see `fold-alternatives.md`. **Agents** and **Behaviors** drop a
+promise that is not held when something else keeps the same behavior;
+**Unsatisfied** and **Unused** are unaffected.
+
 ## Navigation
 
 Two click behaviours:

@@ -27,6 +27,11 @@ pub struct Parameters {
     #[clap(long)]
     mark_bound: bool,
 
+    /// Leave out providers whose promise is not kept, where another
+    /// provider keeps the behavior; one nobody keeps still shows them all
+    #[clap(long)]
+    fold_alternatives: bool,
+
     /// The behavior to show providers and consumers for
     behavior: String,
 }
@@ -36,6 +41,7 @@ pub fn command(parameters: &Parameters) {
     let options = QueryOptions {
         fold_self: parameters.fold_self,
         bundle: parameters.bundle,
+        fold_alternatives: parameters.fold_alternatives,
     };
     cli::require_concrete(&parameters.behavior);
     let Some(found) = query::behavior_use(&tracker, &parameters.behavior, options) else {

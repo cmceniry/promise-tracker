@@ -6,7 +6,7 @@
 //! the card that reached it again shows a pointer back instead.
 
 use leptos::prelude::*;
-use promise_tracker::trace::{trail, wants, CardKind, CardLabels, Trail, TrailCard, WantSummary};
+use promise_tracker::trace::{trail_with, wants, CardKind, CardLabels, Trail, TrailCard, WantSummary};
 use promise_tracker::Tracker;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -296,15 +296,19 @@ pub fn TraceView(
         }
     });
 
-    // The walk does not depend on the display options, so it is memoized
-    // apart from the fold below.
+    // Of the display options the walk depends only on "Unneeded
+    // alternatives", which folds the resolution before it is walked, so it
+    // is memoized apart from the folds below and that one switch apart from
+    // the rest of the options.
+    let fold_alternatives = Memo::new(move |_| options.get().fold_alternatives);
     let full_trail = Memo::new(move |_| {
+        let fold_alternatives = fold_alternatives.get();
         let (agent, behavior) = selection.get()?;
         let t = tracker.get()?;
         if !t.has_agent(agent.clone()) || !t.get_agent_wants(agent.clone()).contains(&behavior) {
             return None;
         }
-        Some(trail(&t, &agent, &behavior))
+        Some(trail_with(&t, &agent, &behavior, fold_alternatives))
     });
 
     let current_trail = Memo::new(move |_| {
