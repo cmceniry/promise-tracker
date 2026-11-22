@@ -44,9 +44,10 @@ pub fn command(parameters: &Parameters) {
     };
     // Display only: the rows keep the plain names.
     let marks = parameters.mark_bound.then(|| Marks::new(&tracker));
+    // A promise as the row's agents wrote that one promise.
     let promised = |agents: &[String], name: &String| -> String {
         match &marks {
-            Some(marks) => marks.promise_by(agents, name),
+            Some(marks) => marks.made_by(agents, name, name),
             None => name.clone(),
         }
     };
@@ -65,7 +66,10 @@ pub fn command(parameters: &Parameters) {
                 .iter()
                 .map(|c| ConditionStatus {
                     behavior: match &marks {
-                        Some(marks) => marks.need_by(&row.agents, &c.behavior),
+                        // as the promise keeping this behavior has it
+                        Some(marks) => {
+                            marks.condition_by(&row.agents, &parameters.behavior, &c.behavior)
+                        }
                         None => c.behavior.clone(),
                     },
                     held: c.held,

@@ -47,9 +47,12 @@ just build-wasm       # Build legacy WASM package
 - `resolve.rs` - Resolution logic (who provides what)
 - `query.rs` - Inventory queries as data: an agent's provides, a behavior's
   providers/consumers, unsatisfied wants with leaf causes, unused promises
-- `marks.rs` - Where substituted values sit in behavior names, by the agent
-  that needs and the agent that promises; the one source for the "Mark: Bound
-  values" display option (labels only, never identity)
+- `marks.rs` - Where substituted values sit in behavior names, for the "Mark:
+  Bound values" display option (labels only, never identity): by agent and
+  name for the Overview graph, and by want, by one promise and by one
+  promise's condition for the Inventory and CLI rows. A trace carries its own
+  spans (`Trail::labels`); the text and sequence views read them off the
+  resolution
 - `components/` - Domain models: `Agent`, `Behavior`, `SuperAgent`, `Item`
 
 ### API Server (`api/`)

@@ -16,9 +16,10 @@ pub struct Resolution {
     /// one a sibling condition found. Empty when the name was written out.
     ///
     /// Display only. It depends on how the goal was reached, not only on its
-    /// text, so it takes no part in equality, and it is left out of the
-    /// serialized form when empty so that output is as it was.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// text, so it takes no part in equality, and it is never serialized:
+    /// byte offsets are of no use outside this process, and the serialized
+    /// form stays as it always was.
+    #[serde(skip)]
     bound: Spans,
 }
 
@@ -76,6 +77,39 @@ impl Resolution {
             offer.get_behavior().unwrap_or(&self.behavior_name),
             &offer.kept_spans(&self.bound),
         )
+    }
+
+    /// The whole resolution with its marks, one line per name: this goal as
+    /// [`Resolution::marked_name`], then under it each offer as
+    /// `agent: marked_offer`, satisfying ones first, each followed by its
+    /// conditions the same way, two spaces further in per level.
+    ///
+    /// Equality and `Debug` leave the display-only spans out, so this is how
+    /// a test says what they are.
+    #[doc(hidden)]
+    pub fn marked_outline(&self) -> Vec<String> {
+        let mut out = vec![];
+        self.outline_into(0, &mut out);
+        out
+    }
+
+    fn outline_into(&self, depth: usize, out: &mut Vec<String>) {
+        out.push(format!("{}{}", "  ".repeat(depth), self.marked_name()));
+        for offer in self
+            .satisfying_offers
+            .iter()
+            .chain(&self.unsatisfying_offers)
+        {
+            out.push(format!(
+                "{}{}: {}",
+                "  ".repeat(depth + 1),
+                offer.agent_name,
+                self.marked_offer(offer)
+            ));
+            for condition in &offer.resolved_conditions {
+                condition.outline_into(depth + 2, out);
+            }
+        }
     }
 
     pub(crate) fn offers_mut(&mut self) -> impl Iterator<Item = &mut Offer> {
@@ -413,12 +447,13 @@ pub struct Offer {
     /// The parts of the behavior this offer keeps that the promise names
     /// through a variable: its agent's `{{!self}}` or Instance binding, or
     /// what a parameterized name took from the goal. Display only, and like
-    /// [`Resolution`]'s no part of equality.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// [`Resolution`]'s no part of equality or of the serialized form.
+    #[serde(skip)]
     bound: Spans,
     /// Under an open goal, the parts of `behavior` the goal filled in or
-    /// its `{{?x}}` matched. Display only; no part of equality.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// its `{{?x}}` matched. Display only; no part of equality or of the
+    /// serialized form.
+    #[serde(skip)]
     matched: Spans,
 }
 
@@ -640,7 +675,7 @@ mod tests_offer {
     use super::*;
 
     #[test]
-    fn test_display_spans_are_not_identity_and_not_serialized_when_empty() {
+    fn test_display_spans_are_not_identity_and_not_serialized() {
         let plain = Resolution::new("a1 reads r1").add_satisfying_offer(Offer::new("s1"));
         let marked = Resolution::new("a1 reads r1")
             .with_bound(vec![(0, 2)])
@@ -677,15 +712,31 @@ mod tests_offer {
             "Offer { agent_name: \"s1\", resolved_conditions: [], behavior: None }"
         );
 
+        // Never serialized, set or not: byte offsets mean nothing to
+        // whoever reads the JSON, and the form is as it always was.
         let json = serde_json::to_string(&plain).unwrap();
         assert!(
             !json.contains("bound") && !json.contains("matched"),
             "{}",
             json
         );
+        assert_eq!(serde_json::to_string(&marked).unwrap(), json);
+        assert_eq!(serde_json::to_string(&open).unwrap().contains("matched"), false);
         let back: Resolution =
             serde_json::from_str(&serde_json::to_string(&marked).unwrap()).unwrap();
-        assert_eq!(back.marked_name_with_offers(), "<a1> reads <r1>");
+        assert_eq!(back, marked);
+        assert_eq!(back.marked_name_with_offers(), "a1 reads r1");
+
+        // The outline is how a test reads the spans.
+        assert_eq!(
+            marked.marked_outline(),
+            vec!["<a1> reads r1", "  s1: <a1> reads <r1>"]
+        );
+        assert_eq!(
+            open.marked_outline(),
+            vec!["{{?who}} reads <r1>", "  s1: <a1> reads <r1>"]
+        );
+        assert_eq!(plain.marked_outline(), vec!["a1 reads r1", "  s1: a1 reads r1"]);
     }
 
     #[test]

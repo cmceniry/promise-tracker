@@ -222,12 +222,9 @@ pub fn ContractGrapher(
                         sorted_wants.sort();
                         // The option's value is the want; what it reads as is
                         // the want as the component wrote it, when marking.
-                        let mark = view_options.get().mark_bound;
+                        let shown = view_options.get();
                         options.extend(sorted_wants.into_iter().map(|w| {
-                            let label = mark
-                                .then(|| t.marked_name(&component, &w))
-                                .flatten()
-                                .unwrap_or_else(|| w.clone());
+                            let label = shown.want_label(Some(&t), &component, &w);
                             (w, label)
                         }));
                         Some(options)

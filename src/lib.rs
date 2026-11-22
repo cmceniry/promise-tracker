@@ -780,18 +780,37 @@ impl Tracker {
     /// ([`Resolution::marked_name`]). The offers are the same either way.
     pub fn resolve_want(&self, agent: &str, want: &str) -> Resolution {
         let resolved = self.resolve(want);
-        let declared = self.working_agents.get(agent).and_then(|variants| {
-            variants.iter().find_map(|variant| {
-                variant
-                    .wants()
-                    .iter()
-                    .map(|w| w.get_name_pattern())
-                    .find(|p| p.source() == want && p.has_bound())
-            })
-        });
-        match declared {
+        match self.declared_want(agent, want) {
             Some(pattern) => as_reached_by(resolved, pattern),
             None => resolved,
+        }
+    }
+
+    /// `want` as `agent` wrote it, when the agent wants it and a
+    /// substitution filled part of it in.
+    fn declared_want(&self, agent: &str, want: &str) -> Option<&Pattern> {
+        self.working_agents.get(agent)?.iter().find_map(|variant| {
+            variant
+                .wants()
+                .iter()
+                .map(|w| w.get_name_pattern())
+                .find(|p| p.source() == want && p.has_bound())
+        })
+    }
+
+    /// `want` as `agent` wants it, with what the agent's own `{{!self}}` or
+    /// Instance binding filled in wrapped in `<>`: `<A1> reads R1`. The same
+    /// text as [`Tracker::resolve_want`]'s [`Resolution::marked_name`],
+    /// without resolving anything.
+    ///
+    /// Only the want counts: a promise or condition of the same agent that
+    /// reaches the same text through a variable adds nothing. The plain name
+    /// when the agent wrote the want out, or does not want it. Display only;
+    /// never a behavior name.
+    pub fn marked_want(&self, agent: &str, want: &str) -> String {
+        match self.declared_want(agent, want) {
+            Some(pattern) => pattern.marked(),
+            None => want.to_string(),
         }
     }
 
@@ -2392,6 +2411,64 @@ provides:
             approval.marked_offer(&approval.get_satisfying_offers()[0]),
             "Design approval access to Secret <appsecret> for <appname>"
         );
+
+        // The whole of it at once. Equality cannot see any of this.
+        assert_eq!(
+            r.marked_outline(),
+            vec![
+                "Read Secret Contents appsecret by <appname>",
+                "  AWSSM: Read Secret Contents <appsecret> by <appname>",
+                "    <appname> has IAM role {{?approle}}",
+                "      appname: <appname> has IAM role <approle>",
+                "    IAM access granted for reading Secret <appsecret> to <approle>",
+                "      infrateam: IAM access granted for reading Secret <appsecret> to <approle>",
+                "        Design approval access to Secret <appsecret> for {{?application}}",
+                "          manager: Design approval access to Secret <appsecret> for <appname>",
+            ]
+        );
+        assert_eq!(
+            t.resolve(want).marked_outline()[0],
+            "Read Secret Contents appsecret by appname"
+        );
+    }
+
+    #[test]
+    fn test_marked_want_is_the_want_as_its_agent_wrote_it() {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("a1")
+                .with_wants(vec![
+                    Behavior::build("{{!self}} is up"),
+                    Behavior::build("a2 is up"),
+                ])
+                // a promise and a condition reaching a want's text through a
+                // variable say nothing about how the want was written
+                .with_provides(vec![Behavior::build("{{who}} is up")
+                    .with_conditions(vec![String::from("{{who}} is up")])]),
+        );
+        t.add_agent(Agent::build("a2").with_wants(vec![Behavior::build("{{!self}} is up")]));
+        t.add_agent(
+            Agent::build("\u{e9}1").with_wants(vec![Behavior::build("{{!self}} is up, \u{e9}1")]),
+        );
+
+        assert_eq!(t.marked_want("a1", "a1 is up"), "<a1> is up");
+        assert_eq!(t.marked_want("a1", "a2 is up"), "a2 is up");
+        assert_eq!(t.marked_want("a2", "a2 is up"), "<a2> is up");
+        // not a want of that agent, or no such agent: the plain name
+        assert_eq!(t.marked_want("a2", "a1 is up"), "a1 is up");
+        assert_eq!(t.marked_want("nobody", "a1 is up"), "a1 is up");
+        // only the occurrence that was substituted, on character boundaries
+        assert_eq!(
+            t.marked_want("\u{e9}1", "\u{e9}1 is up, \u{e9}1"),
+            "<\u{e9}1> is up, \u{e9}1"
+        );
+        // the same text the resolution carries
+        for (agent, want) in [("a1", "a1 is up"), ("a1", "a2 is up"), ("a2", "a2 is up")] {
+            assert_eq!(
+                t.marked_want(agent, want),
+                t.resolve_want(agent, want).marked_name()
+            );
+        }
     }
 
     #[test]
@@ -2413,6 +2490,14 @@ provides:
         assert_eq!(
             wanted.marked_offer(&wanted.get_satisfying_offers()[0]),
             "<b1> backs up <a1>"
+        );
+        assert_eq!(
+            plain.marked_outline(),
+            vec!["{{?who}} backs up a1", "  b1: <b1> backs up a1"]
+        );
+        assert_eq!(
+            wanted.marked_outline(),
+            vec!["{{?who}} backs up <a1>", "  b1: <b1> backs up <a1>"]
         );
     }
 

@@ -159,6 +159,11 @@ enum Subject {
 }
 
 /// One panel's view of its simulation, for the names and rows inside it.
+///
+/// Handed down as an argument, never through context: every simulation's
+/// panel is mounted under the same reactive owner, so a `provide_context`
+/// here would be overwritten by the next panel's and every row would read
+/// the last simulation's tracker and marks.
 #[derive(Clone, Copy)]
 struct Panel {
     state: InventoryState,
@@ -276,11 +281,12 @@ pub fn InventoryView(
         })
     });
 
-    // Read only while marking is on, and once per tracker.
+    // Read only while marking is on, and once per tracker: the switch is a
+    // memo of its own so that Bundle and Self promises do not re-read them.
+    let mark_bound = Memo::new(move |_| options.get().mark_bound);
     let marks = Memo::new(move |_| {
-        options
+        mark_bound
             .get()
-            .mark_bound
             .then(|| tracker.with(|t| t.as_ref().map(Marks::new)))
             .flatten()
     });
@@ -293,8 +299,6 @@ pub fn InventoryView(
         unsat,
         on_trace,
     };
-    provide_context(panel);
-
     // A click anywhere but on a name or its popover, or Escape, closes the
     // popover.
     let peek = state.peek;
@@ -373,7 +377,7 @@ pub fn InventoryView(
                             on_pick=Callback::new(move |name| state.select_agent(name))
                         />
                         <div class="trail-main">
-                            {move || agents_detail(agent_view.get(), qopts.with(|o| o.fold_self))}
+                            {move || agents_detail(panel, agent_view.get(), qopts.with(|o| o.fold_self))}
                         </div>
                     </div>
                 }
@@ -391,18 +395,18 @@ pub fn InventoryView(
                         />
                         <div class="trail-main">
                             {move || {
-                                behaviors_detail(behavior_view.get(), qopts.with(|o| o.fold_self))
+                                behaviors_detail(panel, behavior_view.get(), qopts.with(|o| o.fold_self))
                             }}
                         </div>
                     </div>
                 }
                     .into_any(),
                 InventoryTab::Unsatisfied => view! {
-                    <div class="trail-main">{move || unsatisfied_list(unsat.get())}</div>
+                    <div class="trail-main">{move || unsatisfied_list(panel, unsat.get())}</div>
                 }
                     .into_any(),
                 InventoryTab::Unused => view! {
-                    <div class="trail-main">{move || unused_list(unused.get())}</div>
+                    <div class="trail-main">{move || unused_list(panel, unused.get())}</div>
                 }
                     .into_any(),
             }}
@@ -487,13 +491,14 @@ fn Picker(
 /// A name inside a list: a click peeks at it in a small popover.
 #[component]
 fn Name(
+    /// The panel the name sits in
+    panel: Panel,
     subject: Subject,
     /// What to show in place of the subject's own name; the subject stays
     /// what a click peeks at
     #[prop(optional)]
     shown: Option<String>,
 ) -> impl IntoView {
-    let panel = expect_context::<Panel>();
     let peek = panel.state.peek;
     let id = next_name_id();
     let open = Memo::new(move |_| peek.get() == Some(id));
@@ -523,7 +528,7 @@ fn Name(
                 {label}
             </button>
             <Show when=move || open.get()>
-                <Peek subject=subject.clone() />
+                <Peek panel=panel subject=subject.clone() />
             </Show>
         </span>
     }
@@ -531,8 +536,7 @@ fn Name(
 
 /// The popover behind a name: a summary, and Open to navigate.
 #[component]
-fn Peek(subject: Subject) -> impl IntoView {
-    let panel = expect_context::<Panel>();
+fn Peek(panel: Panel, subject: Subject) -> impl IntoView {
     let (kind, name) = match &subject {
         Subject::Agent(n) => ("Agent", n.clone()),
         Subject::Behavior(n) => ("Behavior", n.clone()),
@@ -671,6 +675,7 @@ fn behavior_peek(panel: Panel, name: &str) -> AnyView {
 /// tab on its want of that behavior.
 #[component]
 fn AgentsCell(
+    panel: Panel,
     agents: Vec<String>,
     noun: &'static str,
     #[prop(optional)] trace: Option<String>,
@@ -678,8 +683,8 @@ fn AgentsCell(
     if agents.len() == 1 {
         let agent = agents[0].clone();
         return view! {
-            <Name subject=Subject::Agent(agent.clone()) />
-            {trace.map(|behavior| view! { <TraceLink agent=agent behavior=behavior /> })}
+            <Name panel=panel subject=Subject::Agent(agent.clone()) />
+            {trace.map(|behavior| view! { <TraceLink panel=panel agent=agent behavior=behavior /> })}
         }
         .into_any();
     }
@@ -705,8 +710,8 @@ fn AgentsCell(
                             let agent = a.clone();
                             view! {
                                 <li>
-                                    <Name subject=Subject::Agent(a.clone()) />
-                                    {trace.map(|behavior| view! { <TraceLink agent=agent behavior=behavior /> })}
+                                    <Name panel=panel subject=Subject::Agent(a.clone()) />
+                                    {trace.map(|behavior| view! { <TraceLink panel=panel agent=agent behavior=behavior /> })}
                                 </li>
                             }
                         })
@@ -720,8 +725,7 @@ fn AgentsCell(
 
 /// Opens the Trace tab on one want.
 #[component]
-fn TraceLink(agent: String, behavior: String) -> impl IntoView {
-    let panel = expect_context::<Panel>();
+fn TraceLink(panel: Panel, agent: String, behavior: String) -> impl IntoView {
     let title = format!("Trace {} wanting {}", agent, behavior);
     view! {
         <button
@@ -738,12 +742,12 @@ fn TraceLink(agent: String, behavior: String) -> impl IntoView {
 /// A condition, marked held or broken.
 ///
 /// `shown` is the text to display when it differs from the behavior's name.
-fn condition_chip(c: ConditionStatus, shown: Option<String>) -> impl IntoView {
+fn condition_chip(panel: Panel, c: ConditionStatus, shown: Option<String>) -> impl IntoView {
     let held = c.held;
     let shown = shown.unwrap_or_else(|| c.behavior.clone());
     view! {
         <span class="inv-cond" class:inv-cond-broken=!held>
-            <Name subject=Subject::Behavior(c.behavior) shown=shown />
+            <Name panel=panel subject=Subject::Behavior(c.behavior) shown=shown />
             {if held { " \u{2713}" } else { " \u{2717}" }}
         </span>
     }
@@ -751,6 +755,7 @@ fn condition_chip(c: ConditionStatus, shown: Option<String>) -> impl IntoView {
 
 /// A promise's conditions, each shown as `shown` says.
 fn conditions_view(
+    panel: Panel,
     conditions: Vec<ConditionStatus>,
     shown: impl Fn(&str) -> String,
 ) -> Option<AnyView> {
@@ -761,7 +766,7 @@ fn conditions_view(
                 .into_iter()
                 .map(|c| {
                     let label = shown(&c.behavior);
-                    condition_chip(c, Some(label))
+                    condition_chip(panel, c, Some(label))
                 })
                 .collect_view()}
         }
@@ -784,8 +789,7 @@ fn status_strip(held: bool, text: String) -> impl IntoView {
 }
 
 /// The Agents tab's right side.
-fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
-    let panel = expect_context::<Panel>();
+fn agents_detail(panel: Panel, view: Option<AgentView>, fold_self: bool) -> AnyView {
     match view {
         None => empty_note("Pick an agent on the left to see what it provides.".to_string()),
         Some(AgentView::Absent(name)) => {
@@ -834,13 +838,16 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
                 format!("{}: {}, {} broken.", p.agent, count, broken)
             };
             // Names as this agent has them, marked when asked for: a promise
-            // as it makes it, a condition as it needs it.
+            // as that one promise is written, a condition as that promise
+            // has it.
             let agent = p.agent.clone();
             let promised = {
                 let agent = agent.clone();
-                move |name: &str| panel.shown(name, |m| m.promise(&agent, name))
+                move |name: &str| panel.shown(name, |m| m.made(&agent, name, name))
             };
-            let needed = move |name: &str| panel.shown(name, |m| m.need(&agent, name));
+            let needed = move |promise: &str, name: &str| {
+                panel.shown(name, |m| m.condition(&agent, promise, name))
+            };
             let rows = p
                 .provides
                 .into_iter()
@@ -852,8 +859,8 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
                             .conditions
                             .into_iter()
                             .map(|c| {
-                                let label = needed(&c.behavior);
-                                condition_chip(c, Some(label))
+                                let label = needed(&r.behavior, &c.behavior);
+                                condition_chip(panel, c, Some(label))
                             })
                             .collect_view();
                         view! {
@@ -864,7 +871,7 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
                     view! {
                         <div class="inv-row">
                             <span class="trail-dot" class:trail-dot-broken=!held></span>
-                            <Name subject=Subject::Behavior(r.behavior) shown=label />
+                            <Name panel=panel subject=Subject::Behavior(r.behavior) shown=label />
                             {conditions}
                         </div>
                     }
@@ -880,7 +887,7 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
                                 "if {}",
                                 r.conditions
                                     .iter()
-                                    .map(|c| needed(c))
+                                    .map(|c| needed(&r.pattern, c))
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             )
@@ -913,8 +920,7 @@ fn agents_detail(view: Option<AgentView>, fold_self: bool) -> AnyView {
 }
 
 /// The Behaviors tab's right side.
-fn behaviors_detail(view: Option<BehaviorView>, fold_self: bool) -> AnyView {
-    let panel = expect_context::<Panel>();
+fn behaviors_detail(panel: Panel, view: Option<BehaviorView>, fold_self: bool) -> AnyView {
     match view {
         None => empty_note("Pick a behavior on the left to see who provides and uses it.".to_string()),
         Some(BehaviorView::Absent(name)) => {
@@ -944,18 +950,19 @@ fn behaviors_detail(view: Option<BehaviorView>, fold_self: bool) -> AnyView {
                     .into_iter()
                     .map(|r| {
                         let held = r.held;
-                        // As the row's agents wrote the promise, and need
-                        // its conditions.
+                        // As the row's agents wrote the promise, and as that
+                        // promise has its conditions when it keeps this
+                        // behavior.
                         let pattern = r
                             .pattern
-                            .map(|p| panel.shown(&p, |m| m.promise_by(&r.agents, &p)));
-                        let conditions = conditions_view(r.conditions, |c| {
-                            panel.shown(c, |m| m.need_by(&r.agents, c))
+                            .map(|p| panel.shown(&p, |m| m.made_by(&r.agents, &p, &p)));
+                        let conditions = conditions_view(panel, r.conditions, |c| {
+                            panel.shown(c, |m| m.condition_by(&r.agents, &u.behavior, c))
                         });
                         view! {
                             <div class="inv-row">
                                 <span class="trail-dot" class:trail-dot-broken=!held></span>
-                                <AgentsCell agents=r.agents noun="providers" />
+                                <AgentsCell panel=panel agents=r.agents noun="providers" />
                                 {pattern.map(|p| view! {
                                     <span class="trail-muted">"via"</span>
                                     <code class="inv-pattern">{p}</code>
@@ -981,7 +988,7 @@ fn behaviors_detail(view: Option<BehaviorView>, fold_self: bool) -> AnyView {
                             .into_any(),
                             ConsumerKind::Condition { provide } => {
                                 let provide =
-                                    panel.shown(&provide, |m| m.promise_by(&r.agents, &provide));
+                                    panel.shown(&provide, |m| m.made_by(&r.agents, &provide, &provide));
                                 view! {
                                     <span class="trail-muted">"needs it for its promise"</span>
                                     <code class="inv-pattern">{provide}</code>
@@ -991,7 +998,7 @@ fn behaviors_detail(view: Option<BehaviorView>, fold_self: bool) -> AnyView {
                         };
                         view! {
                             <div class="inv-row">
-                                <AgentsCell agents=r.agents noun="consumers" />
+                                <AgentsCell panel=panel agents=r.agents noun="consumers" />
                                 {how}
                             </div>
                         }
@@ -1016,8 +1023,7 @@ fn behaviors_detail(view: Option<BehaviorView>, fold_self: bool) -> AnyView {
 }
 
 /// The Unsatisfied tab.
-fn unsatisfied_list(rows: Vec<UnsatisfiedRow>) -> AnyView {
-    let panel = expect_context::<Panel>();
+fn unsatisfied_list(panel: Panel, rows: Vec<UnsatisfiedRow>) -> AnyView {
     if rows.is_empty() {
         return status_strip(true, "Every want is held.".to_string()).into_any();
     }
@@ -1026,7 +1032,7 @@ fn unsatisfied_list(rows: Vec<UnsatisfiedRow>) -> AnyView {
         .into_iter()
         .map(|r| {
             // The want as the row's agents wrote it.
-            let wanted = panel.shown(&r.behavior, |m| m.need_by(&r.agents, &r.behavior));
+            let wanted = panel.shown(&r.behavior, |m| m.want_by(&r.agents, &r.behavior));
             let wanters = r.agents.clone();
             let causes = r
                 .causes
@@ -1039,14 +1045,15 @@ fn unsatisfied_list(rows: Vec<UnsatisfiedRow>) -> AnyView {
                     // The cause as whoever needs it has it: the promise it
                     // is a condition of, or the wanters themselves.
                     let cause = panel.shown(&c.behavior, |m| match &c.needed_by {
-                        Some(site) => m.need(&site.agent, &c.behavior),
-                        None => m.need_by(&wanters, &c.behavior),
+                        Some(site) => m.condition(&site.agent, &site.provide, &c.behavior),
+                        None => m.want_by(&wanters, &c.behavior),
                     });
                     let site = c.needed_by.map(|s| {
-                        let provide = panel.shown(&s.provide, |m| m.kept(&s.agent, &s.provide));
+                        // That promise, as its agent makes it.
+                        let provide = panel.shown(&s.provide, |m| m.promise(&s.agent, &s.provide));
                         view! {
                             <span class="trail-muted">"needed by"</span>
-                            <Name subject=Subject::Agent(s.agent) />
+                            <Name panel=panel subject=Subject::Agent(s.agent) />
                             <span class="trail-muted">"for"</span>
                             <code class="inv-pattern">{provide}</code>
                         }
@@ -1054,7 +1061,7 @@ fn unsatisfied_list(rows: Vec<UnsatisfiedRow>) -> AnyView {
                     view! {
                         <div class="inv-cause">
                             <span class="inv-cond inv-cond-broken">
-                                <Name subject=Subject::Behavior(c.behavior) shown=cause />
+                                <Name panel=panel subject=Subject::Behavior(c.behavior) shown=cause />
                             </span>
                             <span class="trail-muted">{why}</span>
                             {site}
@@ -1066,9 +1073,9 @@ fn unsatisfied_list(rows: Vec<UnsatisfiedRow>) -> AnyView {
                 <div class="inv-row inv-row-block">
                     <div class="inv-row-line">
                         <span class="trail-dot trail-dot-broken"></span>
-                        <AgentsCell agents=r.agents noun="agents" trace=r.behavior.clone() />
+                        <AgentsCell panel=panel agents=r.agents noun="agents" trace=r.behavior.clone() />
                         <span class="trail-muted">"wants"</span>
-                        <Name subject=Subject::Behavior(r.behavior) shown=wanted />
+                        <Name panel=panel subject=Subject::Behavior(r.behavior) shown=wanted />
                     </div>
                     {causes}
                 </div>
@@ -1083,8 +1090,7 @@ fn unsatisfied_list(rows: Vec<UnsatisfiedRow>) -> AnyView {
 }
 
 /// The Unused tab.
-fn unused_list(groups: Vec<UnusedBehavior>) -> AnyView {
-    let panel = expect_context::<Panel>();
+fn unused_list(panel: Panel, groups: Vec<UnusedBehavior>) -> AnyView {
     if groups.is_empty() {
         return status_strip(true, "Every promise is used.".to_string()).into_any();
     }
@@ -1098,7 +1104,8 @@ fn unused_list(groups: Vec<UnusedBehavior>) -> AnyView {
                 .iter()
                 .flat_map(|p| p.agents.iter().cloned())
                 .collect();
-            let promised = panel.shown(&g.behavior, |m| m.promise_by(&makers, &g.behavior));
+            let promised =
+                panel.shown(&g.behavior, |m| m.made_by(&makers, &g.behavior, &g.behavior));
             let head = if g.pattern {
                 view! {
                     <code class="inv-pattern">{promised}</code>
@@ -1106,7 +1113,8 @@ fn unused_list(groups: Vec<UnusedBehavior>) -> AnyView {
                 }
                 .into_any()
             } else {
-                view! { <Name subject=Subject::Behavior(g.behavior) shown=promised /> }.into_any()
+                view! { <Name panel=panel subject=Subject::Behavior(g.behavior.clone()) shown=promised /> }
+                    .into_any()
             };
             let providers = g
                 .providers
@@ -1117,7 +1125,9 @@ fn unused_list(groups: Vec<UnusedBehavior>) -> AnyView {
                             "if {}",
                             p.conditions
                                 .iter()
-                                .map(|c| panel.shown(c, |m| m.need_by(&p.agents, c)))
+                                .map(|c| {
+                                    panel.shown(c, |m| m.condition_by(&p.agents, &g.behavior, c))
+                                })
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         )
@@ -1125,7 +1135,7 @@ fn unused_list(groups: Vec<UnusedBehavior>) -> AnyView {
                     view! {
                         <div class="inv-row-line inv-indent">
                             <span class="trail-muted">"by"</span>
-                            <AgentsCell agents=p.agents noun="providers" />
+                            <AgentsCell panel=panel agents=p.agents noun="providers" />
                             {conditions.map(|c| view! { <span class="trail-muted inv-mono">{c}</span> })}
                         </div>
                     }

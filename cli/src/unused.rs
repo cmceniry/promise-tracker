@@ -36,7 +36,7 @@ pub fn command(parameters: &Parameters) {
         let behavior = match &marks {
             Some(marks) => {
                 let makers: Vec<&String> = group.providers.iter().flat_map(|p| &p.agents).collect();
-                marks.promise_by(&makers, &group.behavior)
+                marks.made_by(&makers, &group.behavior, &group.behavior)
             }
             None => group.behavior.clone(),
         };
@@ -56,7 +56,9 @@ pub fn command(parameters: &Parameters) {
                         .conditions
                         .iter()
                         .map(|c| match &marks {
-                            Some(marks) => marks.need_by(&provider.agents, c),
+                            Some(marks) => {
+                                marks.condition_by(&provider.agents, &group.behavior, c)
+                            }
                             None => c.clone(),
                         })
                         .collect::<Vec<_>>()

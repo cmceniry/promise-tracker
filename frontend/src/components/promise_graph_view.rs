@@ -207,7 +207,10 @@ pub fn PromiseGraphView(
     // PartialEq on FoldedGraph makes this memo gate re-renders: a rule that
     // changes nothing in this panel's graph yields an equal value, so the
     // panel is never told to re-render and keeps its layout.
-    // Where substituted values sit, read only while marking is on.
+    // Where substituted values sit, read only while marking is on. The
+    // switch arrives derived from the whole options value, so it is memoized
+    // here: another option changing does not re-read the marks.
+    let mark_bound = Memo::new(move |_| mark_bound.get());
     let marks = Memo::new(move |_| {
         mark_bound
             .get()
@@ -230,7 +233,8 @@ pub fn PromiseGraphView(
             .unwrap_or_default()
     });
 
-    // The status strip's chips: each want as its agent wrote it.
+    // The status strip's chips: each want as its agent wrote it, and
+    // nothing a condition of the same agent does with the same text.
     let unsatisfied_chips = move || -> Vec<UnsatisfiedChip> {
         let marks = marks.get();
         graph_data
@@ -240,7 +244,7 @@ pub fn PromiseGraphView(
             .map(|u| {
                 let label = marks
                     .as_ref()
-                    .map(|m| m.need(&u.agent, &u.behavior))
+                    .map(|m| m.want(&u.agent, &u.behavior))
                     .filter(|label| *label != u.behavior);
                 UnsatisfiedChip {
                     agent: u.agent,

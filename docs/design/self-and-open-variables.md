@@ -173,6 +173,37 @@ An optional marking wraps substituted values in `<>`: `<A1> reads R1`.
 - Where a name belongs to no one agent — the Inventory's behavior list and a
   behavior's heading, a dependency loop in the cycle banner, a line ending
   in a scratch group — it is marked with what any agent substituted.
+- A row shows what its own declaration substituted, and nothing a neighbor
+  did with the same text. One agent can reach a name two ways — one promise
+  writes a condition out, another finds it with `{{?x}}`; a want is written
+  out, a condition names it through `{{!self}}` — and only the second of
+  each is marked. So a list row is keyed by what it stands for: a want by
+  (agent, want); a promise by (agent, the promise as written); a condition
+  by (agent, the behavior its promise keeps, the condition). A trail is
+  marked from the resolution of its own want, so a name another want
+  reaches through a variable stays plain on this one, and each need row on
+  a card keeps its own marks. With self promises folded a card takes over
+  the needs of the agent's own promises it rested on, and can then list the
+  same behavior from the same provider twice: `z is up`, the card's own
+  condition written out, and `↩ <z> is up`, taken over from a folded promise
+  that found it with `{{?v}}`. They stay two rows, each marked as its own
+  condition has it.
+- Where one row or card stands for several occurrences it shows the union
+  of theirs, and only theirs: a row bundled over several agents; a row the
+  inventory lists once for promises that read the same; a trace card placed
+  once and reached by several needs on that trail, or bundled from several
+  promises of one provider, whose needs for one target become one need
+  row. The Overview's lines and nodes stand for an agent and a name, so
+  there every promise of the agent with that name counts; its unsatisfied
+  strip lists wants, and reads each as a want.
+- A heading that names the want being looked at — the Detailed views'
+  subtitle, the Trace title, the behavior select — shows it as its agent
+  wrote it (`Tracker::marked_want`). File names stay plain.
+- The Detailed text view names the behavior an open need was answered by on
+  the offer's row, with the option on or off:
+  `OPTION: appname — appname has IAM role approle`. Marked, that is where the
+  match's own marks show (`<appname> has IAM role <approle>`). Bundled into
+  one row per provider, the need reads `need → behavior kept`.
 - CLI `agents`, `behavior`, `simulate` and `check-unsatisfied` carry no
   marking.
 
@@ -180,16 +211,44 @@ Where each view takes its label from, with the option on:
 
 | View | Label |
 |---|---|
-| Overview graph | `fold::mark`: each promise on a line by `Marks::edge(source, target, behavior)`; a missing behavior's node by `Marks::needed`; the unsatisfied strip by `Marks::need(agent, want)` |
-| Detailed, Text | the resolution itself: heading `Resolution::marked_name` (from `Tracker::resolve_want`), each row under it `marked_name_with_offers` |
+| Overview graph | `fold::mark`: each promise on a line by `Marks::edge(source, target, behavior)`; a missing behavior's node by `Marks::needed`; the unsatisfied strip by `Marks::want(agent, want)`, a want as its agent wrote it |
+| Detailed, Text | the resolution itself: heading `Resolution::marked_name` (from `Tracker::resolve_want`), each behavior row under it `marked_name_with_offers`, an offer's row under an open need `Resolution::marked_offer` |
 | Detailed, Sequence | `DiagramOptions::mark_bound`: each arrow by the offer's and the needing side's spans together; the marks are written `#lt;` `#gt;` so Mermaid draws them rather than reading markup |
-| Detailed, behavior select | `Tracker::marked_name(component, want)` |
-| Trace | wants list `Marks::need(agent, want)`; cards and their needs `Trail::labels` (want card as its agent wrote it, promise card `Marks::kept`, missing `Marks::needed`) |
-| Inventory, Agents | promises `Marks::promise(agent, …)`, conditions `Marks::need(agent, …)` |
-| Inventory, Behaviors | list and heading `Marks::any`; a provider's pattern and a consumer's promise `promise_by(row agents, …)`; conditions `need_by(row agents, …)` |
-| Inventory, Unsatisfied | the want `need_by(row agents, …)`; a cause as the promise's agent needs it; the promise it is a condition of `Marks::kept` |
-| Inventory, Unused | the promise `promise_by(its agents, …)`; conditions `need_by(row agents, …)` |
+| Detailed, behavior select and frame subtitle | `Tracker::marked_want(component, want)` (`ViewOptions::want_label`) |
+| Trace | wants list and frame title `Tracker::marked_want(agent, want)`; cards and their needs `Trail::labels_when`, from the spans the trail took from its own resolution, with no whole-tracker `Marks` built: the want card as its agent wrote it; a need row as the one condition it stands for filled it in, with what the answering promise names through a variable; a promise card by its own promise and every need reaching it on the trail; a missing card by the needs reaching it |
+| Inventory, Agents | a promise `Marks::made(agent, promise, promise)`; its conditions `Marks::condition(agent, promise, …)` |
+| Inventory, Behaviors | list and heading `Marks::any`; a provider's pattern and a consumer's promise `made_by(row agents, …)`; a provider's conditions `condition_by(row agents, the behavior, …)` |
+| Inventory, Unsatisfied | the want `want_by(row agents, …)`; a cause `Marks::condition(site agent, site promise, cause)`; the promise it is a condition of `Marks::promise(site agent, …)` |
+| Inventory, Unused | the promise `made_by(its agents, …)`; conditions `condition_by(row agents, the promise, …)` |
+| CLI `provides`, `providers`, `unused` | as the Inventory's Agents, Behaviors and Unused rows |
 | Cycle banner | `Marks::any` |
+
+Known limits of the marking:
+
+- Two promises of one agent that keep the same behavior and carry a
+  condition of the same text are not told apart: the condition is keyed by
+  the behavior kept, not by which of the two promises it sits on. If one
+  reached it through a variable, both rows show the mark.
+- An Unsatisfied cause names the promise it is a condition of by agent and
+  behavior only, so that promise is marked with what any promise of that
+  agent keeping the behavior substituted (`Marks::promise`, the one list
+  row still read at the coarse grain).
+- An Overview line or missing node is marked by agent and name
+  (`Marks::edge`, `Marks::needed`): an agent that reaches a behavior both
+  written out and through a variable has one line for it, and the line is
+  marked. That is the union the line stands for, not a row of its own.
+- A heading and the Trace's wants list take a want from the first
+  declaration of it by that agent that substituted anything
+  (`Tracker::marked_want`); the Inventory and the Overview strip take the
+  union over the agent's declarations of that want (`Marks::want`). They
+  differ only if one agent declares the same want text twice with
+  different parts substituted.
+- A trace card is placed once per agent and behavior, and its needs are
+  hung the first time it is reached. A promise reached again further along
+  the trail is a reference to that card and adds nothing to the card's own
+  need rows.
+- The spans are not serialized. A `Resolution` or `Trail` read back from
+  JSON (the legacy `wpt` bindings) is unmarked.
 
 ### Validation
 
@@ -216,26 +275,45 @@ As built:
   `rebuild()` binds every agent that stands on its own. No working agent holds
   an unsubstituted `{{!self}}`.
 - `Tracker::marked_name(agent, name)` returns a name as that agent declares
-  it, marked, or None when nothing in it was substituted.
+  it — promise, condition or want — marked, or None when nothing in it was
+  substituted. `Tracker::marked_want(agent, want)` looks at the agent's wants
+  only and always returns text; it is what headings use.
 - `Resolution` and `Offer` carry the spans resolution filled in
   (`src/resolve.rs`): a resolution, the parts of its name the needing side
   substituted; an offer, the parts of the behavior it keeps that its promise
   names through a variable, and under an open goal the parts the goal filled
   in or matched. They are set in `Tracker::resolve_goal` and
   `resolve_reading` from the substituted condition `Pattern`s. The spans take
-  no part in equality or `Debug`, and are serialized only when not empty.
+  no part in equality, `Debug` or serialization (`#[serde(skip)]`: byte
+  offsets are of no use to a reader of the JSON). A test reads them with
+  `Resolution::marked_outline`.
 - The per-goal cache in `resolve_goal` is keyed on goal text, and what it
   holds does not depend on how the goal was reached. The one thing that does
   — which parts of the goal's own name were substituted — is put on after the
   lookup (`as_reached_by`), never stored. `Tracker::resolve_want(agent,
   want)` does the same for a top-level want.
 - `src/marks.rs`: `Marks::new(tracker)` reads every declaration and walks
-  every resolution once, and keeps the spans by (agent that needs, name) and
-  (agent that promises, name). The graph, trail and query rows are unchanged
-  and keep plain names; a view asked to mark looks its label up by the same
-  plain name (`need`, `promise`, `kept`, `edge`, `needed`, `any`). Views that
-  already walk a resolution — the text view, the sequence diagram — read the
-  spans off it directly.
+  every resolution once, and keeps the spans at two grains. Coarse, by
+  (agent that needs, name) and (agent that promises, name), for the
+  Overview (`need`, `promise`, `edge`, `needed`, `any`). Fine, for a list
+  row: (agent, want) → `want`; (agent, promise as written, behavior kept) →
+  `made`; (agent, behavior the promise keeps, condition) → `condition`; each
+  with a `_by` form for a row bundled over several agents. The graph and
+  query rows are unchanged and keep plain names; a view asked to mark looks
+  its label up by the same plain names.
+- `src/trace.rs`: a `Trail` carries the spans of its own resolution
+  (`Tracker::resolve_want`). What a need filled in is kept per need row, in
+  step with each card's `needs` (a private `TrailSpans`), not by what the
+  need is: two rows on one card can be the same behavior from the same
+  provider and still differ in what was substituted. `without_own_promises()`
+  moves a folded promise's rows, spans and all, to the card that takes them
+  over; `bundled()` merges the spans of the rows it merges into one, and of
+  no others. What a promise names through a variable is kept by (agent,
+  behavior). `Trail::labels_when(mark)` builds the labels from those;
+  `Trail::labels(marks)` is the same with `mark` taken from whether the
+  tracker substitutes anything at all. Not serialized.
+- Views that already walk a resolution — the text view, the sequence
+  diagram — read the spans off it directly.
 
 ## 3. Phase 2 — open variables
 
@@ -338,9 +416,6 @@ Not yet done:
 
 - `network_diagram.rs` (the legacy graph, drawn by no tab) still labels an open want's providers under the
   pattern text, and carries no marking.
-- The Detailed text view names an open condition and who answers it, but not
-  the behavior it matched, so the open match's own marks
-  (`<appname> has IAM role <approle>`) show in the other views and not there.
 - CLI `simulate`, `check-unsatisfied` have no `--mark-bound`.
 - The Inventory tab shows an unmatched open want as plainly "not provided",
   without the note the CLI gives.
@@ -357,7 +432,12 @@ Not yet done:
   missing nodes, the sequence diagram (as entity codes), the trail's cards
   and needs, bundled and not, and the text rows; every kind of substitution
   on the IAM chain; a goal reached two ways marked each its own way despite
-  the cache; identity, equality, `Debug` and empty serialization unaffected.
+  the cache; identity, equality, `Debug` and serialization unaffected. A
+  name one declaration writes out and another reaches through a variable is
+  marked only for the second: two promises of one agent, a want and a
+  condition, a pattern and an outright promise, two wants' trails; a card or
+  row that merges several shows the union of exactly those. Headings mark
+  the want only with the option on. A multi-byte name (`é1`) throughout.
 - **open** — the motivating chain end to end; two matching documents giving
   two offers, satisfied if either is; no match unsatisfied under the pattern
   text; an open want; a repeat within one name binding consistently; a

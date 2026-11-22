@@ -87,6 +87,9 @@ pub fn CycleBanner(
     });
     // What the loops are shown as. Nothing to mark without a loop, so the
     // marks are only read when there is one.
+    // The switch arrives derived from the whole options value; memoized so
+    // that another option changing does not re-read the marks.
+    let mark_bound = Memo::new(move |_| mark_bound.get());
     let dependency_shown = Memo::new(move |_| {
         let cycles = dependency.get();
         if cycles.is_empty() || !mark_bound.get() {

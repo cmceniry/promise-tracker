@@ -6,11 +6,10 @@
 //! the card that reached it again shows a pointer back instead.
 
 use leptos::prelude::*;
-use promise_tracker::marks::Marks;
 use promise_tracker::trace::{trail, wants, CardKind, CardLabels, Trail, TrailCard, WantSummary};
 use promise_tracker::Tracker;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 use super::display_options::ViewOptions;
@@ -256,6 +255,18 @@ fn trail_html(trail: &Trail, labels: &[CardLabels], summary: &str) -> String {
     out
 }
 
+/// The frame's title, and the export's: the simulation, and the want being
+/// traced once one is chosen. `want` is the agent and the want as the title
+/// should name it ([`ViewOptions::want_label`]).
+fn trace_title(sim: &str, want: Option<(&str, &str)>) -> String {
+    match want {
+        Some((agent, behavior)) => {
+            format!("Trace - Simulation {} - {} wants {}", sim, agent, behavior)
+        }
+        None => format!("Trace - Simulation {}", sim),
+    }
+}
+
 /// TraceView component - the want list, the trail, and an inspector for the
 /// selected card.
 #[component]
@@ -307,20 +318,16 @@ pub fn TraceView(
         Some(if o.bundle { t.bundled() } else { t })
     });
 
-    // Where substituted values sit, read only while marking is on.
-    let marks = Memo::new(move |_| {
-        options
-            .get()
-            .mark_bound
-            .then(|| tracker.get().map(|t| Marks::new(&t)))
-            .flatten()
-    });
+    // Only this one option decides the labels; a memo of its own so that
+    // the other switches relabel nothing.
+    let mark_bound = Memo::new(move |_| options.get().mark_bound);
     // What each card says, by card id: plain names, or marked ones. The
-    // cards keep plain names either way, for selection and lookups.
+    // cards keep plain names either way, for selection and lookups. A trail
+    // carries its own marks, so nothing is read from the whole tracker.
     let card_labels = Memo::new(move |_| {
         current_trail
             .get()
-            .map(|t| t.labels(&marks.get().unwrap_or_default()))
+            .map(|t| t.labels_when(mark_bound.get()))
             .unwrap_or_default()
     });
 
@@ -394,14 +401,17 @@ pub fn TraceView(
 
     let sim_for_title = sim_label.clone();
     let sim_for_file = sim_label.clone();
-    let frame_title = Signal::derive(move || match selection.get() {
-        Some((agent, behavior)) => {
-            format!(
-                "Trace - Simulation {} - {} wants {}",
-                sim_for_title, agent, behavior
-            )
-        }
-        None => format!("Trace - Simulation {}", sim_for_title),
+    // The want is named as its agent wrote it while marking is on; the file
+    // name below keeps the plain want.
+    let frame_title = Signal::derive(move || {
+        let want = selection.get().map(|(agent, behavior)| {
+            let shown = tracker.with(|t| options.get().want_label(t.as_ref(), &agent, &behavior));
+            (agent, shown)
+        });
+        trace_title(
+            &sim_for_title,
+            want.as_ref().map(|(agent, shown)| (agent.as_str(), shown.as_str())),
+        )
     });
     let frame_subtitle = Signal::derive(move || {
         format!(
@@ -441,6 +451,30 @@ pub fn TraceView(
             }
         }
         groups
+    });
+
+    // The wants a substitution filled part of, as their agents wrote them,
+    // by (agent, want); empty while marking is off. Once per tracker, so a
+    // row only looks its label up.
+    let want_labels = Memo::new(move |_| -> HashMap<(String, String), String> {
+        if !mark_bound.get() {
+            return HashMap::new();
+        }
+        tracker.with(|t| {
+            let Some(t) = t.as_ref() else {
+                return HashMap::new();
+            };
+            want_list.with(|wants| {
+                wants
+                    .iter()
+                    .filter_map(|w| {
+                        let label = t.marked_want(&w.agent, &w.behavior);
+                        (label != w.behavior)
+                            .then(|| ((w.agent.clone(), w.behavior.clone()), label))
+                    })
+                    .collect()
+            })
+        })
     });
 
     // Search text for the want list; it narrows the list, not the selection.
@@ -485,6 +519,7 @@ pub fn TraceView(
                     </div>
                     {move || {
                         let groups = shown_wants.get();
+                        let labels = want_labels.get();
                         if groups.is_empty() {
                             let text = if grouped_wants.with(|g| g.is_empty()) {
                                 "No wants in this simulation."
@@ -522,12 +557,9 @@ pub fn TraceView(
                                                 let behavior_for_active = w.behavior.clone();
                                                 // The want as its agent declares it,
                                                 // marked when asked for.
-                                                let label = marks
-                                                    .with(|m| {
-                                                        m.as_ref().map(|m| m.need(&w.agent, &w.behavior))
-                                                    })
-                                                    .unwrap_or_else(|| w.behavior.clone());
                                                 let held = w.satisfied;
+                                                let key = (w.agent, w.behavior);
+                                                let label = labels.get(&key).cloned().unwrap_or(key.1);
                                                 view! {
                                                     <button
                                                         type="button"
@@ -919,6 +951,25 @@ mod tests {
             .iter()
             .map(|(a, ws)| (a.clone(), ws.iter().map(|w| w.behavior.clone()).collect()))
             .collect()
+    }
+
+    #[test]
+    fn the_title_marks_the_want_only_while_marking_is_on() {
+        use promise_tracker::components::{Agent, Behavior};
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("{{!self}} reads r1")]));
+        let off = ViewOptions::default();
+        let on = ViewOptions {
+            mark_bound: true,
+            ..off
+        };
+        let title = |o: ViewOptions| {
+            let shown = o.want_label(Some(&t), "a1", "a1 reads r1");
+            trace_title("A", Some(("a1", shown.as_str())))
+        };
+        assert_eq!(title(off), "Trace - Simulation A - a1 wants a1 reads r1");
+        assert_eq!(title(on), "Trace - Simulation A - a1 wants <a1> reads r1");
+        assert_eq!(trace_title("A", None), "Trace - Simulation A");
     }
 
     #[test]

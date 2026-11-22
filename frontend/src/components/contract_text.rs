@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use promise_tracker::resolve::{Offer, Resolution};
 use promise_tracker::Tracker;
 
-use super::display_options::ViewOptions;
+use super::display_options::{focus_subtitle, ViewOptions};
 use super::view_frame::ViewFrame;
 use crate::utils::{escape_html, generated_at, html_document, slugify};
 
@@ -17,6 +17,9 @@ struct Row {
     children: Vec<Row>,
     /// The provider, on a row that stands for an offer.
     agent: Option<String>,
+    /// On an offer's row, the behavior the offer keeps when the need above
+    /// it is open (`{{?x}}`) and so names none itself, as the row shows it.
+    kept: Option<String>,
 }
 
 impl Row {
@@ -26,6 +29,7 @@ impl Row {
             label,
             children,
             agent: None,
+            kept: None,
         }
     }
 
@@ -52,13 +56,29 @@ fn only_self_offers(
             .all(|offer| offer.get_agent_name() == requirer)
 }
 
-/// The rows contributed by a single offer.
+/// What an offer's row says after `OPTION:`, `POSSIBLE:` or `ERROR:`: the
+/// provider, and `kept` — the behavior it keeps — when the need it answers
+/// is open and names none: `appname — appname has IAM role approle`.
+fn offer_name(agent: &str, kept: Option<&str>) -> String {
+    match kept {
+        Some(kept) => format!("{} \u{2014} {}", agent, kept),
+        None => agent.to_string(),
+    }
+}
+
+/// The rows contributed by a single offer for `resolution`.
 ///
 /// A hidden self-fulfilling promise contributes its conditions to the caller's
 /// list instead of a row of its own, so whatever the hidden provider needs from
 /// other agents stays visible.
+///
+/// Under an open need the row also names the behavior the offer keeps, which
+/// the need's own text does not; with `mark`, as
+/// [`Resolution::marked_offer`] has it. Any other offer's row is the
+/// provider alone.
 fn offer_rows(
     requirer: &str,
+    resolution: &Resolution,
     offer: &Offer,
     is_satisfied: bool,
     show_self: bool,
@@ -66,6 +86,14 @@ fn offer_rows(
 ) -> Vec<Row> {
     let agent_name = offer.get_agent_name().to_string();
     let conditions = offer.get_resolved_conditions();
+    let kept: Option<String> = offer.get_behavior().map(|kept| {
+        if mark {
+            resolution.marked_offer(offer)
+        } else {
+            kept.to_string()
+        }
+    });
+    let named = offer_name(&agent_name, kept.as_deref());
 
     if !show_self && agent_name == requirer {
         return conditions
@@ -78,7 +106,7 @@ fn offer_rows(
     if !is_satisfied && conditions.is_empty() {
         return vec![Row::leaf(
             "contract-text-error",
-            format!("ERROR: {}", agent_name),
+            format!("ERROR: {}", named),
         )];
     }
 
@@ -89,9 +117,9 @@ fn offer_rows(
     };
 
     let label = if is_satisfied {
-        format!("OPTION: {}", agent_name)
+        format!("OPTION: {}", named)
     } else {
-        format!("POSSIBLE: {}", agent_name)
+        format!("POSSIBLE: {}", named)
     };
 
     // The requirer one level down is this offer's agent: it is the one that
@@ -103,27 +131,24 @@ fn offer_rows(
 
     vec![Row {
         agent: Some(agent_name),
+        kept,
         ..Row::new(class, label, children)
     }]
 }
 
-/// The rows for every offer, satisfying ones first.
-fn option_rows(
-    requirer: &str,
-    satisfying: &[Offer],
-    unsatisfying: &[Offer],
-    show_self: bool,
-    mark: bool,
-) -> Vec<Row> {
-    let mut options: Vec<Row> = satisfying
+/// The rows for every offer for `resolution`, satisfying ones first.
+fn option_rows(requirer: &str, resolution: &Resolution, show_self: bool, mark: bool) -> Vec<Row> {
+    let mut options: Vec<Row> = resolution
+        .get_satisfying_offers()
         .iter()
-        .flat_map(|offer| offer_rows(requirer, offer, true, show_self, mark))
+        .flat_map(|offer| offer_rows(requirer, resolution, offer, true, show_self, mark))
         .collect();
 
     options.extend(
-        unsatisfying
+        resolution
+            .get_unsatisfying_offers()
             .iter()
-            .flat_map(|offer| offer_rows(requirer, offer, false, show_self, mark)),
+            .flat_map(|offer| offer_rows(requirer, resolution, offer, false, show_self, mark)),
     );
 
     options
@@ -158,7 +183,7 @@ fn resolution_rows(
         )];
     }
 
-    let options = option_rows(requirer, satisfying, unsatisfying, show_self, mark);
+    let options = option_rows(requirer, resolution, show_self, mark);
 
     if only_self_offers(requirer, satisfying, unsatisfying, show_self) {
         // Drop the behavior itself, hand its downstream needs upwards
@@ -209,7 +234,7 @@ fn contract_rows_with(
         )];
     }
 
-    let options = option_rows(component, satisfying, unsatisfying, show_self, mark);
+    let options = option_rows(component, resolution, show_self, mark);
 
     if options.is_empty() {
         return vec![];
@@ -232,8 +257,9 @@ fn contract_rows_with(
 }
 
 /// A behavior row with a single offer under it: the provider, the
-/// behavior, whether it is held, and what the offer rests on.
-fn sole_provider(row: &Row) -> Option<(&str, &str, bool, &[Row])> {
+/// behavior, whether it is held, what the offer rests on, and the behavior
+/// the offer keeps when the need is open.
+fn sole_provider(row: &Row) -> Option<(&str, &str, bool, &[Row], Option<&str>)> {
     if row.agent.is_some() {
         return None;
     }
@@ -244,9 +270,19 @@ fn sole_provider(row: &Row) -> Option<(&str, &str, bool, &[Row])> {
                 row.label.as_str(),
                 offer.class == "contract-text-option",
                 offer.children.as_slice(),
+                offer.kept.as_deref(),
             )
         }),
         _ => None,
+    }
+}
+
+/// A need inside a grouped row. An open need is followed by the behavior
+/// its provider keeps for it, which its own text does not say.
+fn grouped_need(behavior: &str, kept: Option<&str>) -> String {
+    match kept {
+        Some(kept) => format!("{} \u{2192} {}", behavior, kept),
+        None => behavior.to_string(),
     }
 }
 
@@ -290,10 +326,11 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
         return rows;
     }
 
-    /// One provider's needs, held in place of the first one grouped.
+    /// One provider's needs, held in place of the first one grouped. A need
+    /// is the behavior, what the group calls it, and whether it is held.
     struct Group {
         agent: String,
-        needs: Vec<(String, bool)>,
+        needs: Vec<(String, String, bool)>,
         rests_on: Vec<Row>,
     }
 
@@ -301,15 +338,16 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
     for row in rows {
         let grouped = sole_provider(&row)
             .filter(|(agent, ..)| counts.iter().any(|(a, n)| a == agent && *n > 1))
-            .map(|(agent, behavior, held, rests_on)| {
+            .map(|(agent, behavior, held, rests_on, kept)| {
                 (
                     agent.to_string(),
                     behavior.to_string(),
                     held,
                     rests_on.to_vec(),
+                    grouped_need(behavior, kept),
                 )
             });
-        let Some((agent, behavior, held, rests_on)) = grouped else {
+        let Some((agent, behavior, held, rests_on, named)) = grouped else {
             out.push(Ok(row));
             continue;
         };
@@ -318,12 +356,12 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
             _ => None,
         });
         match existing {
-            Some(g) => match g.needs.iter_mut().find(|(b, _)| *b == behavior) {
+            Some(g) => match g.needs.iter_mut().find(|(b, _, _)| *b == behavior) {
                 // The same promise reached again: held only if it always is,
                 // and what it rests on is already there.
-                Some((_, h)) => *h &= held,
+                Some((_, _, h)) => *h &= held,
                 None => {
-                    g.needs.push((behavior, held));
+                    g.needs.push((behavior, named, held));
                     // A condition two grouped needs share is shown once.
                     for row in rests_on {
                         if !g.rests_on.contains(&row) {
@@ -334,7 +372,7 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
             },
             None => out.push(Err(Group {
                 agent,
-                needs: vec![(behavior, held)],
+                needs: vec![(behavior, named, held)],
                 rests_on,
             })),
         }
@@ -348,10 +386,10 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
                 needs,
                 rests_on,
             }) => {
-                let held = needs.iter().all(|(_, h)| *h);
+                let held = needs.iter().all(|(_, _, h)| *h);
                 let names = needs
                     .iter()
-                    .map(|(b, h)| {
+                    .map(|(_, b, h)| {
                         if *h {
                             b.clone()
                         } else {
@@ -376,6 +414,7 @@ fn bundle_rows(rows: Vec<Row>) -> Vec<Row> {
                     // What the grouped offers rest on may group again.
                     children: bundle_rows(rests_on),
                     agent: Some(agent),
+                    kept: None,
                 }
             }
         })
@@ -496,18 +535,14 @@ pub fn ContractText(
     };
 
     let frame_title = Signal::derive(move || format!("Text View - Simulation {}", sim_for_title));
+    // The want is named as its component wrote it while marking is on; the
+    // file name below keeps the plain want.
     let frame_subtitle = Signal::derive(move || {
-        let focus = format!(
-            "{} -> {}",
-            selected_component.get(),
-            selected_behavior.get()
-        );
-        format!(
-            "{} - {} - generated {}",
-            focus,
-            options.get().describe(),
-            generated_at()
-        )
+        let component = selected_component.get();
+        let o = options.get();
+        let behavior =
+            tracker.with(|t| o.want_label(t.as_ref(), &component, &selected_behavior.get()));
+        focus_subtitle(&component, &behavior, &o.describe(), &generated_at())
     });
     let frame_filename = Signal::derive(move || {
         format!(
@@ -1005,5 +1040,161 @@ mod tests {
             .replace(['<', '>'], "")
             .replace('\u{1}', "-->");
         assert_eq!(unmarked, plain);
+    }
+
+    const IAM_WANT: &str = "Read Secret Contents appsecret by appname";
+
+    fn iam_options(bundle: bool, mark_bound: bool) -> ViewOptions {
+        ViewOptions {
+            bundle,
+            mark_bound,
+            ..ViewOptions::default()
+        }
+    }
+
+    #[test]
+    fn an_offer_for_an_open_need_names_the_behavior_it_keeps() {
+        let tracker = iam_tracker();
+        let resolution = tracker.resolve_want("appname", IAM_WANT);
+        // Nothing in this tree groups, so bundling leaves it as it is.
+        for bundle in [false, true] {
+            assert_eq!(
+                outline(&view_rows("appname", &resolution, iam_options(bundle, false))),
+                "appname --> Read Secret Contents appsecret by appname\n\
+                 \x20   OPTION: AWSSM\n\
+                 \x20       appname has IAM role {{?approle}}\n\
+                 \x20           OPTION: appname \u{2014} appname has IAM role approle\n\
+                 \x20       IAM access granted for reading Secret appsecret to approle\n\
+                 \x20           OPTION: infrateam\n\
+                 \x20               Design approval access to Secret appsecret for {{?application}}\n\
+                 \x20                   OPTION: manager \u{2014} Design approval access to Secret appsecret for appname\n",
+                "bundle={}",
+                bundle
+            );
+            assert_eq!(
+                outline(&view_rows("appname", &resolution, iam_options(bundle, true))),
+                "appname --> Read Secret Contents appsecret by <appname>\n\
+                 \x20   OPTION: AWSSM\n\
+                 \x20       <appname> has IAM role {{?approle}}\n\
+                 \x20           OPTION: appname \u{2014} <appname> has IAM role <approle>\n\
+                 \x20       IAM access granted for reading Secret <appsecret> to <approle>\n\
+                 \x20           OPTION: infrateam\n\
+                 \x20               Design approval access to Secret <appsecret> for {{?application}}\n\
+                 \x20                   OPTION: manager \u{2014} Design approval access to Secret <appsecret> for <appname>\n",
+                "bundle={}",
+                bundle
+            );
+        }
+    }
+
+    #[test]
+    fn an_offer_that_cannot_be_kept_names_the_behavior_too() {
+        // The open want matches a promise resting on something nobody
+        // offers.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("w").with_wants(vec![Behavior::build("{{?who}} is up")]));
+        tracker.add_agent(
+            Agent::build("d1").with_provides(vec![behavior_with("{{!self}} is up", &["nope"])]),
+        );
+        let resolution = tracker.resolve_want("w", "{{?who}} is up");
+        assert_eq!(
+            outline(&view_rows("w", &resolution, iam_options(false, false))),
+            "w --> {{?who}} is up\n\
+             \x20   POSSIBLE: d1 \u{2014} d1 is up\n\
+             \x20       nope UNSATISFIED\n"
+        );
+        assert_eq!(
+            outline(&view_rows("w", &resolution, iam_options(false, true))),
+            "w --> {{?who}} is up\n\
+             \x20   POSSIBLE: d1 \u{2014} <d1> is up\n\
+             \x20       nope UNSATISFIED\n"
+        );
+
+        // An offer with no conditions that is not held is the error row.
+        let broken = Resolution::new("{{?who}} is up").add_unsatisfying_offer(
+            Offer::new("d1")
+                .answering("d1 is up")
+                .with_bound(vec![(0, 2)]),
+        );
+        assert_eq!(
+            outline(&view_rows("w", &broken, iam_options(false, false))),
+            "w --> {{?who}} is up\n    ERROR: d1 \u{2014} d1 is up\n"
+        );
+        assert_eq!(
+            outline(&view_rows("w", &broken, iam_options(false, true))),
+            "w --> {{?who}} is up\n    ERROR: d1 \u{2014} <d1> is up\n"
+        );
+    }
+
+    #[test]
+    fn a_grouped_open_need_still_names_the_behavior_kept() {
+        // c meets both of a's conditions, one of them through `{{?doc}}`.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("b").with_wants(vec![Behavior::build("pa")]));
+        tracker.add_agent(
+            Agent::build("a")
+                .with_provides(vec![behavior_with("pa", &["p1", "{{?doc}} shows usage"])]),
+        );
+        tracker.add_agent(Agent::build("c").with_provides(vec![
+            Behavior::build("p1"),
+            Behavior::build("{{!self}} shows usage"),
+        ]));
+        let resolution = tracker.resolve_want("b", "pa");
+
+        assert_eq!(
+            outline(&view_rows("b", &resolution, iam_options(false, false))),
+            "b --> pa\n\
+             \x20   OPTION: a\n\
+             \x20       p1\n\
+             \x20           OPTION: c\n\
+             \x20       {{?doc}} shows usage\n\
+             \x20           OPTION: c \u{2014} c shows usage\n"
+        );
+        assert_eq!(
+            outline(&view_rows("b", &resolution, iam_options(true, false))),
+            "b --> pa\n\
+             \x20   OPTION: a\n\
+             \x20       OPTION: c \u{2014} p1, {{?doc}} shows usage \u{2192} c shows usage \u{00d7}2\n"
+        );
+        assert_eq!(
+            outline(&view_rows("b", &resolution, iam_options(true, true))),
+            "b --> pa\n\
+             \x20   OPTION: a\n\
+             \x20       OPTION: c \u{2014} p1, {{?doc}} shows usage \u{2192} <c> shows usage \u{00d7}2\n"
+        );
+    }
+
+    #[test]
+    fn a_contract_without_open_variables_reads_as_it_always_did() {
+        // No offer keeps a behavior of its own, so no row gains anything,
+        // marking on or off.
+        let tracker = one_provider_tracker();
+        let resolution = tracker.resolve_want("b", "pa");
+        for bundle in [false, true] {
+            let off = view_rows("b", &resolution, iam_options(bundle, false));
+            assert_eq!(off, view_rows("b", &resolution, iam_options(bundle, true)));
+            fn none_kept(rows: &[Row]) -> bool {
+                rows.iter()
+                    .all(|r| r.kept.is_none() && !r.label.contains('\u{2192}') && none_kept(&r.children))
+            }
+            assert!(none_kept(&off));
+        }
+        assert_eq!(
+            outline(&view_rows("b", &resolution, iam_options(false, false))),
+            "b --> pa\n\
+             \x20   POSSIBLE: a\n\
+             \x20       p1\n\
+             \x20           OPTION: c\n\
+             \x20       p2\n\
+             \x20           OPTION: c\n\
+             \x20               pe\n\
+             \x20                   OPTION: e\n\
+             \x20       pd\n\
+             \x20           OPTION: d\n\
+             \x20           OPTION: e\n\
+             \x20       p3\n\
+             \x20           POSSIBLE: c\n\
+             \x20               px UNSATISFIED\n"
+        );
     }
 }

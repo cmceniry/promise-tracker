@@ -11,11 +11,12 @@
 //! Depth is a column in the view: the want, who promises it, what that rests
 //! on, and so on to the right.
 
+use crate::components::{mark_spans, merge_spans};
 use crate::marks::Marks;
-use crate::resolve::{Offer, Resolution};
+use crate::resolve::{Offer, Resolution, Spans};
 use crate::Tracker;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 /// What a card stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -103,6 +104,106 @@ pub struct Trail {
     /// depth first through the resolution, so within a column the cards hanging
     /// under one parent sit together.
     pub cards: Vec<TrailCard>,
+    /// Where substituted values sit in the names on this trail, for
+    /// [`Trail::labels`]. Display only: the cards keep plain names. Not
+    /// serialized, so a trail read back is labelled plainly.
+    #[serde(skip)]
+    spans: TrailSpans,
+}
+
+/// What the holder of one need filled in, by behavior needed: a value its
+/// promise's goal bound, its own name, one a sibling condition found, or
+/// what its `{{?x}}` matched. One behavior for a plain need; a bundled need
+/// names several. A behavior with nothing filled in has no entry.
+type NeedSpans = BTreeMap<String, Spans>;
+
+/// The spans for a need of `behavior`.
+fn need_spans(behavior: &str, spans: &[(usize, usize)]) -> NeedSpans {
+    let mut held = NeedSpans::new();
+    if !spans.is_empty() {
+        held.insert(behavior.to_string(), spans.to_vec());
+    }
+    held
+}
+
+/// Add what `from` filled in to `into`, behavior by behavior.
+fn merge_need_spans(into: &mut NeedSpans, from: &NeedSpans) {
+    for (behavior, spans) in from {
+        let held = into.entry(behavior.clone()).or_default();
+        *held = merge_spans(held, spans);
+    }
+}
+
+/// The substituted parts of the names on one trail, as this trail reached
+/// them. The same text reached by another want, or written out by another
+/// promise that is not on the trail, has no say here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TrailSpans {
+    /// The want, as its agent wrote it.
+    want: Spans,
+    /// One entry per need row, in step with [`Trail::cards`] and each
+    /// card's [`TrailCard::needs`]. Kept by row, not by what the need is: a
+    /// card that takes over another's needs when self promises are folded
+    /// can show the same behavior from the same provider twice, once as its
+    /// own promise wrote it and once as the folded one reached it, and each
+    /// row says only what its own condition filled in. Rows that are merged
+    /// into one (bundling) are merged here too.
+    needs: Vec<Vec<NeedSpans>>,
+    /// (agent, behavior) — what the promise keeping the behavior names
+    /// through a variable.
+    offers: BTreeMap<(String, String), Spans>,
+}
+
+impl TrailSpans {
+    fn is_empty(&self) -> bool {
+        self.want.is_empty()
+            && self.offers.is_empty()
+            && self.needs.iter().flatten().all(BTreeMap::is_empty)
+    }
+
+    fn add_offer(&mut self, agent: &str, behavior: &str, spans: &[(usize, usize)]) {
+        if spans.is_empty() {
+            return;
+        }
+        let held = self
+            .offers
+            .entry((agent.to_string(), behavior.to_string()))
+            .or_default();
+        *held = merge_spans(held, spans);
+    }
+
+    /// Everything need row `row` of card `card` filled in. Empty for a
+    /// trail that carries no spans (one read back from JSON).
+    fn row(&self, card: usize, row: usize) -> NeedSpans {
+        self.needs
+            .get(card)
+            .and_then(|rows| rows.get(row))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// What need row `row` of card `card` filled in on `behavior`.
+    fn need(&self, card: usize, row: usize, behavior: &str) -> &[(usize, usize)] {
+        self.needs
+            .get(card)
+            .and_then(|rows| rows.get(row))
+            .and_then(|held| held.get(behavior))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// What the promise by which `card`'s agent keeps `behavior` names
+    /// through a variable.
+    fn offer(&self, card: &TrailCard, behavior: &str) -> &[(usize, usize)] {
+        match (card.kind, &card.agent) {
+            (CardKind::Offer, Some(agent)) => self
+                .offers
+                .get(&(agent.clone(), behavior.to_string()))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            _ => &[],
+        }
+    }
 }
 
 impl Trail {
@@ -186,36 +287,46 @@ impl Trail {
         let mut referenced: HashSet<usize> = HashSet::new();
         referenced.insert(0);
         let mut cards: Vec<TrailCard> = Vec::with_capacity(bundles.len());
+        let mut need_spans: Vec<Vec<NeedSpans>> = Vec::with_capacity(bundles.len());
         for (id, members) in bundles.iter().enumerate() {
             let first = &self.cards[members[0]];
 
             // Needs in member order, one per bundle reached.
-            let mut reached: Vec<(usize, bool, Vec<&str>)> = vec![];
+            // The rows merged into one need are one row for the spans too:
+            // what any of them filled in, behavior by behavior.
+            let mut reached: Vec<(usize, bool, Vec<&str>, NeedSpans)> = vec![];
             for &m in members {
-                for need in &self.cards[m].needs {
+                for (row, need) in self.cards[m].needs.iter().enumerate() {
                     let target = bundle_of[need.card];
                     if target == id {
                         continue;
                     }
-                    match reached.iter_mut().find(|(card, _, _)| *card == target) {
-                        Some((_, _, behaviors)) => {
+                    let filled = self.spans.row(m, row);
+                    match reached.iter_mut().find(|(card, ..)| *card == target) {
+                        Some((_, _, behaviors, held)) => {
                             if !behaviors.contains(&need.behavior.as_str()) {
                                 behaviors.push(&need.behavior);
                             }
+                            merge_need_spans(held, &filled);
                         }
-                        None => reached.push((target, need.own, vec![&need.behavior])),
+                        None => reached.push((target, need.own, vec![&need.behavior], filled)),
                     }
                 }
             }
+            let mut rows: Vec<NeedSpans> = Vec::with_capacity(reached.len());
             let needs: Vec<Need> = reached
                 .into_iter()
-                .map(|(card, own, behaviors)| Need {
-                    behavior: behaviors.join(", "),
-                    card,
-                    reference: !referenced.insert(card),
-                    own,
+                .map(|(card, own, behaviors, filled)| {
+                    rows.push(filled);
+                    Need {
+                        behavior: behaviors.join(", "),
+                        card,
+                        reference: !referenced.insert(card),
+                        own,
+                    }
                 })
                 .collect();
+            need_spans.push(rows);
 
             let mut card = TrailCard {
                 id,
@@ -246,11 +357,18 @@ impl Trail {
             cards.push(card);
         }
 
+        // A promise's own spans are kept by name, and a bundle still answers
+        // to each of its promises' names.
         Trail {
             agent: self.agent,
             behavior: self.behavior,
             satisfied: self.satisfied,
             cards,
+            spans: TrailSpans {
+                want: self.spans.want,
+                needs: need_spans,
+                offers: self.spans.offers,
+            },
         }
     }
 
@@ -270,18 +388,27 @@ impl Trail {
         // to. A chain of own needs (a provider meeting its own condition with a
         // promise that itself rests on another of its own) is followed to the
         // first promise from someone else, with a seen set against loops.
-        let mut spliced: Vec<Vec<Need>> = Vec::with_capacity(self.cards.len());
-        for card in &self.cards {
-            let mut out: Vec<Need> = vec![];
+        //
+        // A need that moves under a new holder is a row of its own there,
+        // even beside a need of the holder's for the same behavior from the
+        // same provider, and takes along what the promise it hung from
+        // filled in: each row keeps its own spans.
+        let mut spliced: Vec<Vec<(Need, NeedSpans)>> = Vec::with_capacity(self.cards.len());
+        for (id, card) in self.cards.iter().enumerate() {
+            let mut out: Vec<(Need, NeedSpans)> = vec![];
             let mut seen: HashSet<usize> = HashSet::new();
-            let mut queue: VecDeque<&Need> = card.needs.iter().collect();
-            while let Some(need) = queue.pop_front() {
+            let mut queue: VecDeque<(usize, usize)> =
+                (0..card.needs.len()).map(|row| (id, row)).collect();
+            while let Some((from, row)) = queue.pop_front() {
+                let need = &self.cards[from].needs[row];
                 if need.own {
                     if seen.insert(need.card) {
-                        queue.extend(self.cards[need.card].needs.iter());
+                        queue.extend(
+                            (0..self.cards[need.card].needs.len()).map(|row| (need.card, row)),
+                        );
                     }
                 } else {
-                    out.push(need.clone());
+                    out.push((need.clone(), self.spans.row(from, row)));
                 }
             }
             spliced.push(out);
@@ -297,7 +424,7 @@ impl Trail {
         queue.push_back(0);
         while let Some(id) = queue.pop_front() {
             let d = depth[&id];
-            for need in &spliced[id] {
+            for (need, _) in &spliced[id] {
                 if let std::collections::hash_map::Entry::Vacant(e) = depth.entry(need.card) {
                     e.insert(d + 1);
                     order.push(need.card);
@@ -319,15 +446,19 @@ impl Trail {
         let mut referenced: HashSet<usize> = HashSet::new();
         referenced.insert(0);
         let mut cards: Vec<TrailCard> = Vec::with_capacity(keep.len());
+        let mut need_spans: Vec<Vec<NeedSpans>> = Vec::with_capacity(keep.len());
         for &old in &keep {
             let source = &self.cards[old];
             let mut needs: Vec<Need> = vec![];
-            for need in &spliced[old] {
+            let mut rows: Vec<NeedSpans> = vec![];
+            for (need, filled) in &spliced[old] {
                 let mut need = need.clone();
                 need.reference = !referenced.insert(need.card);
                 need.card = new_id[&need.card];
                 needs.push(need);
+                rows.push(filled.clone());
             }
+            need_spans.push(rows);
             cards.push(TrailCard {
                 id: new_id[&old],
                 depth: depth[&old],
@@ -345,7 +476,20 @@ impl Trail {
             behavior: self.behavior,
             satisfied: self.satisfied,
             cards,
+            spans: TrailSpans {
+                want: self.spans.want,
+                needs: need_spans,
+                offers: self.spans.offers,
+            },
         }
+    }
+}
+
+impl Trail {
+    /// [`Trail::labels_when`], marking unless `marks` is empty: the option
+    /// is off, or the contract substitutes nothing anywhere.
+    pub fn labels(&self, marks: &Marks) -> Vec<CardLabels> {
+        self.labels_when(!marks.is_empty())
     }
 }
 
@@ -358,17 +502,6 @@ pub struct CardLabels {
     pub promises: Vec<String>,
     /// In place of each of [`TrailCard::needs`], in order.
     pub needs: Vec<String>,
-}
-
-/// One behavior on `card`, marked: a want as its agent wrote it, a promise
-/// as its agent makes it and as whoever leans on it needs it, a missing
-/// behavior as it is needed.
-fn label_on(marks: &Marks, card: &TrailCard, behavior: &str) -> String {
-    match (card.kind, card.agent.as_deref()) {
-        (CardKind::Want, Some(agent)) => marks.need(agent, behavior),
-        (CardKind::Offer, Some(agent)) => marks.kept(agent, behavior),
-        _ => marks.needed(behavior),
-    }
 }
 
 /// A bundled need names several behaviors in one string. Take it apart
@@ -398,39 +531,92 @@ impl Trail {
     ///
     /// Read off the trail as it is about to be shown — after bundling and
     /// self folding — so the cards themselves keep plain names for
-    /// selection, comments and every other lookup. A need is labelled as the
-    /// card it points at labels that behavior.
-    pub fn labels(&self, marks: &Marks) -> Vec<CardLabels> {
+    /// selection, comments and every other lookup.
+    ///
+    /// The marks are this trail's own: what resolution substituted on the
+    /// way down from this want, and nothing another want or another promise
+    /// did with the same text. With `mark` false (the option off) every
+    /// label is the plain name; the trail needs nothing else to mark itself,
+    /// so a view has no whole-tracker [`Marks`] to build for it.
+    ///
+    /// - The want card: as its agent wrote the want.
+    /// - A need: what the condition it stands for filled in, together with
+    ///   what the promise answering it names through a variable. Two rows on
+    ///   one card for the same behavior — the card's own condition, and one
+    ///   taken over from a folded self promise — are each their own.
+    /// - A promise card: what its own promise names through a variable,
+    ///   together with what every need that reaches it on this trail filled
+    ///   in. A card placed once for several needs shows all of theirs.
+    /// - A missing card: what the needs that reach it filled in.
+    ///
+    /// A bundled card or need stands for several promises and shows what any
+    /// of those substituted, each behavior by itself.
+    pub fn labels_when(&self, mark: bool) -> Vec<CardLabels> {
+        if !mark || self.spans.is_empty() {
+            return self
+                .cards
+                .iter()
+                .map(|card| CardLabels {
+                    behavior: card.behavior.clone(),
+                    promises: card.promises.iter().map(|p| p.behavior.clone()).collect(),
+                    needs: card.needs.iter().map(|n| n.behavior.clone()).collect(),
+                })
+                .collect();
+        }
+
+        // The needs first: each says what its holder filled in, and that is
+        // also part of what the card it reaches shows.
+        let mut reached: HashMap<(usize, &str), Spans> = HashMap::new();
+        let mut needs: Vec<Vec<String>> = Vec::with_capacity(self.cards.len());
+        for (at, card) in self.cards.iter().enumerate() {
+            let mut labels = Vec::with_capacity(card.needs.len());
+            for (row, need) in card.needs.iter().enumerate() {
+                let Some(target) = self.cards.get(need.card) else {
+                    labels.push(need.behavior.clone());
+                    continue;
+                };
+                let Some(parts) = split_joined(&need.behavior, &target.behaviors()) else {
+                    labels.push(need.behavior.clone());
+                    continue;
+                };
+                let parts: Vec<String> = parts
+                    .into_iter()
+                    .map(|part| {
+                        let filled = self.spans.need(at, row, part);
+                        let label =
+                            mark_spans(part, &merge_spans(filled, self.spans.offer(target, part)));
+                        let held = reached.entry((need.card, part)).or_default();
+                        *held = merge_spans(held, filled);
+                        label
+                    })
+                    .collect();
+                labels.push(parts.join(", "));
+            }
+            needs.push(labels);
+        }
+
         self.cards
             .iter()
-            .map(|card| {
-                let promises: Vec<String> = card
-                    .promises
-                    .iter()
-                    .map(|p| label_on(marks, card, &p.behavior))
-                    .collect();
+            .zip(needs)
+            .enumerate()
+            .map(|(at, (card, needs))| {
+                let label = |behavior: &str| -> String {
+                    if card.kind == CardKind::Want {
+                        return mark_spans(behavior, &self.spans.want);
+                    }
+                    let own = self.spans.offer(card, behavior);
+                    match reached.get(&(at, behavior)) {
+                        Some(filled) => mark_spans(behavior, &merge_spans(filled, own)),
+                        None => mark_spans(behavior, own),
+                    }
+                };
+                let promises: Vec<String> =
+                    card.promises.iter().map(|p| label(&p.behavior)).collect();
                 let behavior = if promises.is_empty() {
-                    label_on(marks, card, &card.behavior)
+                    label(&card.behavior)
                 } else {
                     promises.join(", ")
                 };
-                let needs = card
-                    .needs
-                    .iter()
-                    .map(|need| {
-                        let Some(target) = self.cards.get(need.card) else {
-                            return need.behavior.clone();
-                        };
-                        match split_joined(&need.behavior, &target.behaviors()) {
-                            Some(parts) => parts
-                                .into_iter()
-                                .map(|part| label_on(marks, target, part))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            None => need.behavior.clone(),
-                        }
-                    })
-                    .collect();
                 CardLabels {
                     behavior,
                     promises,
@@ -471,6 +657,7 @@ pub fn wants(tracker: &Tracker) -> Vec<WantSummary> {
 struct TrailBuilder {
     cards: Vec<TrailCard>,
     placed: HashMap<(CardKind, String, Option<String>), usize>,
+    spans: TrailSpans,
 }
 
 impl TrailBuilder {
@@ -478,6 +665,7 @@ impl TrailBuilder {
         TrailBuilder {
             cards: vec![],
             placed: HashMap::new(),
+            spans: TrailSpans::default(),
         }
     }
 
@@ -499,6 +687,7 @@ impl TrailBuilder {
             return (id, true);
         }
         let id = self.cards.len();
+        self.spans.needs.push(vec![]);
         self.cards.push(TrailCard {
             id,
             depth,
@@ -533,6 +722,7 @@ impl TrailBuilder {
 
         if offers.is_empty() {
             let (card, reference) = self.place(depth, CardKind::Missing, behavior, None, false);
+            self.spans.needs[under].push(need_spans(behavior, resolution.get_bound()));
             self.cards[under].needs.push(Need {
                 behavior: behavior.to_string(),
                 card,
@@ -544,9 +734,16 @@ impl TrailBuilder {
 
         for (offer, satisfied) in offers {
             // An offer answering an open goal is carded under the concrete
-            // behavior it keeps.
+            // behavior it keeps, and carries what the goal filled in or
+            // matched there itself.
+            let filled = match offer.get_behavior() {
+                Some(_) => offer.get_matched(),
+                None => resolution.get_bound(),
+            };
             let behavior = offer.get_behavior().unwrap_or(behavior);
             let agent = offer.get_agent_name();
+            let filled = need_spans(behavior, filled);
+            self.spans.add_offer(agent, behavior, offer.get_bound());
             let (card, reference) =
                 self.place(depth, CardKind::Offer, behavior, Some(agent), satisfied);
             self.cards[under].needs.push(Need {
@@ -555,6 +752,7 @@ impl TrailBuilder {
                 reference,
                 own: holder.as_deref() == Some(agent),
             });
+            self.spans.needs[under].push(filled);
             if !reference {
                 for condition in offer.get_resolved_conditions() {
                     self.hang(card, depth + 1, condition);
@@ -566,11 +764,13 @@ impl TrailBuilder {
 
 /// The trail for one agent's want.
 ///
-/// The agent only names the want card; resolution is by behavior, so two
-/// agents wanting the same thing get the same trail under different headers.
+/// The agent names the want card and says how the want was written
+/// ([`Tracker::resolve_want`]); resolution is by behavior, so two agents
+/// wanting the same thing get the same cards under different headers.
 pub fn trail(tracker: &Tracker, agent: &str, want: &str) -> Trail {
-    let resolution = tracker.resolve(want);
+    let resolution = tracker.resolve_want(agent, want);
     let mut builder = TrailBuilder::new();
+    builder.spans.want = resolution.get_bound().to_vec();
     let (root, _) = builder.place(
         0,
         CardKind::Want,
@@ -584,6 +784,7 @@ pub fn trail(tracker: &Tracker, agent: &str, want: &str) -> Trail {
         behavior: want.to_string(),
         satisfied: resolution.is_satisfied(),
         cards: builder.cards,
+        spans: builder.spans,
     }
 }
 
@@ -1005,5 +1206,383 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    /// a1 keeps mid1 on `a2 is up` written out; a2 reaches the same text as
+    /// `{{!self}} is up`, in a want and in a condition; a3 promises it.
+    fn written_out_and_through_a_variable() -> Tracker {
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("a0").with_provides(vec![
+            Behavior::build("top").with_conditions(vec!["mid1".into(), "mid2".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("mid1").with_conditions(vec!["a2 is up".into()]),
+        ]));
+        tracker.add_agent(
+            Agent::build("a2")
+                .with_wants(vec![Behavior::build("{{!self}} is up")])
+                .with_provides(vec![
+                    Behavior::build("mid2").with_conditions(vec!["{{!self}} is up".into()])
+                ]),
+        );
+        tracker.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("a2 is up")]));
+        tracker.add_agent(
+            Agent::build("w").with_wants(vec![Behavior::build("mid1"), Behavior::build("top")]),
+        );
+        tracker
+    }
+
+    #[test]
+    fn labels_are_the_trails_own_not_another_wants() {
+        let tracker = written_out_and_through_a_variable();
+        let marks = Marks::new(&tracker);
+        assert!(!marks.is_empty());
+
+        // From w's want, a1 names the behavior outright and a3 promises it
+        // outright: nothing on this trail was substituted, whatever a2 does
+        // with the same text elsewhere.
+        let t = trail(&tracker, "w", "mid1");
+        let labels = t.labels(&marks);
+        let a1 = card(&t, "mid1", Some("a1"));
+        let a3 = card(&t, "a2 is up", Some("a3"));
+        assert_eq!(labels[a1.id].needs, vec!["a2 is up"]);
+        assert_eq!(labels[a3.id].behavior, "a2 is up");
+        for (card, said) in t.cards.iter().zip(&labels) {
+            assert_eq!(said.behavior, card.behavior);
+        }
+
+        // From a2's own want, it is a2's name all the way.
+        let t = trail(&tracker, "a2", "a2 is up");
+        let labels = t.labels(&marks);
+        assert_eq!(labels[0].behavior, "<a2> is up");
+        assert_eq!(labels[0].needs, vec!["<a2> is up"]);
+        assert_eq!(
+            labels[card(&t, "a2 is up", Some("a3")).id].behavior,
+            "<a2> is up"
+        );
+
+        // Asked for the same text by an agent that does not want it that
+        // way, the want card is plain too.
+        let t = trail(&tracker, "w", "a2 is up");
+        assert!(t.labels(&marks).iter().all(|l| !l.behavior.contains('<')));
+    }
+
+    #[test]
+    fn a_card_reached_by_several_needs_shows_what_each_filled_in() {
+        let tracker = written_out_and_through_a_variable();
+        let marks = Marks::new(&tracker);
+        let t = trail(&tracker, "w", "top");
+        let labels = t.labels(&marks);
+        // Each need as its own holder has it ...
+        assert_eq!(
+            labels[card(&t, "mid1", Some("a1")).id].needs,
+            vec!["a2 is up"]
+        );
+        assert_eq!(
+            labels[card(&t, "mid2", Some("a2")).id].needs,
+            vec!["<a2> is up"]
+        );
+        // ... and the one card both reach shows the two together.
+        assert_eq!(
+            labels[card(&t, "a2 is up", Some("a3")).id].behavior,
+            "<a2> is up"
+        );
+    }
+
+    #[test]
+    fn labels_are_plain_when_marking_is_off() {
+        let tracker = crate::marks::tracker(crate::marks::IAM);
+        let t = trail(&tracker, "appname", "Read Secret Contents appsecret by appname");
+        for shown in [t.clone(), t.clone().bundled(), t.without_own_promises()] {
+            let labels = shown.labels(&Marks::default());
+            assert_eq!(labels.len(), shown.cards.len());
+            for (card, said) in shown.cards.iter().zip(labels) {
+                assert_eq!(said.behavior, card.behavior);
+                assert_eq!(
+                    said.promises,
+                    card.promises
+                        .iter()
+                        .map(|p| p.behavior.clone())
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    said.needs,
+                    card.needs
+                        .iter()
+                        .map(|n| n.behavior.clone())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_need_folded_under_another_card_keeps_its_marks() {
+        // a2 keeps b1 on a promise of its own, which rests on a3 by a2's
+        // own name; a1's b0 names the same behavior outright.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(
+            Agent::build("w").with_wants(vec![Behavior::build("b1"), Behavior::build("b0")]),
+        );
+        tracker.add_agent(Agent::build("a1").with_provides(vec![
+            Behavior::build("b0").with_conditions(vec!["a2 is fed".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["inner".into()]),
+            Behavior::build("inner").with_conditions(vec!["{{!self}} is fed".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![Behavior::build("a2 is fed")]));
+        let marks = Marks::new(&tracker);
+
+        let full = trail(&tracker, "w", "b1");
+        let labels = full.labels(&marks);
+        assert_eq!(
+            labels[card(&full, "inner", Some("a2")).id].needs,
+            vec!["<a2> is fed"]
+        );
+        assert_eq!(labels[card(&full, "b1", Some("a2")).id].needs, vec!["inner"]);
+
+        for t in [
+            full.clone().without_own_promises(),
+            full.clone().without_own_promises().bundled(),
+            full.clone().bundled().without_own_promises(),
+        ] {
+            let labels = t.labels(&marks);
+            let b1 = card(&t, "b1", Some("a2"));
+            assert_eq!(b1.needs.len(), 1);
+            assert_eq!(b1.needs[0].behavior, "a2 is fed");
+            assert_eq!(labels[b1.id].needs, vec!["<a2> is fed"]);
+            assert_eq!(
+                labels[card(&t, "a2 is fed", Some("a3")).id].behavior,
+                "<a2> is fed"
+            );
+        }
+
+        // Folding does not hand the marks to a holder that never had them.
+        let other = trail(&tracker, "w", "b0").without_own_promises();
+        let labels = other.labels(&marks);
+        assert_eq!(
+            labels[card(&other, "b0", Some("a1")).id].needs,
+            vec!["a2 is fed"]
+        );
+        assert_eq!(
+            labels[card(&other, "a2 is fed", Some("a3")).id].behavior,
+            "a2 is fed"
+        );
+    }
+
+    /// a keeps `top` on `z is up` written out and on a promise of its own,
+    /// `inner`, whose open condition matches the same behavior.
+    const FOLDED_BESIDE_WRITTEN_OUT: &str = r#"
+kind: Agent
+name: w
+wants: [{name: top}]
+---
+kind: Agent
+name: a
+provides:
+- name: top
+  conditions: ["z is up", "inner"]
+- name: inner
+  conditions: ["{{?v}} is up"]
+---
+kind: Agent
+name: z
+provides: [{name: z is up}]
+"#;
+
+    #[test]
+    fn a_need_folded_in_beside_the_holders_own_keeps_to_its_own_row() {
+        let tracker = crate::marks::tracker(FOLDED_BESIDE_WRITTEN_OUT);
+        let marks = Marks::new(&tracker);
+        let full = trail(&tracker, "w", "top");
+
+        // Unfolded: each card has its own need.
+        let labels = full.labels(&marks);
+        assert_eq!(
+            labels[card(&full, "top", Some("a")).id].needs,
+            vec!["z is up", "inner"]
+        );
+        assert_eq!(
+            labels[card(&full, "inner", Some("a")).id].needs,
+            vec!["<z> is up"]
+        );
+        assert_eq!(
+            labels[card(&full, "z is up", Some("z")).id].behavior,
+            "<z> is up"
+        );
+
+        // Folded: `top` shows both needs, as two rows for the same behavior
+        // from the same provider. Only the one taken over from `inner` was
+        // found through a variable.
+        for t in [
+            full.clone().without_own_promises(),
+            full.clone().without_own_promises().bundled(),
+            full.clone().bundled().without_own_promises(),
+        ] {
+            let labels = t.labels(&marks);
+            let top = card(&t, "top", Some("a"));
+            let rows: Vec<(&str, bool)> = top
+                .needs
+                .iter()
+                .map(|n| (n.behavior.as_str(), n.reference))
+                .collect();
+            assert_eq!(rows, vec![("z is up", false), ("z is up", true)]);
+            assert_eq!(labels[top.id].needs, vec!["z is up", "<z> is up"]);
+            // The one card both rows reach shows what either filled in.
+            assert_eq!(
+                labels[card(&t, "z is up", Some("z")).id].behavior,
+                "<z> is up"
+            );
+        }
+
+        // Off, nothing is marked either way.
+        let folded = full.without_own_promises();
+        assert_eq!(folded.labels_when(true), folded.labels(&marks));
+        assert_eq!(folded.labels_when(false), folded.labels(&Marks::default()));
+        let labels = folded.labels_when(false);
+        assert_eq!(
+            labels[card(&folded, "top", Some("a")).id].needs,
+            vec!["z is up", "z is up"]
+        );
+    }
+
+    #[test]
+    fn two_conditions_of_one_promise_reaching_one_behavior_are_each_their_own() {
+        // One promise, the behavior written out and found again by `{{?v}}`.
+        let tracker = crate::marks::tracker(
+            r#"
+kind: Agent
+name: w
+wants: [{name: top}]
+---
+kind: Agent
+name: a
+provides:
+- name: top
+  conditions: ["é is up", "{{?v}} is up"]
+---
+kind: Agent
+name: "é"
+provides: [{name: "é is up"}]
+"#,
+        );
+        let marks = Marks::new(&tracker);
+        let t = trail(&tracker, "w", "top");
+        let labels = t.labels(&marks);
+        assert_eq!(
+            labels[card(&t, "top", Some("a")).id].needs,
+            vec!["\u{e9} is up", "<\u{e9}> is up"]
+        );
+    }
+
+    #[test]
+    fn bundling_merges_a_written_out_need_with_one_found_through_a_variable() {
+        // h's m1 and m2 sit in one column and both reach `z is up`, m1
+        // written out and m2 through `{{?v}}`; g's m3 beside them names it
+        // outright.
+        let tracker = crate::marks::tracker(
+            r#"
+kind: Agent
+name: w
+wants: [{name: top}]
+---
+kind: Agent
+name: t
+provides:
+- name: top
+  conditions: [m1, m2, m3]
+---
+kind: Agent
+name: h
+provides:
+- name: m1
+  conditions: ["z is up"]
+- name: m2
+  conditions: ["{{?v}} is up"]
+---
+kind: Agent
+name: g
+provides:
+- name: m3
+  conditions: ["z is up"]
+---
+kind: Agent
+name: z
+provides: [{name: z is up}]
+"#,
+        );
+        let marks = Marks::new(&tracker);
+        let b = trail(&tracker, "w", "top").bundled();
+        let labels = b.labels(&marks);
+        let bundle = card(&b, "m1, m2", Some("h"));
+        // One row for both of h's needs: what either filled in.
+        assert_eq!(bundle.needs.len(), 1);
+        assert_eq!(labels[bundle.id].needs, vec!["<z> is up"]);
+        assert_eq!(labels[card(&b, "m3", Some("g")).id].needs, vec!["z is up"]);
+    }
+
+    #[test]
+    fn a_bundle_shows_what_the_promises_it_merges_filled_in_and_no_others() {
+        // a3 keeps x1 on an `... is up` written out and x2 on an open
+        // condition that matches it; a4 keeps y1 on it written out.
+        let mut tracker = Tracker::new();
+        tracker.add_agent(Agent::build("w").with_wants(vec![Behavior::build("b1")]));
+        tracker.add_agent(Agent::build("a2").with_provides(vec![
+            Behavior::build("b1").with_conditions(vec!["x1".into(), "x2".into(), "y1".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a3").with_provides(vec![
+            Behavior::build("x1").with_conditions(vec!["\u{e9}9 is up".into()]),
+            Behavior::build("x2").with_conditions(vec!["{{?who}} is up".into()]),
+        ]));
+        tracker.add_agent(Agent::build("a4").with_provides(vec![
+            Behavior::build("y1").with_conditions(vec!["\u{e9}9 is up".into()]),
+        ]));
+        tracker
+            .add_agent(Agent::build("\u{e9}9").with_provides(vec![Behavior::build("\u{e9}9 is up")]));
+        let marks = Marks::new(&tracker);
+
+        let t = trail(&tracker, "w", "b1");
+        let labels = t.labels(&marks);
+        assert_eq!(
+            labels[card(&t, "x1", Some("a3")).id].needs,
+            vec!["\u{e9}9 is up"]
+        );
+        assert_eq!(
+            labels[card(&t, "x2", Some("a3")).id].needs,
+            vec!["<\u{e9}9> is up"]
+        );
+        assert_eq!(
+            labels[card(&t, "y1", Some("a4")).id].needs,
+            vec!["\u{e9}9 is up"]
+        );
+
+        let b = t.bundled();
+        let labels = b.labels(&marks);
+        let bundle = card(&b, "x1, x2", Some("a3"));
+        assert_eq!(labels[bundle.id].behavior, "x1, x2");
+        // x1's need and x2's are one need now: what either filled in.
+        assert_eq!(labels[bundle.id].needs, vec!["<\u{e9}9> is up"]);
+        // a4's promise is not in the bundle and filled nothing in.
+        assert_eq!(
+            labels[card(&b, "y1", Some("a4")).id].needs,
+            vec!["\u{e9}9 is up"]
+        );
+        assert_eq!(
+            labels[card(&b, "\u{e9}9 is up", Some("\u{e9}9")).id].behavior,
+            "<\u{e9}9> is up"
+        );
+    }
+
+    #[test]
+    fn a_trail_read_back_is_labelled_plainly() {
+        let tracker = crate::marks::tracker(crate::marks::IAM);
+        let marks = Marks::new(&tracker);
+        let t = trail(&tracker, "appname", "Read Secret Contents appsecret by appname");
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(!json.contains("spans"), "{}", json);
+        let back: Trail = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cards, t.cards);
+        assert!(back.labels(&marks).iter().all(|l| !l.behavior.contains('<')));
     }
 }

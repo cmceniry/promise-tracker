@@ -3,7 +3,7 @@ use promise_tracker::diagram::{diagram_with, DiagramOptions};
 use promise_tracker::Tracker;
 use wasm_bindgen::prelude::*;
 
-use super::display_options::ViewOptions;
+use super::display_options::{focus_subtitle, ViewOptions};
 use super::view_frame::ViewFrame;
 use crate::utils::{generated_at, html_document, slugify};
 
@@ -232,18 +232,14 @@ pub fn ContractGraph(
 
     let frame_title =
         Signal::derive(move || format!("Sequence Diagram - Simulation {}", sim_for_title));
+    // The want is named as its component wrote it while marking is on; the
+    // file name below keeps the plain want.
     let frame_subtitle = Signal::derive(move || {
-        let focus = format!(
-            "{} -> {}",
-            selected_component.get(),
-            selected_behavior.get()
-        );
-        format!(
-            "{} - {} - generated {}",
-            focus,
-            options.get().describe(),
-            generated_at()
-        )
+        let component = selected_component.get();
+        let o = options.get();
+        let behavior =
+            tracker.with(|t| o.want_label(t.as_ref(), &component, &selected_behavior.get()));
+        focus_subtitle(&component, &behavior, &o.describe(), &generated_at())
     });
     let frame_filename = Signal::derive(move || {
         format!(

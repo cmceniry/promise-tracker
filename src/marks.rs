@@ -21,6 +21,16 @@
 //! writes `{{!self}} is up`, another spells the name out — so marks are kept
 //! by who is looking: the agent that needs the behavior, and the agent that
 //! promises it. A line between the two shows both.
+//!
+//! One agent can also reach the same text two ways itself: one promise names
+//! a condition outright, another finds it with `{{?x}}`. So there are two
+//! grains. The Overview's lines and nodes stand for an agent and a name, and
+//! read the coarse one ([`Marks::need`], [`Marks::promise`], [`Marks::edge`]).
+//! A listing whose row is one want, one promise or one condition of one
+//! promise reads the fine one ([`Marks::want`], [`Marks::made`],
+//! [`Marks::condition`]), so a row shows only what its own declaration
+//! substituted. A trail reads neither: it carries its own spans
+//! ([`crate::trace::Trail::labels`]).
 
 use crate::components::{mark_spans, merge_spans, Pattern};
 use crate::resolve::{Resolution, Spans};
@@ -41,7 +51,36 @@ pub struct Marks {
     needed: BTreeMap<String, Spans>,
     /// `offer` over every agent.
     offered: BTreeMap<String, Spans>,
+    /// (agent, want) — a want as that agent wrote it, and nothing its
+    /// promises' conditions say about the same text.
+    want: BTreeMap<(String, String), Spans>,
+    /// (agent, promise kept, condition) — a condition of one promise, under
+    /// the behavior that promise keeps: as written, with a goal's values
+    /// filled in, as resolution reached it, and each behavior an open
+    /// condition matched.
+    condition: BTreeMap<(String, String, String), Spans>,
+    /// (agent, promise as written, behavior kept) — what one promise names
+    /// through a variable in a behavior it keeps. As written and kept are
+    /// the same text for the declaration itself.
+    made: BTreeMap<(String, String, String), Spans>,
     agents: BTreeSet<String>,
+}
+
+/// Who holds the need [`Marks::walk`] is recording.
+#[derive(Clone, Copy)]
+enum Holder<'a> {
+    /// A want of `agent`.
+    Want { agent: &'a str },
+    /// A condition on the promise by which `agent` keeps `promise`.
+    Condition { agent: &'a str, promise: &'a str },
+}
+
+impl<'a> Holder<'a> {
+    fn agent(&self) -> &'a str {
+        match self {
+            Holder::Want { agent } | Holder::Condition { agent, .. } => agent,
+        }
+    }
 }
 
 /// What [`Marks::walk`] has already been through.
@@ -69,13 +108,21 @@ impl Marks {
                 for promise in variant.provides() {
                     let name = promise.get_name_pattern();
                     marks.add_offer(agent, name.source(), name.bound());
+                    marks.add_made(agent, name.source(), name.source(), name.bound());
                     for condition in promise.get_condition_patterns() {
                         marks.add_need(agent, condition.source(), condition.bound());
+                        marks.add_condition(
+                            agent,
+                            name.source(),
+                            condition.source(),
+                            condition.bound(),
+                        );
                     }
                 }
                 for want in variant.wants() {
                     let name = want.get_name_pattern();
                     marks.add_need(agent, name.source(), name.bound());
+                    marks.add_want(agent, name.source(), name.bound());
                 }
             }
         }
@@ -97,7 +144,7 @@ impl Marks {
                 let (resolved, _) = tracker.resolve_goal(want.source(), &mut vec![], &mut settled);
                 marks.walk(
                     tracker,
-                    Some(agent),
+                    Some(Holder::Want { agent }),
                     &as_reached_by(resolved, &want),
                     &mut walked,
                 );
@@ -141,17 +188,63 @@ impl Marks {
         *held = merge_spans(held, spans);
     }
 
+    fn add_want(&mut self, agent: &str, name: &str, spans: &[(usize, usize)]) {
+        if spans.is_empty() {
+            return;
+        }
+        let held = self
+            .want
+            .entry((agent.to_string(), name.to_string()))
+            .or_default();
+        *held = merge_spans(held, spans);
+    }
+
+    fn add_condition(&mut self, agent: &str, promise: &str, name: &str, spans: &[(usize, usize)]) {
+        if spans.is_empty() {
+            return;
+        }
+        let held = self
+            .condition
+            .entry((agent.to_string(), promise.to_string(), name.to_string()))
+            .or_default();
+        *held = merge_spans(held, spans);
+    }
+
+    fn add_made(&mut self, agent: &str, written: &str, kept: &str, spans: &[(usize, usize)]) {
+        if spans.is_empty() {
+            return;
+        }
+        let held = self
+            .made
+            .entry((agent.to_string(), written.to_string(), kept.to_string()))
+            .or_default();
+        *held = merge_spans(held, spans);
+    }
+
+    /// `name`, under `holder`, with `spans` substituted.
+    fn add_held(&mut self, holder: Holder, name: &str, spans: &[(usize, usize)]) {
+        self.add_need(holder.agent(), name, spans);
+        match holder {
+            // What an open want matched is not a want of its own: only the
+            // want's text is kept by want.
+            Holder::Want { agent } => self.add_want(agent, name, spans),
+            Holder::Condition { agent, promise } => {
+                self.add_condition(agent, promise, name, spans)
+            }
+        }
+    }
+
     /// Record a resolution `holder` needs, and everything under it.
     fn walk(
         &mut self,
         tracker: &Tracker,
-        holder: Option<&str>,
+        holder: Option<Holder>,
         resolution: &Resolution,
         walked: &mut Walked,
     ) {
         let name = resolution.get_behavior_name();
         if let Some(holder) = holder {
-            self.add_need(holder, name, resolution.get_bound());
+            self.add_held(holder, name, resolution.get_bound());
         }
         // The conditions of every promise that could keep this goal, with
         // only the goal's values filled in. Resolution reads on from there —
@@ -161,9 +254,23 @@ impl Marks {
             for (agent, variants) in &tracker.working_agents {
                 for variant in variants {
                     for (promise, bindings) in variant.get_matching_provides(name) {
+                        // What this one promise names through a variable in
+                        // the goal. A promise that names it outright has
+                        // that from its declaration already.
+                        let written = promise.get_name_pattern();
+                        if !written.is_ground() {
+                            let kept = written.substitute(&bindings);
+                            self.add_made(agent, written.source(), name, kept.bound());
+                        }
                         for condition in promise.get_condition_patterns() {
                             let condition = condition.substitute(&bindings);
                             self.add_need(agent, condition.source(), condition.bound());
+                            self.add_condition(
+                                agent,
+                                name,
+                                condition.source(),
+                                condition.bound(),
+                            );
                         }
                     }
                 }
@@ -179,8 +286,14 @@ impl Marks {
         for offer in offers() {
             let kept = offer.get_behavior().unwrap_or(name);
             self.add_offer(offer.get_agent_name(), kept, offer.get_bound());
-            if let (Some(holder), Some(kept)) = (holder, offer.get_behavior()) {
-                self.add_need(holder, kept, offer.get_matched());
+            match (holder, offer.get_behavior()) {
+                (Some(Holder::Want { agent }), Some(kept)) => {
+                    self.add_need(agent, kept, offer.get_matched());
+                }
+                (Some(holder @ Holder::Condition { .. }), Some(kept)) => {
+                    self.add_held(holder, kept, offer.get_matched());
+                }
+                _ => {}
             }
             kept_names.push(format!("{}\u{0}{}", offer.get_agent_name(), kept));
         }
@@ -190,8 +303,14 @@ impl Marks {
             return;
         }
         for offer in offers() {
+            // Its conditions are conditions of the promise keeping what the
+            // offer keeps.
+            let holder = Holder::Condition {
+                agent: offer.get_agent_name(),
+                promise: offer.get_behavior().unwrap_or(name),
+            };
             for condition in offer.get_resolved_conditions() {
-                self.walk(tracker, Some(offer.get_agent_name()), condition, walked);
+                self.walk(tracker, Some(holder), condition, walked);
             }
         }
     }
@@ -210,13 +329,94 @@ impl Marks {
         map.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Nothing in the tracker was substituted.
-    pub fn is_empty(&self) -> bool {
-        self.need.is_empty() && self.offer.is_empty()
+    fn spans3<'a>(
+        map: &'a BTreeMap<(String, String, String), Spans>,
+        agent: &str,
+        of: &str,
+        name: &str,
+    ) -> &'a [(usize, usize)] {
+        map.get(&(agent.to_string(), of.to_string(), name.to_string()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
-    /// `name` as `agent` needs it: its want, or a condition on one of its
+    /// Nothing in the tracker was substituted.
+    pub fn is_empty(&self) -> bool {
+        self.need.is_empty()
+            && self.offer.is_empty()
+            && self.want.is_empty()
+            && self.condition.is_empty()
+            && self.made.is_empty()
+    }
+
+    /// `name` as `agent` wants it: what the agent's own `{{!self}}` or
+    /// Instance binding filled in. Nothing from a condition of the agent's
+    /// that reaches the same text. The plain name when the agent wrote the
+    /// want out, or does not want it.
+    pub fn want(&self, agent: &str, name: &str) -> String {
+        mark_spans(name, Self::spans(&self.want, agent, name))
+    }
+
+    /// [`Marks::want`] for a row standing for several agents: what any of
+    /// those substituted.
+    pub fn want_by<S: AsRef<str>>(&self, agents: &[S], name: &str) -> String {
+        let spans = agents.iter().fold(vec![], |acc, agent| {
+            merge_spans(&acc, Self::spans(&self.want, agent.as_ref(), name))
+        });
+        mark_spans(name, &spans)
+    }
+
+    /// `name` as a condition of the promise by which `agent` keeps
+    /// `promise`: as the condition is written, with the values of the goal
+    /// `promise` filled in, as resolution reached it with a sibling's value,
+    /// or a behavior the condition's `{{?x}}` matched. `promise` is the
+    /// behavior kept — for a parameterized promise listed on its own, the
+    /// pattern as written.
+    ///
+    /// Another promise of the same agent with a condition of the same text
+    /// adds nothing. Two promises of one agent that keep the same behavior
+    /// and carry a condition of the same text are not told apart.
+    pub fn condition(&self, agent: &str, promise: &str, name: &str) -> String {
+        mark_spans(name, Self::spans3(&self.condition, agent, promise, name))
+    }
+
+    /// [`Marks::condition`] for a row standing for several agents.
+    pub fn condition_by<S: AsRef<str>>(&self, agents: &[S], promise: &str, name: &str) -> String {
+        let spans = agents.iter().fold(vec![], |acc, agent| {
+            merge_spans(
+                &acc,
+                Self::spans3(&self.condition, agent.as_ref(), promise, name),
+            )
+        });
+        mark_spans(name, &spans)
+    }
+
+    /// `kept` as the promise `agent` wrote as `written` names it: what that
+    /// one promise substituted. For the promise as it stands in the
+    /// contract, pattern or not, `written` and `kept` are the same text.
+    /// Another promise of the same agent keeping the same behavior adds
+    /// nothing: an outright `x is up` stays plain beside `{{who}} is up`.
+    pub fn made(&self, agent: &str, written: &str, kept: &str) -> String {
+        mark_spans(kept, Self::spans3(&self.made, agent, written, kept))
+    }
+
+    /// [`Marks::made`] for a row standing for several agents.
+    pub fn made_by<S: AsRef<str>>(&self, agents: &[S], written: &str, kept: &str) -> String {
+        let spans = agents.iter().fold(vec![], |acc, agent| {
+            merge_spans(
+                &acc,
+                Self::spans3(&self.made, agent.as_ref(), written, kept),
+            )
+        });
+        mark_spans(kept, &spans)
+    }
+
+    /// `name` as `agent` needs it: its want, or a condition on any of its
     /// promises. The plain name when the agent substituted nothing.
+    ///
+    /// By agent and name only, for a line or node that stands for both. A
+    /// row for one want or one promise's condition reads [`Marks::want`] or
+    /// [`Marks::condition`].
     pub fn need(&self, agent: &str, name: &str) -> String {
         mark_spans(name, Self::spans(&self.need, agent, name))
     }
@@ -231,7 +431,8 @@ impl Marks {
     }
 
     /// `name` as `agent` promises it: a concrete behavior, or a
-    /// parameterized promise as written.
+    /// parameterized promise as written. Every promise of the agent that
+    /// keeps the name counts; [`Marks::made`] reads one of them.
     pub fn promise(&self, agent: &str, name: &str) -> String {
         mark_spans(name, Self::spans(&self.offer, agent, name))
     }
@@ -242,18 +443,6 @@ impl Marks {
             merge_spans(&acc, Self::spans(&self.offer, agent.as_ref(), name))
         });
         mark_spans(name, &spans)
-    }
-
-    /// `name` as `agent` promises it and as everyone leaning on it needs it:
-    /// the label for one promise shown once however many reach it.
-    pub fn kept(&self, agent: &str, name: &str) -> String {
-        mark_spans(
-            name,
-            &merge_spans(
-                Self::spans(&self.offer, agent, name),
-                Self::all(&self.needed, name),
-            ),
-        )
     }
 
     /// `name` on the line from `consumer` to `provider`: what either end
@@ -413,7 +602,6 @@ mod tests {
             m.edge("AWSSM", "appname", ROLE),
             "<appname> has IAM role <approle>"
         );
-        assert_eq!(m.kept("appname", ROLE), "<appname> has IAM role <approle>");
         // manager wrote its promise out in full; infrateam's condition is
         // what filled it in.
         assert_eq!(m.promise("manager", APPROVAL), APPROVAL);
@@ -461,6 +649,163 @@ provides:
         assert_eq!(m.need_by(&["a1", "a2"], "a1 is up"), "<a1> is up");
         assert_eq!(m.promise_by(&["a1", "a2"], "a2 is up"), "<a2> is up");
         assert_eq!(m.need_by::<&str>(&[], "a1 is up"), "a1 is up");
+    }
+
+    /// x keeps p1 on a condition written out, and p2 on an open one that
+    /// matches the same behavior.
+    const TWO_WAYS: &str = r#"
+kind: Agent
+name: x
+provides:
+- name: p1
+  conditions: ["é1 is up"]
+- name: p2
+  conditions: ["{{?w}} is up"]
+---
+kind: Agent
+name: "é1"
+provides:
+- name: "é1 is up"
+"#;
+
+    #[test]
+    fn a_condition_written_out_is_not_marked_by_a_sibling_promise_that_matched_it() {
+        let m = Marks::new(&tracker(TWO_WAYS));
+        // p1 names it outright; only p2 found it through a variable.
+        assert_eq!(m.condition("x", "p1", "\u{e9}1 is up"), "\u{e9}1 is up");
+        assert_eq!(m.condition("x", "p2", "\u{e9}1 is up"), "<\u{e9}1> is up");
+        assert_eq!(m.condition("x", "p2", "{{?w}} is up"), "{{?w}} is up");
+        assert_eq!(
+            m.condition_by(&["x", "\u{e9}1"], "p1", "\u{e9}1 is up"),
+            "\u{e9}1 is up"
+        );
+        assert_eq!(
+            m.condition_by(&["\u{e9}1", "x"], "p2", "\u{e9}1 is up"),
+            "<\u{e9}1> is up"
+        );
+        // By agent and name alone the two cannot be told apart: the
+        // Overview's one line from x for this behavior shows both.
+        assert_eq!(m.need("x", "\u{e9}1 is up"), "<\u{e9}1> is up");
+        // x wants nothing.
+        assert_eq!(m.want("x", "\u{e9}1 is up"), "\u{e9}1 is up");
+    }
+
+    #[test]
+    fn a_want_is_not_marked_by_a_condition_of_the_same_text() {
+        let m = Marks::new(&tracker(
+            r#"
+kind: Agent
+name: a1
+wants:
+- name: a2 is up
+- name: "{{!self}} is fed"
+provides:
+- name: p
+  conditions: ["{{?who}} is up"]
+---
+kind: Agent
+name: a2
+wants:
+- name: "{{!self}} is up"
+provides:
+- name: a2 is up
+"#,
+        ));
+        // a1 wrote the want out; its promise's `{{?who}}` found the same text.
+        assert_eq!(m.want("a1", "a2 is up"), "a2 is up");
+        assert_eq!(m.condition("a1", "p", "a2 is up"), "<a2> is up");
+        assert_eq!(m.need("a1", "a2 is up"), "<a2> is up");
+        assert_eq!(m.want("a2", "a2 is up"), "<a2> is up");
+        assert_eq!(m.want("a1", "a1 is fed"), "<a1> is fed");
+        // A row for both wanters shows what either wrote.
+        assert_eq!(m.want_by(&["a1", "a2"], "a2 is up"), "<a2> is up");
+        assert_eq!(m.want_by(&["a1"], "a2 is up"), "a2 is up");
+        assert_eq!(m.want_by::<&str>(&[], "a2 is up"), "a2 is up");
+    }
+
+    #[test]
+    fn a_promise_written_out_is_not_marked_by_a_pattern_keeping_the_same_behavior() {
+        let m = Marks::new(&tracker(
+            r#"
+kind: Agent
+name: s
+provides:
+- name: x is up
+- name: "{{who}} is up"
+  conditions: ["{{who}} is fed"]
+---
+kind: Agent
+name: t
+provides:
+- name: "{{!self}} is up"
+---
+kind: Agent
+name: w
+wants:
+- name: x is up
+"#,
+        ));
+        assert_eq!(m.made("s", "x is up", "x is up"), "x is up");
+        assert_eq!(m.made("s", "{{who}} is up", "x is up"), "<x> is up");
+        assert_eq!(m.made("s", "{{who}} is up", "{{who}} is up"), "{{who}} is up");
+        // The condition under the behavior the pattern keeps, and as written.
+        assert_eq!(m.condition("s", "x is up", "x is fed"), "<x> is fed");
+        assert_eq!(
+            m.condition("s", "{{who}} is up", "{{who}} is fed"),
+            "{{who}} is fed"
+        );
+        // A promise naming its own agent is marked from its declaration.
+        assert_eq!(m.made("t", "t is up", "t is up"), "<t> is up");
+        assert_eq!(m.made_by(&["s", "t"], "t is up", "t is up"), "<t> is up");
+        assert_eq!(m.made_by(&["s", "t"], "x is up", "x is up"), "x is up");
+        // By agent and name alone, s's two promises are one.
+        assert_eq!(m.promise("s", "x is up"), "<x> is up");
+    }
+
+    #[test]
+    fn the_finer_marks_cover_the_iam_chain() {
+        let m = Marks::new(&tracker(IAM));
+        assert_eq!(
+            m.want("appname", WANT),
+            "Read Secret Contents appsecret by <appname>"
+        );
+        assert_eq!(m.want("AWSSM", WANT), WANT);
+        let pattern = "Read Secret Contents {{secret_name}} by {{application}}";
+        assert_eq!(
+            m.made("AWSSM", pattern, WANT),
+            "Read Secret Contents <appsecret> by <appname>"
+        );
+        assert_eq!(m.made("AWSSM", pattern, pattern), pattern);
+        assert_eq!(m.made("appname", ROLE, ROLE), "<appname> has IAM role approle");
+        // AWSSM's conditions, under the behavior its promise keeps: with the
+        // goal's values, with the sibling's too, and the behavior matched.
+        assert_eq!(
+            m.condition("AWSSM", WANT, OPEN_ROLE),
+            "<appname> has IAM role {{?approle}}"
+        );
+        assert_eq!(
+            m.condition(
+                "AWSSM",
+                WANT,
+                "IAM access granted for reading Secret appsecret to {{approle}}"
+            ),
+            "IAM access granted for reading Secret <appsecret> to {{approle}}"
+        );
+        assert_eq!(
+            m.condition("AWSSM", WANT, GRANT),
+            "IAM access granted for reading Secret <appsecret> to <approle>"
+        );
+        assert_eq!(
+            m.condition("AWSSM", WANT, ROLE),
+            "<appname> has IAM role <approle>"
+        );
+        assert_eq!(
+            m.condition("infrateam", GRANT, APPROVAL),
+            "Design approval access to Secret <appsecret> for <appname>"
+        );
+        // Under another promise the same text says nothing.
+        assert_eq!(m.condition("AWSSM", GRANT, ROLE), ROLE);
+        assert_eq!(m.condition("infrateam", WANT, APPROVAL), APPROVAL);
     }
 
     #[test]

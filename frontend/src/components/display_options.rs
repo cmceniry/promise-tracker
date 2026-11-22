@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use promise_tracker::Tracker;
 
 /// How every view reads the contract. One value, so the overview, the
 /// detailed views and the trace never disagree about what is folded.
@@ -53,6 +54,29 @@ impl ViewOptions {
             folded
         }
     }
+
+    /// A want as a view's heading names it: while bound values are marked,
+    /// as `agent` wrote it, with what a substitution filled in wrapped in
+    /// `<>`; otherwise, or with no tracker to ask, the want itself.
+    ///
+    /// For titles and labels only. A file name, an option's value and every
+    /// lookup keep the plain want.
+    pub fn want_label(&self, tracker: Option<&Tracker>, agent: &str, want: &str) -> String {
+        match tracker {
+            Some(tracker) if self.mark_bound => tracker.marked_want(agent, want),
+            _ => want.to_string(),
+        }
+    }
+}
+
+/// The subtitle of a Detailed view's frame and export: whose want it shows,
+/// how the view is folded, and when it was made. `behavior` is the want as
+/// the heading should name it ([`ViewOptions::want_label`]).
+pub fn focus_subtitle(component: &str, behavior: &str, folded: &str, generated: &str) -> String {
+    format!(
+        "{} -> {} - {} - generated {}",
+        component, behavior, folded, generated
+    )
 }
 
 /// One toggle: an icon and a short name, with its meaning and state in the
@@ -154,5 +178,74 @@ pub fn DisplayOptions(
                 </svg>
             </OptionToggle>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use promise_tracker::components::{Agent, Behavior};
+
+    fn tracker() -> Tracker {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("a1")
+                .with_wants(vec![
+                    Behavior::build("{{!self}} reads r1"),
+                    Behavior::build("a2 reads r1"),
+                ])
+                .with_provides(vec![Behavior::build("{{who}} reads r1")]),
+        );
+        t
+    }
+
+    #[test]
+    fn a_heading_marks_the_want_only_while_marking_is_on() {
+        let t = tracker();
+        let off = ViewOptions::default();
+        let on = ViewOptions {
+            mark_bound: true,
+            ..off
+        };
+        assert_eq!(off.want_label(Some(&t), "a1", "a1 reads r1"), "a1 reads r1");
+        assert_eq!(on.want_label(Some(&t), "a1", "a1 reads r1"), "<a1> reads r1");
+        // Written out: plain either way, whatever the agent's promise does
+        // with the same text.
+        assert_eq!(on.want_label(Some(&t), "a1", "a2 reads r1"), "a2 reads r1");
+        // Nothing chosen yet, or nothing to ask.
+        assert_eq!(on.want_label(Some(&t), "---", "---"), "---");
+        assert_eq!(on.want_label(None, "a1", "a1 reads r1"), "a1 reads r1");
+    }
+
+    #[test]
+    fn the_subtitle_names_the_want_as_it_is_given() {
+        let t = tracker();
+        let off = ViewOptions::default();
+        let on = ViewOptions {
+            mark_bound: true,
+            ..off
+        };
+        let subtitle = |o: ViewOptions| {
+            focus_subtitle(
+                "a1",
+                &o.want_label(Some(&t), "a1", "a1 reads r1"),
+                &o.describe(),
+                "now",
+            )
+        };
+        // Off, the text it always was.
+        assert_eq!(
+            subtitle(off),
+            format!("{} -> {} - {} - generated {}", "a1", "a1 reads r1", off.describe(), "now")
+        );
+        assert_eq!(
+            subtitle(off),
+            "a1 -> a1 reads r1 - SuperAgents folded, parallel promises bundled - generated now"
+        );
+        assert_eq!(
+            subtitle(on),
+            "a1 -> <a1> reads r1 - SuperAgents folded, parallel promises bundled, \
+             bound values marked - generated now"
+        );
     }
 }
