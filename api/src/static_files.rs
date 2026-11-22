@@ -57,9 +57,22 @@ fn is_api_path(path: &str) -> bool {
     path.starts_with("/contracts") || is_events_path(path)
 }
 
+/// Nothing is served under `/api`: the endpoints sit at the root. In dev mode
+/// such a path must not go to Trunk, because a Trunk rule proxying `/api/`
+/// back here would have the two servers hand the request to each other until
+/// one gives up.
+fn is_unserved_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
+/// Paths that are answered here in dev mode, never handed to Trunk.
+fn is_kept_from_dev_proxy(path: &str) -> bool {
+    is_events_path(path) || is_unserved_api_path(path)
+}
+
 /// Handler for serving static files or proxying to Trunk dev server
 pub async fn serve_static_or_proxy(uri: Uri, dev_mode: bool, dev_server_url: &str) -> Response {
-    if dev_mode && is_events_path(uri.path()) {
+    if dev_mode && is_kept_from_dev_proxy(uri.path()) {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::from("Not Found"))
@@ -143,5 +156,29 @@ async fn proxy_to_dev_server(uri: &Uri, dev_server_url: &str) -> Response {
                 .body(Body::from(format!("Dev server unreachable: {}", e)))
                 .unwrap()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_and_events_paths_are_kept_from_the_dev_proxy() {
+        for path in ["/api", "/api/", "/api/rooms/x", "/events", "/events/x"] {
+            assert!(is_kept_from_dev_proxy(path), "{}", path);
+        }
+        // the app itself, and names that merely start the same way
+        for path in ["/", "/index.html", "/apiary", "/eventsource.js", "/contracts/a.yaml"] {
+            assert!(!is_kept_from_dev_proxy(path), "{}", path);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_api_path_in_dev_mode_is_not_found_without_asking_the_dev_server() {
+        // Nothing listens here; reaching for it would be a 502, not a 404.
+        let uri: Uri = "/api/anything".parse().unwrap();
+        let response = serve_static_or_proxy(uri, true, "http://127.0.0.1:9").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
