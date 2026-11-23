@@ -931,13 +931,6 @@
                     saved.selected.forEach(id => cy.getElementById(id).select());
                 }
 
-                cy.on('tap', 'node', evt => {
-                    const n = evt.target;
-                    if (n.isParent()) return;
-                    const closure = n.closedNeighborhood().union(n.successors()).union(n.predecessors());
-                    cy.elements().addClass('dimmed').removeClass('highlighted');
-                    closure.removeClass('dimmed').addClass('highlighted');
-                });
                 cy.on('tap', 'edge', evt => {
                     const d = evt.target.data();
                     if (d.bundled) {
@@ -1223,11 +1216,11 @@
          * One graph panel as a standalone page.
          *
          * The page carries a working copy of the runtime above, so it behaves
-         * like the live view - dagre layout, node highlighting, background
-         * reset, bundle expansion, the status strip, refit on resize - without
-         * reaching back into the app. It is built with navigate: false, which
-         * is what drops the edge-tap jump to the Detailed view, the one thing
-         * a page holding a single view cannot honour.
+         * like the live view - dagre layout, background reset, bundle
+         * expansion, the status strip, refit on resize - without reaching back
+         * into the app. It is built with navigate: false, which is what drops
+         * the edge-tap jump to the Detailed view, the one thing a page holding
+         * a single view cannot honour.
          *
          * meta: { title, subtitle, unsatisfied: [{ agent, behavior, label? }] }
          */
