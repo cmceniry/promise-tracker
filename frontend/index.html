@@ -1070,7 +1070,14 @@
                     .map(n => n.id());
             }
 
-            return { create, destroy, reset, focus, refit, snapshot, selected };
+            // Drop the selection once it has been used, so the graph that
+            // replaces this one does not carry it over.
+            function unselect(containerId) {
+                const g = activeGraphs.get(containerId);
+                if (g) g.cy.nodes(':selected').unselect();
+            }
+
+            return { create, destroy, reset, focus, refit, snapshot, selected, unselect };
         }
 
         const RT = promiseGraphRuntime({ navigate: true });
@@ -1080,6 +1087,7 @@
         window.focus_promise_graph = RT.focus;
         window.refit_promise_graph = RT.refit;
         window.selected_promise_graph_nodes = RT.selected;
+        window.unselect_promise_graph_nodes = RT.unselect;
 
         // Connectors for the Trace view: arrows between the cards of a trail,
         // drawn into an SVG laid over the columns. Positions are measured

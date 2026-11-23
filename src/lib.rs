@@ -1862,6 +1862,64 @@ mod tests {
         );
     }
 
+    /// An agent may sit in two collectives. Folded, each collective carries
+    /// it whole and stands for it; unfolded, it stands once on its own.
+    #[test]
+    fn test_agent_in_two_superagents() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("m").with_provides(vec![Behavior::build("b")]));
+        t.add_agent(Agent::build("x").with_provides(vec![Behavior::build("bx")]));
+        t.add_agent(Agent::build("c").with_wants(vec![Behavior::build("b")]));
+        t.add_superagent(
+            SuperAgent::new(String::from("sa1"))
+                .with_agent("m")
+                .with_agent("x"),
+        );
+        t.add_superagent(SuperAgent::new(String::from("sa2")).with_agent("m"));
+
+        let mut working = t.get_working_agent_names();
+        working.sort();
+        assert_eq!(working, vec!["c", "sa1", "sa2"]);
+        assert_eq!(
+            t.resolve("b"),
+            Resolution::new("b")
+                .add_satisfying_offer(Offer::new("sa1"))
+                .add_satisfying_offer(Offer::new("sa2"))
+        );
+        assert_eq!(t.folding_collectives("m"), vec!["sa1", "sa2"]);
+
+        t.set_fold_collectives(false);
+        let mut working = t.get_working_agent_names();
+        working.sort();
+        assert_eq!(working, vec!["c", "m", "x"]);
+        assert_eq!(
+            t.resolve("b"),
+            Resolution::new("b").add_satisfying_offer(Offer::new("m"))
+        );
+    }
+
+    /// A collective that lists an instance by name does not take it in:
+    /// members are looked up among collectives and plain agents only. Folded,
+    /// the collective carries nothing of the instance and the instance still
+    /// stands on its own, so the UI does not offer to build one.
+    #[test]
+    fn test_instance_as_superagent_member_is_not_folded_in() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("base").with_provides(vec![Behavior::build("b")]));
+        t.add_agent(Agent::build("c").with_wants(vec![Behavior::build("b")]));
+        t.add_instance(Instance::new("i1", "Agent/base"));
+        t.add_superagent(SuperAgent::new(String::from("sa")).with_agent("i1"));
+
+        let mut working = t.get_working_agent_names();
+        working.sort();
+        assert_eq!(working, vec!["c", "i1", "sa"]);
+        assert_eq!(t.get_agent_provides("sa"), Some(HashSet::new()));
+        assert_eq!(
+            t.resolve("b"),
+            Resolution::new("b").add_satisfying_offer(Offer::new("i1"))
+        );
+    }
+
     #[test]
     fn test_resolve_parameterized_promise() {
         let mut t = Tracker::new();

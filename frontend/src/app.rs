@@ -152,6 +152,11 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    // New cards made from the graph side, e.g. a SuperAgent from a selection
+    let add_contract = Callback::new(move |contract: Contract| {
+        set_contracts.update(|c| c.push(contract));
+    });
+
     view! {
         <div class="App">
             <div class="container-fluid">
@@ -170,6 +175,7 @@ pub fn App() -> impl IntoView {
                             ready=follow.ready
                             on_add_simulation=Callback::new(add_simulation)
                             on_remove_simulation=Callback::new(remove_simulation)
+                            on_add_contract=add_contract
                         />
                     </div>
                 </div>

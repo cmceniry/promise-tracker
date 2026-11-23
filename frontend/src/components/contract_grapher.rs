@@ -11,6 +11,8 @@ use std::rc::Rc;
 
 use crate::follow::{blocks_graph, in_graph};
 use crate::models::Contract;
+use crate::utils::generate_unique_random_filename;
+use crate::utils::superagent::{declared_names, instance_names, superagent_from};
 
 // Import real components
 use super::contract_graph::ContractGraph;
@@ -83,6 +85,8 @@ pub fn ContractGrapher(
     ready: Signal<bool>,
     on_add_simulation: Callback<()>,
     on_remove_simulation: Callback<()>,
+    /// Adds a new contract card
+    on_add_contract: Callback<Contract>,
 ) -> impl IntoView {
     // Active tab state
     let (active_view, set_active_view) = signal("overview".to_string());
@@ -123,6 +127,36 @@ pub fn ContractGrapher(
             groups: groups.get(),
         }
     });
+
+    // A SuperAgent card made from an overview selection. Members are checked
+    // against what that simulation declares, since that is what drew them;
+    // the name stays clear of every card's names, so turning the new card on
+    // in another simulation does not collide either.
+    let on_superagent_from = Callback::new(
+        move |(sim, members): (String, Vec<String>)| -> Result<(), String> {
+            let current = contracts.get_untracked();
+            let sim_items: Vec<Item> = current
+                .iter()
+                .filter(|c| in_graph(c) && c.sims.contains(&sim))
+                .flat_map(|c| graphable_items(&c.content))
+                .collect();
+            let all_items: Vec<Item> = current
+                .iter()
+                .flat_map(|c| graphable_items(&c.content))
+                .collect();
+            let (_, content) = superagent_from(
+                &members,
+                &instance_names(&sim_items),
+                &declared_names(&all_items),
+                &mut js_sys::Math::random,
+            )?;
+            let mut contract =
+                Contract::new(generate_unique_random_filename(&current, 100), content);
+            contract.sims.insert(sim);
+            on_add_contract.run(contract);
+            Ok(())
+        },
+    );
 
     // Selected component and behavior for detailed view
     let (d_component, set_d_component) = signal("---".to_string());
@@ -452,6 +486,7 @@ pub fn ContractGrapher(
                                                 groups=groups
                                                 on_groups_change=on_groups_change
                                                 sim_label=sim_for_graph.clone()
+                                                on_superagent_from=on_superagent_from
                                                 on_edge_select=on_edge_select
                                             />
                                         </div>

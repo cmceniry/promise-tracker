@@ -41,6 +41,9 @@ extern "C" {
 
     #[wasm_bindgen(js_name = selected_promise_graph_nodes)]
     fn js_selected_promise_graph_nodes(container_id: &str) -> JsValue;
+
+    #[wasm_bindgen(js_name = unselect_promise_graph_nodes)]
+    fn js_unselect_promise_graph_nodes(container_id: &str);
 }
 
 /// Legend for the promise graph
@@ -143,6 +146,9 @@ pub fn PromiseGraphView(
     on_groups_change: Callback<Vec<GroupSpec>>,
     /// Which simulation this panel belongs to, for the export's header
     sim_label: String,
+    /// Adds a SuperAgent card of the given members, active in the given
+    /// simulation; an error says why it was not made
+    on_superagent_from: Callback<(String, Vec<String>), Result<(), String>>,
     #[prop(optional)] on_edge_select: Option<Callback<(String, String)>>,
 ) -> impl IntoView {
     // Generate a unique container ID for this instance
@@ -155,6 +161,7 @@ pub fn PromiseGraphView(
     let container_id_for_export = container_id.clone();
     let container_id_for_refit = container_id.clone();
     let container_id_for_group = container_id.clone();
+    let container_id_for_superagent = container_id.clone();
 
     // Make a group of whatever is selected on the canvas. The name comes
     // from a prompt: one question, no form to build for a scratch grouping.
@@ -201,6 +208,30 @@ pub fn PromiseGraphView(
             folded: false,
         });
         on_groups_change.run(next);
+    });
+
+    // Write the selection down as a contract: a new card listing the
+    // selected nodes as a SuperAgent, active only in this panel's simulation
+    // so the others are left as they were.
+    let sim_for_superagent = sim_label.clone();
+    let make_superagent = Callback::new(move |_: ()| {
+        let selected: Vec<String> = serde_wasm_bindgen::from_value(
+            js_selected_promise_graph_nodes(&container_id_for_superagent),
+        )
+        .unwrap_or_default();
+        let win = web_sys::window().expect("no global window exists");
+        if selected.is_empty() {
+            let _ = win.alert_with_message(
+                "Click the nodes for the SuperAgent first. Each click adds one; click the background to clear.",
+            );
+            return;
+        }
+        match on_superagent_from.run((sim_for_superagent.clone(), selected)) {
+            Ok(()) => js_unselect_promise_graph_nodes(&container_id_for_superagent),
+            Err(e) => {
+                let _ = win.alert_with_message(&e);
+            }
+        }
     });
 
     // The tree walk is the expensive half. Of the display options only
@@ -409,6 +440,14 @@ pub fn PromiseGraphView(
                         on:click=move |_| make_group.run(())
                     >
                         "Group selected"
+                    </button>
+                    <button
+                        class="btn btn-sm btn-outline-primary"
+                        style="flex-shrink: 0;"
+                        title="Add a contract card declaring the selected nodes as a new SuperAgent, active in this simulation only. Click nodes to select them."
+                        on:click=move |_| make_superagent.run(())
+                    >
+                        "SuperAgent from selected"
                     </button>
                     <button
                         class="btn btn-sm btn-outline-secondary"

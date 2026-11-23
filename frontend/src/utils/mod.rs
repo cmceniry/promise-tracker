@@ -3,6 +3,7 @@ pub mod diff;
 pub mod download;
 pub mod export;
 pub mod search;
+pub mod superagent;
 pub mod validation;
 
 pub use api::{fetch_server_contract, push_contract_to_server};

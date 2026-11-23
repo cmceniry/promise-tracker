@@ -65,15 +65,10 @@ pub fn validate_filename(filename: &str) -> Option<String> {
 
 /// Generates a random 8-character lowercase alphabetic filename with ".yaml" suffix
 pub fn generate_random_filename() -> String {
-    use js_sys::Math;
-    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
-    let mut result = String::with_capacity(13); // 8 chars + ".yaml"
-    for _ in 0..8 {
-        let idx = (Math::random() * CHARS.len() as f64) as usize;
-        result.push(CHARS[idx] as char);
-    }
-    result.push_str(".yaml");
-    result
+    format!(
+        "{}.yaml",
+        super::superagent::random_name(&mut js_sys::Math::random)
+    )
 }
 
 /// Generates a unique random filename by checking against existing contracts
