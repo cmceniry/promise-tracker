@@ -137,11 +137,19 @@ Key concepts:
   variable must be in the promise name or in `forSome`. Values are found by
   two-sided matching against promises outright or parameterized
   (`Pattern::unify`; with variables on both sides the wording must
-  correspond). A variable used by two or more conditions gives one offer per
-  candidate value; one used by a single condition makes that condition one
-  row gathering every match. Resolution stays concrete. A declared variable
-  only a holds-for-any promise answers is invalid (`validate`). The old
-  `{{?x}}` is a validation error that spells out this rewrite. See
+  correspond; known limit: a segment of hand-written value and separators,
+  like `{{app}}/east`, is wording, so the other side's variable cannot take
+  `east` from it; write such a value through `{{!self}}` or an Instance
+  binding). Conditions tied together by a shared variable form a group,
+  read once per candidate value set; a promise's offers are one reading of
+  each independent group, so with one group that is one offer per candidate,
+  and with several the groups combine. A variable used by a single condition
+  makes that condition one row gathering every match. Resolution stays
+  concrete. Readings are capped at 256 per group (`MAX_CONDITION_READINGS`);
+  when the cap leaves a reading unresolved, the unsatisfied report says so
+  first (`CauseKind::CutShort`). A declared variable only a holds-for-any
+  promise answers is invalid (`validate`). The old `{{?x}}` is a validation
+  error that spells out the rewrite. See
   `docs/design/self-and-open-variables.md` §3, §5
 
 ## Technology Stack

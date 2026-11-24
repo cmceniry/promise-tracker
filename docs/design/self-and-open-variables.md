@@ -400,19 +400,42 @@ Per document (`src/validate.rs`):
 
 ### Determinism and termination
 
-Offers keep today's order: agents by name, then declaration order. The
-search uses resolution's two guards: an in-progress stack, compared with
-variables renamed so that the same question under different variable names
-is recognized, and the depth cap (`MAX_RESOLVE_DEPTH`, 64). Readings are
-capped at 256 (`MAX_CONDITION_READINGS`) per group of conditions tied
-together by shared variables, and so are the offers one promise makes for a
-goal; gathered rows have no cap. Variables no condition ties together are
-read independently and do not multiply against the cap; offers combine each
-group's readings with those that hold first, so the cap never drops a kept
-combination while keeping one that is not. Which readings the cap keeps
-does not depend on condition order. When it drops any, the goal's
-resolution says so (`Resolution::is_cut_short`) and the unsatisfied report
-gives that first (`CauseKind::CutShort`).
+Offers keep today's order between promises: agents by name, then
+declaration order. The search uses resolution's two guards: an in-progress
+stack, compared with variables renamed so that the same question under
+different variable names is recognized, and the depth cap
+(`MAX_RESOLVE_DEPTH`, 64).
+
+The cap:
+
+- A promise's conditions are split into groups tied together by shared
+  declared variables. Variables no condition ties together are read
+  independently and never multiply against the cap.
+- Each group's complete readings are capped at 256
+  (`MAX_CONDITION_READINGS`); the partial readings explored on the way, at
+  16 times that. Which readings a group keeps depends only on what they
+  read: readings are taken nearest to complete first, then in the order of
+  their conditions' text with the values filled in, sorted, every variable
+  still open written alike. It does not depend on condition order or on
+  what a variable is called, so renaming one, as folding does on a clash,
+  changes nothing. (Values only break ties between readings that read the
+  same, and so make the same offer.)
+- The offers one promise makes are combinations of one reading per group,
+  every combination of holding readings first, at most 256. Leaving the
+  rest out of the offers shown changes nothing: the promise is kept exactly
+  when every group has a reading that holds, and then a kept combination is
+  shown.
+- "Cut short" means a reading that could have changed the answer was never
+  resolved: a group had more than 256 complete readings, or more partial
+  ones than its cap. Then the goal's resolution says so
+  (`Resolution::is_cut_short`), as does a gathered row standing for that
+  goal, and the unsatisfied report gives `CauseKind::CutShort` first for
+  that behavior (`check-unsatisfied --summary`, the Inventory). Leaving
+  combinations out of the offers shown is not cutting short.
+- Offers within one promise come in the order of their readings, so they
+  are ordered by what the readings read, not by value.
+- A promise that declares no variables takes the path it always did: one
+  reading, nothing grouped or searched.
 
 ### SuperAgent reduction
 
@@ -467,12 +490,18 @@ command.
   every condition mentioning a missing variable proposes
   (`Tracker::search`), extends partial readings until complete and drops
   the ones that cannot be. It explores nearest-to-complete first, then by
-  value, taking each reading's proposals sorted, so the outcome under the
-  cap is the same in any condition order; complete readings count towards
+  its conditions' text with the values filled in (sorted, open variables
+  written alike, `unnamed_text`), taking each reading's proposals in that
+  order, so the outcome under the cap is the same in any condition order and
+  under any variable names; complete readings count towards
   `MAX_CONDITION_READINGS`, partial ones towards a cap 16 times that.
   `resolve_readings` resolves each group's readings, puts those that hold
   first, and builds the offers as combinations, every combination of
-  holding readings before the rest, at most `MAX_CONDITION_READINGS`. Each
+  holding readings before the rest, at most `MAX_CONDITION_READINGS`; only
+  a group's own cut sets `cut_short`. A promise with nothing declared skips
+  all of this (`Tracker::readings`) and its one reading is moved, not copied,
+  into its offer; `reduce_one` and `Behavior::instantiate` likewise do no
+  extra work when nothing is declared. Each
   reading's
   conditions are `ConditionGoal::Goal` once concrete, `Gathered` while still
   holding unshared declared variables, `Unbound` otherwise (nothing found,

@@ -141,12 +141,14 @@ pub enum CauseKind {
     /// Someone promises it, but only by way of itself: the promise sits on a
     /// dependency loop (or a chain too deep to follow) and so keeps nothing.
     Cycle,
+    /// A promise for the behavior had more readings than the cap
+    /// ([`crate::MAX_CONDITION_READINGS`]), and a reading that could have
+    /// changed the answer was never resolved: the behavior may be kept by
+    /// one that was not tried. Reported for the behavior whose promise was
+    /// cut, or for a gathered row standing for it.
+    CutShort,
     /// A condition still holding a declared (`forSome`) variable that no
     /// promise names a value for.
-    /// A promise for the behavior had more readings than the cap
-    /// ([`crate::MAX_CONDITION_READINGS`]), so not every one was tried: the
-    /// behavior may be kept by one that was not.
-    CutShort,
     Unfound {
         /// The variables nothing names a value for, in name order.
         variables: Vec<String>,
