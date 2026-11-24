@@ -1,7 +1,7 @@
 use clap::Parser;
 use promise_tracker::query::{self, Cause, CauseKind, QueryOptions};
 use promise_tracker::resolve::Resolution;
-use promise_tracker::Tracker;
+use promise_tracker::{HoldsForAny, Tracker};
 use std::collections::BTreeSet;
 
 #[derive(Parser)]
@@ -108,7 +108,7 @@ fn causes(causes: &[Cause]) -> String {
             Some((_, _, _, agents)) => agents.extend(agent),
             None => grouped.push((
                 &cause.behavior,
-                cause.kind,
+                cause.kind.clone(),
                 provide,
                 agent.into_iter().collect(),
             )),
@@ -120,11 +120,15 @@ fn causes(causes: &[Cause]) -> String {
             let what = match kind {
                 // An open variable only finds behaviors promised outright,
                 // which is worth saying where it found nothing.
-                CauseKind::Unprovided if behavior.contains("{{?") => {
-                    "matches nothing promised outright (parameterized promises are not considered)"
-                }
-                CauseKind::Unprovided => "is not provided",
-                CauseKind::Cycle => "is only provided through a dependency loop",
+                CauseKind::Unprovided if behavior.contains("{{?") => String::from(
+                    "matches nothing promised outright (parameterized promises are not considered)",
+                ),
+                CauseKind::Unprovided => String::from("is not provided"),
+                CauseKind::Cycle => String::from("is only provided through a dependency loop"),
+                CauseKind::Unfound {
+                    variables,
+                    holds_for_any,
+                } => unfound(&variables, &holds_for_any),
             };
             match provide {
                 None => format!("{} {}", behavior, what),
@@ -139,6 +143,24 @@ fn causes(causes: &[Cause]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// `finds no value for `kc``, and when only promises holding for any value
+/// answered, which ones.
+fn unfound(variables: &[String], holds_for_any: &[HoldsForAny]) -> String {
+    let variables: Vec<String> = variables.iter().map(|v| format!("`{}`", v)).collect();
+    let mut what = format!("finds no value for {}", variables.join(", "));
+    if !holds_for_any.is_empty() {
+        let holders: Vec<String> = holds_for_any
+            .iter()
+            .map(|h| format!("{}'s `{}`", h.agent, h.promise))
+            .collect();
+        what.push_str(&format!(
+            ": only {} answered, holding for any value",
+            holders.join(" and ")
+        ));
+    }
+    what
 }
 
 #[cfg(test)]
@@ -174,6 +196,43 @@ mod tests {
 
     fn c() -> Resolution {
         Resolution::new("c").add_satisfying_offer(Offer::new("cprov"))
+    }
+
+    #[test]
+    fn a_cause_names_the_variable_and_what_held_for_any_value() {
+        let site = |agent: &str| {
+            Some(query::CauseSite {
+                agent: agent.into(),
+                provide: "web is served".into(),
+            })
+        };
+        let line = causes(&[
+            Cause {
+                behavior: "web runs on {{node}}".into(),
+                kind: CauseKind::Unfound {
+                    variables: vec!["node".into()],
+                    holds_for_any: vec![HoldsForAny {
+                        variable: "node".into(),
+                        agent: "host".into(),
+                        promise: "{{app}} runs on {{node}}".into(),
+                    }],
+                },
+                needed_by: site("op"),
+            },
+            Cause {
+                behavior: "{{node}} serves web".into(),
+                kind: CauseKind::Unfound {
+                    variables: vec!["node".into()],
+                    holds_for_any: vec![],
+                },
+                needed_by: site("op"),
+            },
+        ]);
+        assert_eq!(
+            line,
+            "web runs on {{node}} finds no value for `node`: only host's `{{app}} runs on {{node}}` answered, holding for any value (condition of web is served by op); \
+             {{node}} serves web finds no value for `node` (condition of web is served by op)"
+        );
     }
 
     #[test]

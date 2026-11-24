@@ -476,6 +476,18 @@ command.
   holds for any. Its `Display` is the message. CLI `validate` reports it with
   the other tracker-level checks; that is the only place those are reported
   (the API and the editor run the per-document pass only).
+- Failure reporting: `src/query.rs` `leaf_causes` reports a condition row
+  still holding a declared variable, with no offers, as
+  `CauseKind::Unfound { variables, holds_for_any }`: the variables the
+  search names no value for, and the promises that answered them while
+  holding for any value (empty when nothing answered). Every such row of a
+  reading is a cause; there is no binder to prefer. A row whose variables
+  were all named but kept nothing is a `Cycle`. CLI `check-unsatisfied
+  --summary` prints `… finds no value for `kc`: only B's `…` answered,
+  holding for any value`; the Inventory's Unsatisfied tab says `no value
+  found for `kc`; only B's `…` answers, for any value`. `CauseKind` is no
+  longer `Copy` (the new variant carries data), and `Cause` keeps its
+  fields, so existing literals still build.
 - `Tracker::resolve_conditions(conditions, declared)` takes the promise's
   declared names, for `src/query.rs`, whose `Resolver::conditions` now
   takes the promise.

@@ -31,7 +31,7 @@
 
 use crate::components::{Behavior, Pattern};
 use crate::resolve::Resolution;
-use crate::Tracker;
+use crate::{HoldsForAny, Tracker};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -133,7 +133,7 @@ pub struct BehaviorUse {
 }
 
 /// Why a want fails, at the bottom of the chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CauseKind {
     /// Nobody promises the behavior.
@@ -141,6 +141,15 @@ pub enum CauseKind {
     /// Someone promises it, but only by way of itself: the promise sits on a
     /// dependency loop (or a chain too deep to follow) and so keeps nothing.
     Cycle,
+    /// A condition still holding a declared (`forSome`) variable that no
+    /// promise names a value for.
+    Unfound {
+        /// The variables nothing names a value for, in name order.
+        variables: Vec<String>,
+        /// The promises that answered them while holding for any value of
+        /// them. Empty when nothing answered at all.
+        holds_for_any: Vec<HoldsForAny>,
+    },
 }
 
 /// Where a failing condition sits: the promise that needs it.
@@ -422,6 +431,42 @@ fn leaf_causes(
     let behavior = resolution.get_behavior_name();
     let offers = resolution.get_unsatisfying_offers();
     if offers.is_empty() && resolution.get_satisfying_offers().is_empty() {
+        // A condition still holding a declared variable: say which variable
+        // nothing named a value for.
+        let pattern = Pattern::parse_lossy(behavior);
+        if needed_by.is_some() && !pattern.is_ground() && !pattern.has_open() {
+            let found = tracker.propose(behavior);
+            let unnamed: Vec<String> = pattern
+                .vars()
+                .into_iter()
+                .filter(|v| !found.names(v))
+                .map(str::to_string)
+                .collect();
+            let complete = found.values.iter().any(|v| v.len() == pattern.vars().len());
+            out.insert(if unnamed.is_empty() || complete {
+                // Values were named; whatever keeps them is only reached
+                // through a loop.
+                Cause {
+                    behavior: behavior.to_string(),
+                    kind: CauseKind::Cycle,
+                    needed_by,
+                }
+            } else {
+                Cause {
+                    behavior: behavior.to_string(),
+                    kind: CauseKind::Unfound {
+                        holds_for_any: unnamed
+                            .iter()
+                            .flat_map(|v| found.holding_for_any(v))
+                            .cloned()
+                            .collect(),
+                        variables: unnamed,
+                    },
+                    needed_by,
+                }
+            });
+            return;
+        }
         out.insert(Cause {
             behavior: behavior.to_string(),
             kind: if tracker.has_provider(behavior) {
@@ -434,14 +479,18 @@ fn leaf_causes(
         return;
     }
     for offer in offers {
-        // A condition still waiting on a value a sibling was to find is not
-        // itself a cause: the sibling that found nothing is.
+        // A condition still waiting on a value a `{{?x}}` sibling was to
+        // find is not itself a cause: the sibling that found nothing is.
+        let conditions = offer.get_resolved_conditions();
+        let opens = conditions
+            .iter()
+            .any(|c| Pattern::parse_lossy(c.get_behavior_name()).has_open());
         let waiting = |c: &Resolution| {
-            c.get_satisfying_offers().is_empty()
+            opens
+                && c.get_satisfying_offers().is_empty()
                 && c.get_unsatisfying_offers().is_empty()
                 && Pattern::parse_lossy(c.get_behavior_name()).needs_binding()
         };
-        let conditions = offer.get_resolved_conditions();
         let other_cause = conditions
             .iter()
             .any(|c| !c.is_satisfied() && !waiting(c));
@@ -849,6 +898,106 @@ mod tests {
     }
 
     // --- Agents -----------------------------------------------------------
+
+    /// `op` serves an app on some `node` it runs on and that serves it.
+    /// (The names end in literal text: matched two-sided, a condition that
+    /// ends in a variable also meets any promise that starts with one, like
+    /// `{{app}} is served`.)
+    fn serving(with_host: bool) -> Tracker {
+        let mut agents = vec![
+            agent("w", vec![b("web is built")], &["web is served"]),
+            agent(
+                "op",
+                vec![bc("{{app}} is served", &["{{app}} runs on {{node}} node", "{{node}} node serves {{app}}"])
+                    .with_for_some(vec!["node".into()])],
+                &[],
+            ),
+        ];
+        if with_host {
+            agents.push(agent(
+                "host",
+                vec![bc("{{app}} runs on {{node}} node", &["{{app}} is built"])],
+                &[],
+            ));
+        }
+        tracker(agents)
+    }
+
+    #[test]
+    fn a_cause_names_the_variable_nothing_found_a_value_for() {
+        let site = Some(CauseSite {
+            agent: "op".into(),
+            provide: "web is served".into(),
+        });
+        // host's promise holds for any node, and nothing names one
+        assert_eq!(
+            unsatisfied(&serving(true), PLAIN),
+            vec![UnsatisfiedRow {
+                agents: names(&["w"]),
+                behavior: "web is served".into(),
+                causes: vec![
+                    Cause {
+                        behavior: "web runs on {{node}} node".into(),
+                        kind: CauseKind::Unfound {
+                            variables: names(&["node"]),
+                            holds_for_any: vec![crate::HoldsForAny {
+                                variable: "node".into(),
+                                agent: "host".into(),
+                                promise: "{{app}} runs on {{node}} node".into(),
+                            }],
+                        },
+                        needed_by: site.clone(),
+                    },
+                    Cause {
+                        behavior: "{{node}} node serves web".into(),
+                        kind: CauseKind::Unfound {
+                            variables: names(&["node"]),
+                            holds_for_any: vec![],
+                        },
+                        needed_by: site.clone(),
+                    },
+                ]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            }]
+        );
+        // nothing answers at all: the same, with no promise holding for any
+        let rows = unsatisfied(&serving(false), PLAIN);
+        assert!(rows[0].causes.iter().all(|c| matches!(
+            &c.kind,
+            CauseKind::Unfound { variables, holds_for_any }
+                if variables == &names(&["node"]) && holds_for_any.is_empty()
+        )));
+    }
+
+    #[test]
+    fn a_gathered_row_nothing_answers_is_a_cause_naming_its_variable() {
+        let t = tracker(vec![agent(
+            "op",
+            vec![bc("configured", &["{{doc}} shows usage"]).with_for_some(vec!["doc".into()])],
+            &["configured"],
+        )]);
+        let rows = unsatisfied(&t, PLAIN);
+        assert_eq!(
+            rows[0].causes,
+            vec![Cause {
+                behavior: "{{doc}} shows usage".into(),
+                kind: CauseKind::Unfound {
+                    variables: names(&["doc"]),
+                    holds_for_any: vec![],
+                },
+                needed_by: Some(CauseSite {
+                    agent: "op".into(),
+                    provide: "configured".into(),
+                }),
+            }]
+        );
+        // and it serializes with the variable
+        let json = serde_json::to_string(&rows[0].causes[0].kind).unwrap();
+        assert_eq!(json, r#"{"unfound":{"variables":["doc"],"holds_for_any":[]}}"#);
+    }
 
     #[test]
     fn agent_provides_lists_conditions_held_and_broken() {

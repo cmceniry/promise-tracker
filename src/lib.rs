@@ -1374,7 +1374,9 @@ pub struct Proposals {
 /// A promise that answers one of a goal's variables while none of its own
 /// conditions says anything about that value: it holds for any value, so it
 /// proposes nothing, and accepts whatever something else proposes.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct HoldsForAny {
     /// The goal's variable.
     pub variable: String,

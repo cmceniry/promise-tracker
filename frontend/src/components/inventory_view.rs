@@ -1052,9 +1052,28 @@ fn unsatisfied_list(panel: Panel, rows: Vec<UnsatisfiedRow>) -> AnyView {
                 .causes
                 .into_iter()
                 .map(|c| {
-                    let why = match c.kind {
-                        CauseKind::Unprovided => "nobody provides it",
-                        CauseKind::Cycle => "only promised through a loop",
+                    let why = match &c.kind {
+                        CauseKind::Unprovided => String::from("nobody provides it"),
+                        CauseKind::Cycle => String::from("only promised through a loop"),
+                        CauseKind::Unfound {
+                            variables,
+                            holds_for_any,
+                        } => {
+                            let variables: Vec<String> =
+                                variables.iter().map(|v| format!("`{}`", v)).collect();
+                            let mut why = format!("no value found for {}", variables.join(", "));
+                            if !holds_for_any.is_empty() {
+                                let holders: Vec<String> = holds_for_any
+                                    .iter()
+                                    .map(|h| format!("{}'s `{}`", h.agent, h.promise))
+                                    .collect();
+                                why.push_str(&format!(
+                                    "; only {} answers, for any value",
+                                    holders.join(" and ")
+                                ));
+                            }
+                            why
+                        }
                     };
                     // The cause as whoever needs it has it: the promise it
                     // is a condition of, or the wanters themselves.
