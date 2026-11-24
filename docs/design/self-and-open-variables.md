@@ -468,6 +468,14 @@ command.
   and the promises that held for any value (`HoldsForAny`). Its stack holds
   canonical goals; an answer not cut short is memoized by canonical text for
   the length of one call. Empty proposals are dropped.
+- The invalid check is `Tracker::unnamable_variables()`, beside
+  `non_ground_wants` and `dangling_instance_bases`: for each declared
+  variable, the search runs on every condition using it as written (the
+  promise name's variables open too, so a value named for any asker counts),
+  and the variable is listed when nothing names a value and some promise
+  holds for any. Its `Display` is the message. CLI `validate` reports it with
+  the other tracker-level checks; that is the only place those are reported
+  (the API and the editor run the per-document pass only).
 - `Tracker::resolve_conditions(conditions, declared)` takes the promise's
   declared names, for `src/query.rs`, whose `Resolver::conditions` now
   takes the promise.
@@ -479,7 +487,11 @@ Consequences of pooling, kept as the rules give them:
   `{{appname}} gateway is configured` (`appname = sampleapp deploys to`,
   `kc = gateway is configured`). That value is proposed too; its reading
   is an offer that is not kept, and resolving it reaches ever longer goals
-  until the depth cap. C is still the only candidate that holds.
+  until the depth cap. C is still the only candidate that holds. The same
+  text matching is why the gateway example without C is not reported as
+  invalid: `{{kc}} deploys {{appname}} gateway`, with `appname` open, meets
+  B's `{{appname}} deploys to {{kc}}` with `appname = to`, and B's
+  condition names a value through that.
 - Two shared variables proposed by separate conditions are read in every
   combination proposed (a value for `a` from `{{a}} is ok`, one for `b` from
   `{{b}} is ok`), each its own offer.

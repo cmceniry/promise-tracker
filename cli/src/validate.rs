@@ -62,6 +62,14 @@ pub fn command(parameters: &Parameters) {
         );
     }
 
+    for unnamable in tracker.unnamable_variables() {
+        problems += 1;
+        eprintln!(
+            "{} provides `{}`: {}",
+            unnamable.agent, unnamable.promise, unnamable
+        );
+    }
+
     if problems > 0 {
         process::exit(1);
     }

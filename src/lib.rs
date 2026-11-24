@@ -479,6 +479,60 @@ impl Tracker {
         complete
     }
 
+    /// Declared (`forSome`) variables that can be anything: the only answer
+    /// is a promise that holds for any value of them, and nothing could name
+    /// one — whoever asks. Sorted, each once.
+    ///
+    /// The search runs on each condition using the variable as written, the
+    /// promise name's variables left open too, so a value something names
+    /// for any asker counts. A variable nothing answers at all is not listed:
+    /// that is an unsatisfied condition, not an invalid one.
+    ///
+    /// Like [`Tracker::non_ground_wants`], this needs every document in
+    /// play to answer.
+    pub fn unnamable_variables(&self) -> Vec<UnnamableVariable> {
+        let mut ret: Vec<UnnamableVariable> = vec![];
+        let mut memo: HashMap<String, Proposals> = HashMap::new();
+        let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
+        agent_names.sort();
+        for agent_name in agent_names {
+            for variant in &self.working_agents[agent_name] {
+                for promise in variant.provides() {
+                    for variable in promise.get_for_some() {
+                        let mut named = false;
+                        let mut holders: Vec<HoldsForAny> = vec![];
+                        for condition in promise.get_condition_patterns() {
+                            if !condition.vars().contains(variable.as_str()) {
+                                continue;
+                            }
+                            let (found, _) = self.search(condition, &mut vec![], &mut memo);
+                            named |= found.names(variable);
+                            for holder in found.holding_for_any(variable) {
+                                if !holders.contains(holder) {
+                                    holders.push(holder.clone());
+                                }
+                            }
+                        }
+                        if named || holders.is_empty() {
+                            continue;
+                        }
+                        let found = UnnamableVariable {
+                            agent: agent_name.clone(),
+                            promise: promise.get_name().clone(),
+                            variable: variable.clone(),
+                            holders,
+                        };
+                        if !ret.contains(&found) {
+                            ret.push(found);
+                        }
+                    }
+                }
+            }
+        }
+        ret.sort();
+        ret
+    }
+
     /// Instances whose `base` names nothing loaded here, as
     /// `(instance, base)` pairs.
     ///
@@ -1328,6 +1382,38 @@ pub struct HoldsForAny {
     pub agent: String,
     /// The promise, as written.
     pub promise: String,
+}
+
+/// A declared variable that can be anything ([`Tracker::unnamable_variables`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnnamableVariable {
+    /// The agent whose promise declares the variable.
+    pub agent: String,
+    /// That promise, as written.
+    pub promise: String,
+    pub variable: String,
+    /// The promises that answer it while holding for any value, in the
+    /// order found; never empty.
+    pub holders: Vec<HoldsForAny>,
+}
+
+impl std::fmt::Display for UnnamableVariable {
+    /// "`kc` can be anything: B's `{{appname}} deploys to {{kc}}` holds for
+    /// any value and nothing names one".
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let holders: Vec<String> = self
+            .holders
+            .iter()
+            .map(|h| format!("{}'s `{}`", h.agent, h.promise))
+            .collect();
+        write!(
+            f,
+            "`{}` can be anything: {} {} for any value and nothing names one",
+            self.variable,
+            holders.join(" and "),
+            if holders.len() == 1 { "holds" } else { "hold" }
+        )
+    }
 }
 
 impl Proposals {
@@ -3708,6 +3794,75 @@ provides:
         ]));
         assert_eq!(t.propose("{{x}} up"), Proposals::default());
         assert!(!t.resolve("r").is_satisfied());
+    }
+
+    /// `op` keeps `{{app}} is served` for a `node` the app runs on and that
+    /// serves it. What `host` promises for `runs on` holds for any node.
+    fn serving(serves: Option<&str>, runs_on: bool) -> Tracker {
+        let mut t = Tracker::new();
+        t.add_agent(
+            Agent::build("w")
+                .with_wants(vec![Behavior::build("web is served")])
+                .with_provides(vec![Behavior::build("web is built")]),
+        );
+        t.add_agent(Agent::build("op").with_provides(vec![Behavior::build("{{app}} is served")
+            .with_for_some(vec!["node".into()])
+            .with_conditions(vec![
+                "{{app}} runs on {{node}}".into(),
+                "{{node}} serves {{app}}".into(),
+            ])]));
+        if runs_on {
+            t.add_agent(Agent::build("host").with_provides(vec![Behavior::build(
+                "{{app}} runs on {{node}}",
+            )
+            .with_conditions(vec!["{{app}} is built".into()])]));
+        }
+        if let Some(app) = serves {
+            t.add_agent(
+                Agent::build("n1")
+                    .with_provides(vec![Behavior::build(&format!("{{{{!self}}}} serves {}", app))]),
+            );
+        }
+        t
+    }
+
+    #[test]
+    fn test_a_variable_only_a_holds_for_any_promise_answers_is_invalid() {
+        let t = serving(None, true);
+        let found = t.unnamable_variables();
+        assert_eq!(
+            found,
+            vec![UnnamableVariable {
+                agent: "op".into(),
+                promise: "{{app}} is served".into(),
+                variable: "node".into(),
+                holders: vec![HoldsForAny {
+                    variable: "node".into(),
+                    agent: "host".into(),
+                    promise: "{{app}} runs on {{node}}".into(),
+                }],
+            }]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            "`node` can be anything: host's `{{app}} runs on {{node}}` holds for any value and nothing names one"
+        );
+        assert!(!t.resolve("web is served").is_satisfied());
+
+        // Something names a value, though not for this asker: unsatisfied,
+        // not invalid.
+        let t = serving(Some("api"), true);
+        assert!(t.unnamable_variables().is_empty());
+        assert!(!t.resolve("web is served").is_satisfied());
+        // and for this one, satisfied
+        let t = serving(Some("web"), true);
+        assert!(t.unnamable_variables().is_empty());
+        assert!(t.resolve("web is served").is_satisfied());
+
+        // Nothing matches the conditions at all: unsatisfied, not invalid.
+        let t = serving(None, false);
+        assert!(t.unnamable_variables().is_empty());
+        assert!(!t.resolve("web is served").is_satisfied());
     }
 
     #[test]
