@@ -431,42 +431,6 @@ fn leaf_causes(
     let behavior = resolution.get_behavior_name();
     let offers = resolution.get_unsatisfying_offers();
     if offers.is_empty() && resolution.get_satisfying_offers().is_empty() {
-        // A condition still holding a declared variable: say which variable
-        // nothing named a value for.
-        let pattern = Pattern::parse_lossy(behavior);
-        if needed_by.is_some() && !pattern.is_ground() && !pattern.has_open() {
-            let found = tracker.propose(behavior);
-            let unnamed: Vec<String> = pattern
-                .vars()
-                .into_iter()
-                .filter(|v| !found.names(v))
-                .map(str::to_string)
-                .collect();
-            let complete = found.values.iter().any(|v| v.len() == pattern.vars().len());
-            out.insert(if unnamed.is_empty() || complete {
-                // Values were named; whatever keeps them is only reached
-                // through a loop.
-                Cause {
-                    behavior: behavior.to_string(),
-                    kind: CauseKind::Cycle,
-                    needed_by,
-                }
-            } else {
-                Cause {
-                    behavior: behavior.to_string(),
-                    kind: CauseKind::Unfound {
-                        holds_for_any: unnamed
-                            .iter()
-                            .flat_map(|v| found.holding_for_any(v))
-                            .cloned()
-                            .collect(),
-                        variables: unnamed,
-                    },
-                    needed_by,
-                }
-            });
-            return;
-        }
         out.insert(Cause {
             behavior: behavior.to_string(),
             kind: if tracker.has_provider(behavior) {
@@ -479,33 +443,110 @@ fn leaf_causes(
         return;
     }
     for offer in offers {
-        // A condition still waiting on a value a `{{?x}}` sibling was to
-        // find is not itself a cause: the sibling that found nothing is.
-        let conditions = offer.get_resolved_conditions();
-        let opens = conditions
-            .iter()
-            .any(|c| Pattern::parse_lossy(c.get_behavior_name()).has_open());
-        let waiting = |c: &Resolution| {
-            opens
-                && c.get_satisfying_offers().is_empty()
-                && c.get_unsatisfying_offers().is_empty()
-                && Pattern::parse_lossy(c.get_behavior_name()).needs_binding()
+        let site = CauseSite {
+            agent: offer.get_agent_name().to_string(),
+            // under a gathered row, the concrete promise the offer keeps
+            provide: offer.get_behavior().unwrap_or(behavior).to_string(),
         };
-        let other_cause = conditions
-            .iter()
-            .any(|c| !c.is_satisfied() && !waiting(c));
+        let conditions = offer.get_resolved_conditions();
+        let variable_causes = variable_causes(tracker, conditions, &site);
         for condition in conditions {
-            if condition.is_satisfied() || (other_cause && waiting(condition)) {
+            if condition.is_satisfied() {
                 continue;
             }
-            let site = CauseSite {
-                agent: offer.get_agent_name().to_string(),
-                // under an open goal, the concrete promise the offer keeps
-                provide: offer.get_behavior().unwrap_or(behavior).to_string(),
-            };
-            leaf_causes(tracker, condition, Some(site), out);
+            match variable_causes.get(condition.get_behavior_name()) {
+                Some(cause) => out.extend(cause.clone()),
+                None => leaf_causes(tracker, condition, Some(site.clone()), out),
+            }
         }
     }
+}
+
+/// The causes among one offer's conditions that still hold a declared
+/// variable and kept nothing, by condition; `None` for one that is not a
+/// cause.
+///
+/// - A row whose variables something names no value for is
+///   [`CauseKind::Unfound`], naming them, with the promises that held for
+///   any value of them.
+/// - A row sharing a variable with a sibling row was never resolved: no
+///   reading of the promise was completed. If something names a value for
+///   each of its variables it is waiting on a sibling, and not a cause while
+///   a sibling is one; with no such sibling it is `Unfound` for all its
+///   variables, because no set of values fills them together.
+/// - A gathered row (its variables its own) whose variables are named in
+///   full was resolved: every name it could stand for is promised, yet none
+///   answered with an offer. That happens only when resolution was cut
+///   short on the way, by a loop or the depth cap, so it is
+///   [`CauseKind::Cycle`]. Named in part only, it is `Unfound` for all its
+///   variables.
+fn variable_causes(
+    tracker: &Tracker,
+    conditions: &[Resolution],
+    site: &CauseSite,
+) -> BTreeMap<String, Option<Cause>> {
+    let rows: Vec<(&str, Pattern)> = conditions
+        .iter()
+        .filter(|c| {
+            c.get_satisfying_offers().is_empty() && c.get_unsatisfying_offers().is_empty()
+        })
+        .map(|c| (c.get_behavior_name(), Pattern::parse_lossy(c.get_behavior_name())))
+        .filter(|(_, p)| !p.is_ground())
+        .collect();
+    let cause = |behavior: &str, kind: CauseKind| Cause {
+        behavior: behavior.to_string(),
+        kind,
+        needed_by: Some(site.clone()),
+    };
+    let mut ret: BTreeMap<String, Option<Cause>> = BTreeMap::new();
+    let mut waiting: Vec<(&str, Vec<String>)> = vec![];
+    for (i, (behavior, pattern)) in rows.iter().enumerate() {
+        let vars: Vec<String> = pattern.vars().into_iter().map(str::to_string).collect();
+        let found = tracker.propose(behavior);
+        let unnamed: Vec<String> = vars.iter().filter(|v| !found.names(v)).cloned().collect();
+        if !unnamed.is_empty() {
+            let holds_for_any = unnamed
+                .iter()
+                .flat_map(|v| found.holding_for_any(v))
+                .cloned()
+                .collect();
+            ret.insert(
+                behavior.to_string(),
+                Some(cause(behavior, CauseKind::Unfound { variables: unnamed, holds_for_any })),
+            );
+            continue;
+        }
+        let shared = rows.iter().enumerate().any(|(j, (_, other))| {
+            j != i && other.vars().iter().any(|v| vars.iter().any(|w| w == v))
+        });
+        let complete = found.values.iter().any(|v| vars.iter().all(|w| v.contains_key(w)));
+        if shared {
+            waiting.push((behavior, vars));
+        } else if complete {
+            ret.insert(behavior.to_string(), Some(cause(behavior, CauseKind::Cycle)));
+        } else {
+            ret.insert(
+                behavior.to_string(),
+                Some(cause(
+                    behavior,
+                    CauseKind::Unfound { variables: vars, holds_for_any: vec![] },
+                )),
+            );
+        }
+    }
+    let sibling_is_cause = ret.values().any(|c| {
+        c.as_ref()
+            .is_some_and(|c| matches!(c.kind, CauseKind::Unfound { .. }))
+    });
+    for (behavior, vars) in waiting {
+        ret.insert(
+            behavior.to_string(),
+            (!sibling_is_cause).then(|| {
+                cause(behavior, CauseKind::Unfound { variables: vars, holds_for_any: vec![] })
+            }),
+        );
+    }
+    ret
 }
 
 /// Merge rows that are equal but for their agents, keeping the order of each
@@ -565,11 +606,7 @@ impl<'a> Resolver<'a> {
     fn conditions(&mut self, promise: &Behavior) -> Vec<ConditionStatus> {
         let conditions = promise.get_conditions();
         let declared = promise.get_for_some();
-        let shares = !declared.is_empty()
-            || conditions
-                .iter()
-                .any(|c| Pattern::parse_lossy(c).needs_binding());
-        let held: Vec<bool> = if shares {
+        let held: Vec<bool> = if !declared.is_empty() {
             let readings = self.tracker.resolve_conditions(&conditions, declared);
             let count = |r: &Vec<Resolution>| r.iter().filter(|c| c.is_satisfied()).count();
             let mut best: Option<&Vec<Resolution>> = None;
@@ -637,13 +674,7 @@ impl Index {
     fn consumers(&self, behavior: &str) -> Vec<(String, ConsumerKind)> {
         let mut ret: Vec<(String, ConsumerKind)> = vec![];
         for (agent, wants) in &self.wants {
-            // An open want is a want of everything it matches.
-            if wants.iter().any(|w| {
-                w == behavior || {
-                    let want = Pattern::parse_lossy(w);
-                    want.has_open() && want.match_ground(behavior).is_some()
-                }
-            }) {
+            if wants.iter().any(|w| w == behavior) {
                 ret.push((agent.clone(), ConsumerKind::Want));
             }
         }
@@ -713,7 +744,7 @@ fn collect_names(resolution: &Resolution, out: &mut BTreeSet<String>) {
         .iter()
         .chain(resolution.get_unsatisfying_offers())
     {
-        // what an open goal was answered by is asked for too
+        // what a gathered row was answered by is asked for too
         if let Some(kept) = offer.get_behavior() {
             out.insert(kept.to_string());
         }
@@ -786,68 +817,161 @@ mod tests {
         unused(t, options).into_iter().map(|u| u.behavior).collect()
     }
 
-    // --- Open variables ---------------------------------------------------
+    // --- Declared variables ---------------------------------------------
+
+    fn bfs(name: &str, for_some: &[&str], conditions: &[&str]) -> Behavior {
+        bc(name, conditions).with_for_some(for_some.iter().map(|v| v.to_string()).collect())
+    }
 
     #[test]
-    fn a_promise_met_through_an_open_goal_is_used() {
+    fn a_promise_met_through_a_declared_variable_is_used() {
         let t = tracker(vec![
-            agent("op", vec![bc("configured", &["{{?doc}} shows usage"])], &["configured"]),
+            agent("op", vec![bfs("configured", &["doc"], &["{{doc}} shows usage"])], &["configured"]),
             agent("d1", vec![b("d1 shows usage")], &[]),
-            agent("w", vec![], &["{{?who}} backs up"]),
+            agent("w", vec![bfs("w is covered", &["who"], &["{{who}} backs up"])], &["w is covered"]),
             agent("bk", vec![b("bk backs up")], &[]),
             agent("idle", vec![b("nothing asks for this")], &[]),
         ]);
         assert_eq!(unused_names(&t, PLAIN), names(&["nothing asks for this"]));
         assert!(unsatisfied(&t, PLAIN).is_empty());
 
-        // the open want shows among the behavior's consumers
+        // the condition that found it shows among the behavior's consumers
         let used = behavior_use(&t, "bk backs up", PLAIN).unwrap();
         assert_eq!(
             used.consumers,
             vec![ConsumerRow {
                 agents: names(&["w"]),
-                kind: ConsumerKind::Want
+                kind: ConsumerKind::Condition {
+                    provide: "w is covered".into()
+                }
             }]
         );
     }
 
     #[test]
-    fn an_open_want_with_no_match_is_unsatisfied_under_its_own_text() {
+    fn a_gathered_row_only_a_parameterized_promise_answers_names_it() {
+        // bk backs anything up, so it names no one; the row says so.
         let t = tracker(vec![
-            agent("w", vec![], &["{{?who}} backs up"]),
+            agent("w", vec![bfs("w is covered", &["who"], &["{{who}} backs up"])], &["w is covered"]),
             agent("bk", vec![b("{{x}} backs up")], &[]),
         ]);
         assert_eq!(
             unsatisfied(&t, PLAIN),
             vec![UnsatisfiedRow {
                 agents: names(&["w"]),
-                behavior: "{{?who}} backs up".into(),
+                behavior: "w is covered".into(),
                 causes: vec![Cause {
-                    behavior: "{{?who}} backs up".into(),
-                    kind: CauseKind::Unprovided,
-                    needed_by: None,
+                    behavior: "{{who}} backs up".into(),
+                    kind: CauseKind::Unfound {
+                        variables: names(&["who"]),
+                        holds_for_any: vec![crate::HoldsForAny {
+                            variable: "who".into(),
+                            agent: "bk".into(),
+                            promise: "{{x}} backs up".into(),
+                        }],
+                    },
+                    needed_by: Some(CauseSite {
+                        agent: "w".into(),
+                        provide: "w is covered".into()
+                    }),
                 }],
             }]
         );
     }
 
     #[test]
-    fn a_condition_waiting_on_a_sibling_is_not_a_cause() {
+    fn every_condition_waiting_on_a_shared_value_is_a_cause() {
+        // There is no binder any more: each condition that could have named
+        // `thing` is a cause, naming the variable.
         let mut t = Tracker::new();
         t.add_agent(
             Agent::build("o1")
-                .with_provides(vec![Behavior::build("configured").with_conditions(vec![
-                    String::from("will support {{?thing}}"),
-                    String::from("{{thing}} does stuff"),
-                ])])
+                .with_provides(vec![Behavior::build("configured")
+                    .with_for_some(vec!["thing".into()])
+                    .with_conditions(vec![
+                        String::from("will support {{thing}}"),
+                        String::from("{{thing}} does stuff"),
+                    ])])
                 .with_wants(vec![Behavior::build("configured")]),
         );
         let rows = unsatisfied(&t, PLAIN);
-        let causes: Vec<&str> = rows
+        let causes: Vec<(&str, &CauseKind)> = rows
             .iter()
-            .flat_map(|r| r.causes.iter().map(|c| c.behavior.as_str()))
+            .flat_map(|r| r.causes.iter().map(|c| (c.behavior.as_str(), &c.kind)))
             .collect();
-        assert_eq!(causes, vec!["will support {{?thing}}"]);
+        let unfound = CauseKind::Unfound {
+            variables: names(&["thing"]),
+            holds_for_any: vec![],
+        };
+        assert_eq!(
+            causes,
+            vec![("will support {{thing}}", &unfound), ("{{thing}} does stuff", &unfound)]
+        );
+    }
+
+    #[test]
+    fn a_row_with_a_value_waiting_on_a_sibling_is_not_a_cause() {
+        // `1 is ok` names `a`, but nothing names `b`: the rows that could
+        // have are the causes, and the `ok` row waits on them.
+        let t = tracker(vec![
+            agent(
+                "o",
+                vec![bfs(
+                    "paired",
+                    &["a", "b"],
+                    &["{{a}} is ok", "{{a}} pairs with {{b}}", "{{b}} is fine"],
+                )],
+                &["paired"],
+            ),
+            agent("k", vec![b("1 is ok")], &[]),
+        ]);
+        let rows = unsatisfied(&t, PLAIN);
+        let causes: Vec<(&str, &CauseKind)> = rows[0]
+            .causes
+            .iter()
+            .map(|c| (c.behavior.as_str(), &c.kind))
+            .collect();
+        assert_eq!(
+            causes,
+            vec![
+                (
+                    "{{a}} pairs with {{b}}",
+                    &CauseKind::Unfound {
+                        variables: names(&["a", "b"]),
+                        holds_for_any: vec![]
+                    }
+                ),
+                (
+                    "{{b}} is fine",
+                    &CauseKind::Unfound {
+                        variables: names(&["b"]),
+                        holds_for_any: vec![]
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gathered_row_cut_short_by_a_loop_is_a_cycle() {
+        // `{{x}} is ready` names `a`, whose only promise needs itself.
+        let t = tracker(vec![agent(
+            "a",
+            vec![bfs("a is ready", &["x"], &["{{x}} is ready"])],
+            &["a is ready"],
+        )]);
+        let rows = unsatisfied(&t, PLAIN);
+        assert_eq!(
+            rows[0].causes,
+            vec![Cause {
+                behavior: "{{x}} is ready".into(),
+                kind: CauseKind::Cycle,
+                needed_by: Some(CauseSite {
+                    agent: "a".into(),
+                    provide: "a is ready".into()
+                }),
+            }]
+        );
     }
 
     #[test]
@@ -856,8 +980,9 @@ mod tests {
         t.add_agent(Agent::build("o1").with_provides(vec![Behavior::build(
             "configured",
         )
+        .with_for_some(vec!["thing".into()])
         .with_conditions(vec![
-            String::from("will support {{?thing}}"),
+            String::from("will support {{thing}}"),
             String::from("{{thing}} does stuff"),
         ])]));
         t.add_agent(Agent::build("s1").with_provides(vec![
@@ -877,9 +1002,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_open_condition_names_the_promise_it_matched() {
+    fn a_failing_gathered_row_names_the_promise_it_matched() {
         let t = tracker(vec![
-            agent("op", vec![bc("configured", &["{{?doc}} shows usage"])], &["configured"]),
+            agent("op", vec![bfs("configured", &["doc"], &["{{doc}} shows usage"])], &["configured"]),
             agent("d1", vec![bc("d1 shows usage", &["d1 is approved"])], &[]),
         ]);
         let rows = unsatisfied(&t, PLAIN);

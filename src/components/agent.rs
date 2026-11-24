@@ -260,11 +260,7 @@ impl Agent {
                 || p.get_condition_patterns()
                     .iter()
                     .any(|c| c.match_ground(behavior_name).is_some())
-        }) || self.wants.iter().any(|w| {
-            w.get_name() == behavior_name
-                // an open want is a want of everything it could match
-                || (w.get_name_pattern().has_open() && w.match_goal(behavior_name).is_some())
-        })
+        }) || self.wants.iter().any(|w| w.get_name() == behavior_name)
     }
 
     pub fn merge(&mut self, other: &Agent) {

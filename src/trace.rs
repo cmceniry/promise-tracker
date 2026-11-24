@@ -112,8 +112,8 @@ pub struct Trail {
 }
 
 /// What the holder of one need filled in, by behavior needed: a value its
-/// promise's goal bound, its own name, one a sibling condition found, or
-/// what its `{{?x}}` matched. One behavior for a plain need; a bundled need
+/// promise's goal bound, its own name, one found for a declared variable,
+/// or what a gathered row's variables matched. One behavior for a plain need; a bundled need
 /// names several. A behavior with nothing filled in has no entry.
 type NeedSpans = BTreeMap<String, Spans>;
 
@@ -733,7 +733,7 @@ impl TrailBuilder {
         }
 
         for (offer, satisfied) in offers {
-            // An offer answering an open goal is carded under the concrete
+            // An offer answering a gathered row is carded under the concrete
             // behavior it keeps, and carries what the goal filled in or
             // matched there itself.
             let filled = match offer.get_behavior() {
@@ -1383,7 +1383,8 @@ mod tests {
     }
 
     /// a keeps `top` on `z is up` written out and on a promise of its own,
-    /// `inner`, whose open condition matches the same behavior.
+    /// `inner`, whose condition with a declared variable matches the same
+    /// behavior.
     const FOLDED_BESIDE_WRITTEN_OUT: &str = r#"
 kind: Agent
 name: w
@@ -1395,7 +1396,8 @@ provides:
 - name: top
   conditions: ["z is up", "inner"]
 - name: inner
-  conditions: ["{{?v}} is up"]
+  forSome: [v]
+  conditions: ["{{v}} is up"]
 ---
 kind: Agent
 name: z
@@ -1460,7 +1462,7 @@ provides: [{name: z is up}]
 
     #[test]
     fn two_conditions_of_one_promise_reaching_one_behavior_are_each_their_own() {
-        // One promise, the behavior written out and found again by `{{?v}}`.
+        // One promise, the behavior written out and found again through a declared `v`.
         let tracker = crate::marks::tracker(
             r#"
 kind: Agent
@@ -1471,7 +1473,8 @@ kind: Agent
 name: a
 provides:
 - name: top
-  conditions: ["é is up", "{{?v}} is up"]
+  forSome: [v]
+  conditions: ["é is up", "{{v}} is up"]
 ---
 kind: Agent
 name: "é"
@@ -1490,7 +1493,7 @@ provides: [{name: "é is up"}]
     #[test]
     fn bundling_merges_a_written_out_need_with_one_found_through_a_variable() {
         // h's m1 and m2 sit in one column and both reach `z is up`, m1
-        // written out and m2 through `{{?v}}`; g's m3 beside them names it
+        // written out and m2 through a declared `v`; g's m3 beside them names it
         // outright.
         let tracker = crate::marks::tracker(
             r#"
@@ -1510,7 +1513,8 @@ provides:
 - name: m1
   conditions: ["z is up"]
 - name: m2
-  conditions: ["{{?v}} is up"]
+  forSome: [v]
+  conditions: ["{{v}} is up"]
 ---
 kind: Agent
 name: g
@@ -1544,7 +1548,9 @@ provides: [{name: z is up}]
         ]));
         tracker.add_agent(Agent::build("a3").with_provides(vec![
             Behavior::build("x1").with_conditions(vec!["\u{e9}9 is up".into()]),
-            Behavior::build("x2").with_conditions(vec!["{{?who}} is up".into()]),
+            Behavior::build("x2")
+                .with_for_some(vec!["who".into()])
+                .with_conditions(vec!["{{who}} is up".into()]),
         ]));
         tracker.add_agent(Agent::build("a4").with_provides(vec![
             Behavior::build("y1").with_conditions(vec!["\u{e9}9 is up".into()]),

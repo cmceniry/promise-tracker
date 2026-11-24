@@ -152,7 +152,7 @@ impl PromiseGraphBuilder {
             self.merge_edge(requirer, &ghost, behavior, kind, false);
             return;
         }
-        // An offer answering an open goal is drawn under the concrete
+        // An offer answering a gathered row is drawn under the concrete
         // behavior it keeps; the goal itself names none.
         for offer in satisfied {
             let kept = offer.get_behavior().unwrap_or(behavior);
@@ -356,8 +356,16 @@ mod tests {
 
     #[test]
     fn test_open_want_draws_each_match_under_its_own_name() {
+        // What an open want was: a gathered row on the promise that keeps
+        // the want.
+        let covering = || {
+            Agent::build("c").with_provides(vec![Behavior::build("covered")
+                .with_for_some(vec!["who".into()])
+                .with_conditions(vec!["{{who}} backs up".into()])])
+        };
         let mut tracker = Tracker::new();
-        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("{{?who}} backs up")]));
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("covered")]));
+        tracker.add_agent(covering());
         tracker.add_agent(Agent::build("b1").with_provides(vec![Behavior::build("b1 backs up")]));
         tracker.add_agent(Agent::build("b2").with_provides(vec![Behavior::build("b2 backs up")]));
 
@@ -365,17 +373,19 @@ mod tests {
         assert_eq!(
             graph.edges,
             vec![
-                edge("a1", "b1", "b1 backs up", PromiseKind::Want, true),
-                edge("a1", "b2", "b2 backs up", PromiseKind::Want, true),
+                edge("a1", "c", "covered", PromiseKind::Want, true),
+                edge("c", "b1", "b1 backs up", PromiseKind::Condition, true),
+                edge("c", "b2", "b2 backs up", PromiseKind::Condition, true),
             ]
         );
         assert!(graph.unsatisfied.is_empty());
 
         // with nothing to match, the pattern itself is what is missing
         let mut tracker = Tracker::new();
-        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("{{?who}} backs up")]));
+        tracker.add_agent(Agent::build("a1").with_wants(vec![Behavior::build("covered")]));
+        tracker.add_agent(covering());
         let graph = promise_graph(&tracker);
-        assert_eq!(node_ids(&graph), vec!["a1", "missing:{{?who}} backs up"]);
+        assert_eq!(node_ids(&graph), vec!["a1", "c", "missing:{{who}} backs up"]);
     }
 
     #[test]

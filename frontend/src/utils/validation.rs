@@ -129,7 +129,8 @@ pub fn validate_contract_content(content: &str) -> String {
     }
 
     // Shape is right; now check what only makes sense once it is read as a
-    // contract — malformed patterns, unbindable conditions, open wants.
+    // contract — malformed patterns, unbindable conditions, `forSome`
+    // rules.
     let problems = check_items(&items);
     if !problems.is_empty() {
         return problems

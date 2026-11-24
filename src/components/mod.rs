@@ -10,6 +10,6 @@ pub use self::behavior::Behavior;
 pub use self::instance::{BaseKind, BaseRef, Instance};
 pub use self::item::Item;
 pub use self::pattern::{
-    is_builtin, is_open, mark_spans, mark_spans_with, merge_spans, self_bindings, Bindings, Pattern, PatternError, Segment, Unifier,
+    is_builtin, legal, mark_spans, mark_spans_with, merge_spans, self_bindings, Bindings, Pattern, PatternError, Segment, Unifier,
 };
 pub use self::superagent::SuperAgent;

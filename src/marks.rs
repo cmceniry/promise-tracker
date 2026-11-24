@@ -14,8 +14,8 @@
 //! - what a parameterized promise name took from the goal it keeps
 //!   (`{{agent}} reads R1` keeping `A1 reads R1`), and the same value where
 //!   it went on into the promise's conditions;
-//! - a value one condition found with `{{?x}}` and a sibling used as `{{x}}`;
-//! - the part of a promised behavior an open goal's `{{?x}}` matched.
+//! - the value a declared (`forSome`) variable took, where conditions use it;
+//! - the part of a promised behavior a gathered row's variables matched.
 //!
 //! The same text can be reached with different parts substituted — one agent
 //! writes `{{!self}} is up`, another spells the name out — so marks are kept
@@ -23,9 +23,9 @@
 //! promises it. A line between the two shows both.
 //!
 //! One agent can also reach the same text two ways itself: one promise names
-//! a condition outright, another finds it with `{{?x}}`. So there are two
-//! grains. The Overview's lines and nodes stand for an agent and a name, and
-//! read the coarse one ([`Marks::need`], [`Marks::promise`], [`Marks::edge`]).
+//! a condition outright, another finds it through a declared variable. So
+//! there are two grains. The Overview's lines and nodes stand for an agent
+//! and a name, and read the coarse one ([`Marks::need`], [`Marks::promise`], [`Marks::edge`]).
 //! A listing whose row is one want, one promise or one condition of one
 //! promise reads the fine one ([`Marks::want`], [`Marks::made`],
 //! [`Marks::condition`]), so a row shows only what its own declaration
@@ -42,8 +42,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Marks {
     /// (agent, name) — the name as that agent needs it: its want, or a
-    /// condition on one of its promises as resolution reached it. For an
-    /// open need this holds both the pattern and each behavior it matched.
+    /// condition on one of its promises as resolution reached it. For a
+    /// gathered row this holds both the pattern and each behavior it matched.
     need: BTreeMap<(String, String), Spans>,
     /// (agent, name) — the name as that agent promises it.
     offer: BTreeMap<(String, String), Spans>,
@@ -138,7 +138,7 @@ impl Marks {
                 .collect();
             wants.sort();
             for want in wants {
-                if want.needs_binding() {
+                if !want.is_ground() {
                     continue;
                 }
                 let (resolved, _) = tracker.resolve_goal(want.source(), &mut vec![], &mut settled);
@@ -153,7 +153,7 @@ impl Marks {
         let mut behaviors: Vec<String> = tracker.get_working_behaviors().into_iter().collect();
         behaviors.sort();
         for behavior in behaviors {
-            if Pattern::parse_lossy(&behavior).needs_binding() {
+            if !Pattern::parse_lossy(&behavior).is_ground() {
                 continue;
             }
             let (resolved, _) = tracker.resolve_goal(&behavior, &mut vec![], &mut settled);
@@ -225,8 +225,7 @@ impl Marks {
     fn add_held(&mut self, holder: Holder, name: &str, spans: &[(usize, usize)]) {
         self.add_need(holder.agent(), name, spans);
         match holder {
-            // What an open want matched is not a want of its own: only the
-            // want's text is kept by want.
+            // Only the want's own text is kept by want.
             Holder::Want { agent } => self.add_want(agent, name, spans),
             Holder::Condition { agent, promise } => {
                 self.add_condition(agent, promise, name, spans)
@@ -248,7 +247,7 @@ impl Marks {
         }
         // The conditions of every promise that could keep this goal, with
         // only the goal's values filled in. Resolution reads on from there —
-        // a sibling's `{{?x}}` supplies the rest — but the inventory lists
+        // the declared variables are found next — but the inventory lists
         // a promise's conditions at this stage, so it is recorded too.
         if walked.goals.insert(name.to_string()) {
             for (agent, variants) in &tracker.working_agents {
@@ -369,7 +368,7 @@ impl Marks {
     /// `name` as a condition of the promise by which `agent` keeps
     /// `promise`: as the condition is written, with the values of the goal
     /// `promise` filled in, as resolution reached it with a sibling's value,
-    /// or a behavior the condition's `{{?x}}` matched. `promise` is the
+    /// or a behavior the condition's declared variables matched. `promise` is the
     /// behavior kept — for a parameterized promise listed on its own, the
     /// pattern as written.
     ///
@@ -491,24 +490,27 @@ pub(crate) fn tracker(yaml: &str) -> Tracker {
     t
 }
 
-/// The IAM chain: a goal binds a parameterized promise, one condition
-/// finds a value with `{{?approle}}` and its sibling uses it.
+/// The IAM chain: a goal binds a parameterized promise, which declares
+/// `approle` for its two conditions to find together; one step down,
+/// `application` is declared for one condition alone.
 #[cfg(test)]
 pub(crate) const IAM: &str = r#"
 kind: Agent
 name: AWSSM
 provides:
 - name: Read Secret Contents {{secret_name}} by {{application}}
+  forSome: [approle]
   conditions:
-    - "{{application}} has IAM role {{?approle}}"
+    - "{{application}} has IAM role {{approle}}"
     - "IAM access granted for reading Secret {{secret_name}} to {{approle}}"
 ---
 kind: Agent
 name: infrateam
 provides:
 - name: "IAM access granted for reading Secret {{secret_name}} to {{approle}}"
+  forSome: [application]
   conditions:
-  - "Design approval access to Secret {{secret_name}} for {{?application}}"
+  - "Design approval access to Secret {{secret_name}} for {{application}}"
 ---
 kind: Agent
 name: manager
@@ -529,10 +531,10 @@ mod tests {
 
     const WANT: &str = "Read Secret Contents appsecret by appname";
     const ROLE: &str = "appname has IAM role approle";
-    const OPEN_ROLE: &str = "appname has IAM role {{?approle}}";
+    const OPEN_ROLE: &str = "appname has IAM role {{approle}}";
     const GRANT: &str = "IAM access granted for reading Secret appsecret to approle";
     const APPROVAL: &str = "Design approval access to Secret appsecret for appname";
-    const OPEN_APPROVAL: &str = "Design approval access to Secret appsecret for {{?application}}";
+    const OPEN_APPROVAL: &str = "Design approval access to Secret appsecret for {{application}}";
 
     #[test]
     fn a_want_is_marked_as_its_agent_wrote_it() {
@@ -564,16 +566,16 @@ mod tests {
         // The value came down from the goal ...
         assert_eq!(
             m.need("AWSSM", OPEN_ROLE),
-            "<appname> has IAM role {{?approle}}"
+            "<appname> has IAM role {{approle}}"
         );
-        // ... and sideways from the sibling's `{{?approle}}`.
+        // ... and sideways from the value found for the declared `approle`.
         assert_eq!(
             m.need("AWSSM", GRANT),
             "IAM access granted for reading Secret <appsecret> to <approle>"
         );
         assert_eq!(
             m.need("infrateam", OPEN_APPROVAL),
-            "Design approval access to Secret <appsecret> for {{?application}}"
+            "Design approval access to Secret <appsecret> for {{application}}"
         );
     }
 
@@ -623,7 +625,7 @@ mod tests {
             "<appname> has IAM role <approle>"
         );
         assert_eq!(m.any(ROLE), "<appname> has IAM role <approle>");
-        assert_eq!(m.needed(OPEN_ROLE), "<appname> has IAM role {{?approle}}");
+        assert_eq!(m.needed(OPEN_ROLE), "<appname> has IAM role {{approle}}");
     }
 
     #[test]
@@ -651,8 +653,8 @@ provides:
         assert_eq!(m.need_by::<&str>(&[], "a1 is up"), "a1 is up");
     }
 
-    /// x keeps p1 on a condition written out, and p2 on an open one that
-    /// matches the same behavior.
+    /// x keeps p1 on a condition written out, and p2 on one holding a
+    /// declared variable that matches the same behavior.
     const TWO_WAYS: &str = r#"
 kind: Agent
 name: x
@@ -660,7 +662,8 @@ provides:
 - name: p1
   conditions: ["é1 is up"]
 - name: p2
-  conditions: ["{{?w}} is up"]
+  forSome: [w]
+  conditions: ["{{w}} is up"]
 ---
 kind: Agent
 name: "é1"
@@ -674,7 +677,7 @@ provides:
         // p1 names it outright; only p2 found it through a variable.
         assert_eq!(m.condition("x", "p1", "\u{e9}1 is up"), "\u{e9}1 is up");
         assert_eq!(m.condition("x", "p2", "\u{e9}1 is up"), "<\u{e9}1> is up");
-        assert_eq!(m.condition("x", "p2", "{{?w}} is up"), "{{?w}} is up");
+        assert_eq!(m.condition("x", "p2", "{{w}} is up"), "{{w}} is up");
         assert_eq!(
             m.condition_by(&["x", "\u{e9}1"], "p1", "\u{e9}1 is up"),
             "\u{e9}1 is up"
@@ -701,7 +704,8 @@ wants:
 - name: "{{!self}} is fed"
 provides:
 - name: p
-  conditions: ["{{?who}} is up"]
+  forSome: [who]
+  conditions: ["{{who}} is up"]
 ---
 kind: Agent
 name: a2
@@ -711,7 +715,7 @@ provides:
 - name: a2 is up
 "#,
         ));
-        // a1 wrote the want out; its promise's `{{?who}}` found the same text.
+        // a1 wrote the want out; its promise's declared `who` found the same text.
         assert_eq!(m.want("a1", "a2 is up"), "a2 is up");
         assert_eq!(m.condition("a1", "p", "a2 is up"), "<a2> is up");
         assert_eq!(m.need("a1", "a2 is up"), "<a2> is up");
@@ -781,7 +785,7 @@ wants:
         // goal's values, with the sibling's too, and the behavior matched.
         assert_eq!(
             m.condition("AWSSM", WANT, OPEN_ROLE),
-            "<appname> has IAM role {{?approle}}"
+            "<appname> has IAM role {{approle}}"
         );
         assert_eq!(
             m.condition(

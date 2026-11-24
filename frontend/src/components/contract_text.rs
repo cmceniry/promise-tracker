@@ -18,7 +18,8 @@ struct Row {
     /// The provider, on a row that stands for an offer.
     agent: Option<String>,
     /// On an offer's row, the behavior the offer keeps when the need above
-    /// it is open (`{{?x}}`) and so names none itself, as the row shows it.
+    /// it still holds a declared variable and so names none itself, as the
+    /// row shows it.
     kept: Option<String>,
 }
 
@@ -72,7 +73,7 @@ fn offer_name(agent: &str, kept: Option<&str>) -> String {
 /// list instead of a row of its own, so whatever the hidden provider needs from
 /// other agents stays visible.
 ///
-/// Under an open need the row also names the behavior the offer keeps, which
+/// Under a gathered need the row also names the behavior the offer keeps, which
 /// the need's own text does not; with `mark`, as
 /// [`Resolution::marked_offer`] has it. Any other offer's row is the
 /// provider alone.
@@ -277,7 +278,7 @@ fn sole_provider(row: &Row) -> Option<(&str, &str, bool, &[Row], Option<&str>)> 
     }
 }
 
-/// A need inside a grouped row. An open need is followed by the behavior
+/// A need inside a grouped row. A gathered need is followed by the behavior
 /// its provider keeps for it, which its own text does not say.
 fn grouped_need(behavior: &str, kept: Option<&str>) -> String {
     match kept {
@@ -993,14 +994,16 @@ mod tests {
         tracker.add_agent(Agent::build("AWSSM").with_provides(vec![behavior_with(
             "Read Secret Contents {{secret_name}} by {{application}}",
             &[
-                "{{application}} has IAM role {{?approle}}",
+                "{{application}} has IAM role {{approle}}",
                 "IAM access granted for reading Secret {{secret_name}} to {{approle}}",
             ],
-        )]));
+        )
+        .with_for_some(vec!["approle".into()])]));
         tracker.add_agent(Agent::build("infrateam").with_provides(vec![behavior_with(
             "IAM access granted for reading Secret {{secret_name}} to {{approle}}",
-            &["Design approval access to Secret {{secret_name}} for {{?application}}"],
-        )]));
+            &["Design approval access to Secret {{secret_name}} for {{application}}"],
+        )
+        .with_for_some(vec!["application".into()])]));
         tracker.add_agent(Agent::build("manager").with_provides(vec![Behavior::build(
             "Design approval access to Secret appsecret for appname",
         )]));
@@ -1038,9 +1041,9 @@ mod tests {
         let marked = outline(&view_rows("appname", &resolution, on));
         for line in [
             "appname --> Read Secret Contents appsecret by <appname>",
-            "<appname> has IAM role {{?approle}}",
+            "<appname> has IAM role <approle>",
             "IAM access granted for reading Secret <appsecret> to <approle>",
-            "Design approval access to Secret <appsecret> for {{?application}}",
+            "Design approval access to Secret <appsecret> for {{application}}",
         ] {
             assert!(marked.contains(line), "no `{}` in:\n{}", line, marked);
         }
@@ -1073,11 +1076,11 @@ mod tests {
                 outline(&view_rows("appname", &resolution, iam_options(bundle, false))),
                 "appname --> Read Secret Contents appsecret by appname\n\
                  \x20   OPTION: AWSSM\n\
-                 \x20       appname has IAM role {{?approle}}\n\
-                 \x20           OPTION: appname \u{2014} appname has IAM role approle\n\
+                 \x20       appname has IAM role approle\n\
+                 \x20           OPTION: appname\n\
                  \x20       IAM access granted for reading Secret appsecret to approle\n\
                  \x20           OPTION: infrateam\n\
-                 \x20               Design approval access to Secret appsecret for {{?application}}\n\
+                 \x20               Design approval access to Secret appsecret for {{application}}\n\
                  \x20                   OPTION: manager \u{2014} Design approval access to Secret appsecret for appname\n",
                 "bundle={}",
                 bundle
@@ -1086,11 +1089,11 @@ mod tests {
                 outline(&view_rows("appname", &resolution, iam_options(bundle, true))),
                 "appname --> Read Secret Contents appsecret by <appname>\n\
                  \x20   OPTION: AWSSM\n\
-                 \x20       <appname> has IAM role {{?approle}}\n\
-                 \x20           OPTION: appname \u{2014} <appname> has IAM role <approle>\n\
+                 \x20       <appname> has IAM role <approle>\n\
+                 \x20           OPTION: appname\n\
                  \x20       IAM access granted for reading Secret <appsecret> to <approle>\n\
                  \x20           OPTION: infrateam\n\
-                 \x20               Design approval access to Secret <appsecret> for {{?application}}\n\
+                 \x20               Design approval access to Secret <appsecret> for {{application}}\n\
                  \x20                   OPTION: manager \u{2014} Design approval access to Secret <appsecret> for <appname>\n",
                 "bundle={}",
                 bundle
@@ -1100,51 +1103,55 @@ mod tests {
 
     #[test]
     fn an_offer_that_cannot_be_kept_names_the_behavior_too() {
-        // The open want matches a promise resting on something nobody
+        // w's gathered row matches a promise resting on something nobody
         // offers.
         let mut tracker = Tracker::new();
-        tracker.add_agent(Agent::build("w").with_wants(vec![Behavior::build("{{?who}} is up")]));
+        tracker.add_agent(Agent::build("w").with_provides(vec![
+            behavior_with("w is fine", &["{{who}} is up"]).with_for_some(vec!["who".into()]),
+        ]));
         tracker.add_agent(
             Agent::build("d1").with_provides(vec![behavior_with("{{!self}} is up", &["nope"])]),
         );
-        let resolution = tracker.resolve_want("w", "{{?who}} is up");
+        let fine = tracker.resolve("w is fine");
+        let resolution = fine.get_unsatisfying_offers()[0].get_resolved_conditions()[0].clone();
         assert_eq!(
             outline(&view_rows("w", &resolution, iam_options(false, false))),
-            "w --> {{?who}} is up\n\
+            "w --> {{who}} is up\n\
              \x20   POSSIBLE: d1 \u{2014} d1 is up\n\
              \x20       nope UNSATISFIED\n"
         );
         assert_eq!(
             outline(&view_rows("w", &resolution, iam_options(false, true))),
-            "w --> {{?who}} is up\n\
+            "w --> {{who}} is up\n\
              \x20   POSSIBLE: d1 \u{2014} <d1> is up\n\
              \x20       nope UNSATISFIED\n"
         );
 
         // An offer with no conditions that is not held is the error row.
-        let broken = Resolution::new("{{?who}} is up").add_unsatisfying_offer(
+        let broken = Resolution::new("{{who}} is up").add_unsatisfying_offer(
             Offer::new("d1")
                 .answering("d1 is up")
                 .with_bound(vec![(0, 2)]),
         );
         assert_eq!(
             outline(&view_rows("w", &broken, iam_options(false, false))),
-            "w --> {{?who}} is up\n    ERROR: d1 \u{2014} d1 is up\n"
+            "w --> {{who}} is up\n    ERROR: d1 \u{2014} d1 is up\n"
         );
         assert_eq!(
             outline(&view_rows("w", &broken, iam_options(false, true))),
-            "w --> {{?who}} is up\n    ERROR: d1 \u{2014} <d1> is up\n"
+            "w --> {{who}} is up\n    ERROR: d1 \u{2014} <d1> is up\n"
         );
     }
 
     #[test]
     fn a_grouped_open_need_still_names_the_behavior_kept() {
-        // c meets both of a's conditions, one of them through `{{?doc}}`.
+        // c meets both of a's conditions, one of them through `{{doc}}`.
         let mut tracker = Tracker::new();
         tracker.add_agent(Agent::build("b").with_wants(vec![Behavior::build("pa")]));
         tracker.add_agent(
             Agent::build("a")
-                .with_provides(vec![behavior_with("pa", &["p1", "{{?doc}} shows usage"])]),
+                .with_provides(vec![behavior_with("pa", &["p1", "{{doc}} shows usage"])
+                    .with_for_some(vec!["doc".into()])]),
         );
         tracker.add_agent(Agent::build("c").with_provides(vec![
             Behavior::build("p1"),
@@ -1158,20 +1165,20 @@ mod tests {
              \x20   OPTION: a\n\
              \x20       p1\n\
              \x20           OPTION: c\n\
-             \x20       {{?doc}} shows usage\n\
+             \x20       {{doc}} shows usage\n\
              \x20           OPTION: c \u{2014} c shows usage\n"
         );
         assert_eq!(
             outline(&view_rows("b", &resolution, iam_options(true, false))),
             "b --> pa\n\
              \x20   OPTION: a\n\
-             \x20       OPTION: c \u{2014} p1, {{?doc}} shows usage \u{2192} c shows usage \u{00d7}2\n"
+             \x20       OPTION: c \u{2014} p1, {{doc}} shows usage \u{2192} c shows usage \u{00d7}2\n"
         );
         assert_eq!(
             outline(&view_rows("b", &resolution, iam_options(true, true))),
             "b --> pa\n\
              \x20   OPTION: a\n\
-             \x20       OPTION: c \u{2014} p1, {{?doc}} shows usage \u{2192} <c> shows usage \u{00d7}2\n"
+             \x20       OPTION: c \u{2014} p1, {{doc}} shows usage \u{2192} <c> shows usage \u{00d7}2\n"
         );
     }
 

@@ -155,7 +155,7 @@ fn offer_steps(
 ) -> Vec<Step> {
     let agent_name = offer.get_agent_name();
     let hidden = !options.show_self_promises && component == agent_name;
-    // An offer answering an open goal is drawn under the concrete behavior
+    // An offer answering a gathered row is drawn under the concrete behavior
     // it keeps.
     let behavior = offer.get_behavior().unwrap_or(behavior);
 

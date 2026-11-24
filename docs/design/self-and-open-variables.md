@@ -443,10 +443,18 @@ command.
   parse error. The `deny_unknown_fields` message now lists `forSome` among
   the expected keys.
 - `src/validate.rs`: `check_for_some` holds the declaring rules; the
-  condition rule accepts a declared name.
+  condition rule accepts a name of the promise or a declared one.
+- `{{?x}}` is `PatternError::OpenVariable(x)` in `Pattern::parse`, whose
+  message is the rewrite; as with any malformed name, `parse_lossy` keeps
+  the text as literal, so a contract still loads and `check_items` reports
+  it wherever it is (a want gets its own wording: there is no promise to
+  declare on). `is_open`, `has_open`, `needs_binding`, `open_matches`, the
+  binder readings (`condition_readings`, `ConditionGoal::Chosen`), the
+  open-want cases in `Agent::has_ground_behavior` and `src/query.rs`, and
+  the CLI's "parameterized promises are not considered" note are gone.
 - `src/lib.rs`: `resolve_goal` and `walk_for_cycles` read a promise's
-  conditions through `Tracker::readings(promise, conditions)`, which for a
-  promise with `forSome` is `declared_readings`: the shared variables are
+  conditions through `Tracker::readings(promise, conditions)`, which is
+  `declared_readings`: the shared variables are
   those two or more conditions use; `candidate_values` pools what every
   condition mentioning a missing one proposes (`Tracker::search`), extends
   partial readings until complete, drops the ones that cannot be, caps them
@@ -461,8 +469,8 @@ command.
   (`with_matched`). It is cached in `settled` under the pattern text, kept
   apart from concrete goals, and sits on the in-progress stack under that
   text, so a loop through it is reported by `dependency_cycles` with the
-  pattern in it. `as_reached_by` re-marks any non-ground row the way it
-  marked an open goal.
+  pattern in it. `as_reached_by` re-marks any non-ground row with what its
+  variables matched in each behavior kept.
 - `Tracker::search` is the candidate search, `Tracker::propose(goal)` its
   public face, returning `Proposals { values, any }`: the value sets found,
   and the promises that held for any value (`HoldsForAny`). Its stack holds
@@ -485,9 +493,17 @@ command.
   still holding a declared variable, with no offers, as
   `CauseKind::Unfound { variables, holds_for_any }`: the variables the
   search names no value for, and the promises that answered them while
-  holding for any value (empty when nothing answered). Every such row of a
-  reading is a cause; there is no binder to prefer. A row whose variables
-  were all named but kept nothing is a `Cycle`. CLI `check-unsatisfied
+  holding for any value (empty when nothing answered). `variable_causes`
+  sorts out the rest of an offer's rows with no offers: a row sharing a
+  variable with a sibling was never resolved (no reading completed); if
+  each of its variables is named somewhere it is waiting, and not a cause
+  while a sibling is `Unfound`, otherwise `Unfound` for all its variables (no
+  set of values fills them together). A gathered row whose variables are
+  named in full was resolved: every name it could stand for is promised by
+  the promise that proposed it, so having no offer at all means resolution
+  was cut short on the way, by a loop or the depth cap, and `Cycle` is
+  what it is. Named in part only, it is `Unfound` for all its variables.
+  CLI `check-unsatisfied
   --summary` prints `… finds no value for `kc`: only B's `…` answered,
   holding for any value`; the Inventory's Unsatisfied tab says `no value
   found for `kc`; only B's `…` answers, for any value`. `CauseKind` is no
@@ -496,6 +512,25 @@ command.
 - `Tracker::resolve_conditions(conditions, declared)` takes the promise's
   declared names, for `src/query.rs`, whose `Resolver::conditions` now
   takes the promise.
+
+Loops through a variable, as `dependency_cycles` sees them:
+
+- A promise whose gathered row is answered by the promise itself (`a is
+  ready` needing `{{x}} is ready`) is reported, the row under its pattern
+  text: `["a is ready", "{{x}} is ready"]`.
+- A promise reached again through a shared variable's reading (B's
+  gateway through `kc = C`, when C's deploy needs the gateway) is reported
+  by the concrete goals of the loop.
+- A parameterized promise answering its own row (`{{n}} is ready` needing
+  `{{x}} is ready`) names no value, since none of its conditions mention
+  `n`: it holds for any value, and is reported by `unnamable_variables`
+  rather than as a loop.
+- A search that comes back to its own question with no value ever named
+  (`{{a}} up` needs `{{a}} down` needs `{{a}} up`) stops and proposes
+  nothing. It reaches no concrete goal, so like any parameterized loop
+  (`parameterized-behaviors.md`) it is not reported until something grounds
+  it; the condition shows as `Unfound`. Reporting it would mean the search
+  returning the path it was cut short on, in pattern text; not done.
 
 A consequence of pooling, kept as the rules give it:
 

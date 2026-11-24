@@ -1011,7 +1011,7 @@ mod tests {
                 "<A1>".to_string(),
                 vec![want("<A1>", "<A1> reads R1"), want("<A1>", "cache")],
             ),
-            ("viewer".to_string(), vec![want("viewer", "{{?doc}} shows usage")]),
+            ("viewer".to_string(), vec![want("viewer", "{{doc}} shows usage")]),
             ("plain".to_string(), vec![want("plain", "B2 reads R1")]),
         ];
         let behaviors = |q: &str| -> Vec<String> {
@@ -1022,9 +1022,9 @@ mod tests {
         };
         // Marks in the text, none in the query
         assert_eq!(behaviors("a1 reads"), vec!["<A1> reads R1"]);
-        assert_eq!(behaviors("?doc shows"), vec!["{{?doc}} shows usage"]);
+        assert_eq!(behaviors("doc shows"), vec!["{{doc}} shows usage"]);
         // Marks in the query, with or without them in the text
-        assert_eq!(behaviors("{{?doc}}"), vec!["{{?doc}} shows usage"]);
+        assert_eq!(behaviors("{{doc}}"), vec!["{{doc}} shows usage"]);
         assert_eq!(behaviors("<B2> reads"), vec!["B2 reads R1"]);
         // An agent name matches the same way and keeps the agent whole
         assert_eq!(behaviors("{a1}"), vec!["<A1> reads R1", "cache"]);

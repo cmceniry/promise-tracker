@@ -53,7 +53,7 @@ impl Resolution {
 
     /// The name with what either side filled in marked: the needing side as
     /// in [`Resolution::marked_name`], and every promise that names it
-    /// through a variable. An offer answering an open goal keeps a behavior
+    /// through a variable. An offer answering a gathered row keeps a behavior
     /// of its own and adds nothing here.
     pub fn marked_name_with_offers(&self) -> String {
         let mut spans = self.bound.clone();
@@ -70,7 +70,7 @@ impl Resolution {
     }
 
     /// The behavior `offer` keeps for this resolution, with what both sides
-    /// filled in marked. For an open goal that is the concrete behavior the
+    /// filled in marked. For a gathered row that is the concrete behavior the
     /// offer matched, marked where the goal's variables fell.
     pub fn marked_offer(&self, offer: &Offer) -> String {
         mark_spans(
@@ -146,7 +146,7 @@ impl Resolution {
     /// too: a condition that is kept loses its failing offers even when the
     /// promise it belongs to is broken for another reason. A behavior nobody
     /// keeps still shows every offer, and every offer that keeps a behavior
-    /// stays. An offer answering an open goal is an offer like any other.
+    /// stays. An offer answering a gathered row is an offer like any other.
     ///
     /// Display only: whether anything is satisfied never changes, and doing
     /// it twice changes nothing more.
@@ -475,19 +475,19 @@ mod tests_resolution {
 
     #[test]
     fn test_without_unneeded_alternatives_open_goal_offers_are_ordinary() {
-        let open = Resolution::new("{{?who}} is up")
+        let open = Resolution::new("{{who}} is up")
             .add_satisfying_offer(Offer::new("a").answering("a is up"))
             .add_unsatisfying_offer(
                 Offer::new_conditional("b", vec![Resolution::new("power")]).answering("b is up"),
             );
         assert_eq!(
             open.without_unneeded_alternatives(),
-            Resolution::new("{{?who}} is up")
+            Resolution::new("{{who}} is up")
                 .add_satisfying_offer(Offer::new("a").answering("a is up"))
         );
 
         // no candidate keeps it: both stay
-        let broken = Resolution::new("{{?who}} is up")
+        let broken = Resolution::new("{{who}} is up")
             .add_unsatisfying_offer(
                 Offer::new_conditional("a", vec![Resolution::new("fuel")]).answering("a is up"),
             )
@@ -610,8 +610,9 @@ mod tests_resolution {
 pub struct Offer {
     agent_name: String,
     resolved_conditions: Vec<Resolution>,
-    /// The concrete behavior this offer keeps, when the goal it answers was
-    /// open (`{{?doc}} shows usage`) and so named none itself. Absent for a
+    /// The concrete behavior this offer keeps, when the row it answers
+    /// still holds a declared variable (`{{doc}} shows usage`) and so names
+    /// none itself. Absent for a
     /// concrete goal, whose name already says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     behavior: Option<String>,
@@ -621,8 +622,8 @@ pub struct Offer {
     /// [`Resolution`]'s no part of equality or of the serialized form.
     #[serde(skip)]
     bound: Spans,
-    /// Under an open goal, the parts of `behavior` the goal filled in or
-    /// its `{{?x}}` matched. Display only; no part of equality or of the
+    /// Under a gathered row, the parts of `behavior` the row filled in or
+    /// its variables matched. Display only; no part of equality or of the
     /// serialized form.
     #[serde(skip)]
     matched: Spans,
@@ -649,7 +650,7 @@ impl Offer {
         }
     }
 
-    /// This offer, as the answer to an open goal by way of the concrete
+    /// This offer, as the answer to a gathered row by way of the concrete
     /// `behavior` it matched.
     pub fn answering(mut self, behavior: &str) -> Offer {
         self.behavior = Some(behavior.to_string());
@@ -675,14 +676,14 @@ impl Offer {
         &self.bound
     }
 
-    /// The parts of the kept behavior an open goal filled in or matched.
+    /// The parts of the kept behavior a gathered row filled in or matched.
     pub fn get_matched(&self) -> &[(usize, usize)] {
         &self.matched
     }
 
     /// The substituted parts of the behavior this offer keeps, from both
     /// sides. `needed` is what whoever needs the goal filled in on its name
-    /// ([`Resolution::get_bound`]); under an open goal the offer keeps a
+    /// ([`Resolution::get_bound`]); under a gathered row the offer keeps a
     /// behavior of its own and carries the goal's side itself.
     pub fn kept_spans(&self, needed: &[(usize, usize)]) -> Spans {
         if self.behavior.is_some() {
@@ -860,16 +861,16 @@ mod tests_offer {
             marked.marked_offer(&marked.get_satisfying_offers()[0]),
             "<a1> reads <r1>"
         );
-        // Under an open goal the offer carries the goal's side itself.
-        let open = Resolution::new("{{?who}} reads r1")
-            .with_bound(vec![(15, 17)])
+        // Under a gathered row the offer carries the goal's side itself.
+        let open = Resolution::new("{{who}} reads r1")
+            .with_bound(vec![(14, 16)])
             .add_satisfying_offer(
                 Offer::new("s1")
                     .answering("a1 reads r1")
                     .with_matched(vec![(0, 2), (9, 11)]),
             );
-        assert_eq!(open.marked_name(), "{{?who}} reads <r1>");
-        assert_eq!(open.marked_name_with_offers(), "{{?who}} reads <r1>");
+        assert_eq!(open.marked_name(), "{{who}} reads <r1>");
+        assert_eq!(open.marked_name_with_offers(), "{{who}} reads <r1>");
         assert_eq!(
             open.marked_offer(&open.get_satisfying_offers()[0]),
             "<a1> reads <r1>"
@@ -905,7 +906,7 @@ mod tests_offer {
         );
         assert_eq!(
             open.marked_outline(),
-            vec!["{{?who}} reads <r1>", "  s1: <a1> reads <r1>"]
+            vec!["{{who}} reads <r1>", "  s1: <a1> reads <r1>"]
         );
         assert_eq!(plain.marked_outline(), vec!["a1 reads r1", "  s1: a1 reads r1"]);
     }

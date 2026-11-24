@@ -118,11 +118,6 @@ fn causes(causes: &[Cause]) -> String {
         .into_iter()
         .map(|(behavior, kind, provide, agents)| {
             let what = match kind {
-                // An open variable only finds behaviors promised outright,
-                // which is worth saying where it found nothing.
-                CauseKind::Unprovided if behavior.contains("{{?") => String::from(
-                    "matches nothing promised outright (parameterized promises are not considered)",
-                ),
                 CauseKind::Unprovided => String::from("is not provided"),
                 CauseKind::Cycle => String::from("is only provided through a dependency loop"),
                 CauseKind::Unfound {

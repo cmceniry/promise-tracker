@@ -35,12 +35,6 @@ pub fn self_bindings(name: &str) -> Bindings {
         .collect()
 }
 
-/// Is this variable open — written `{{?x}}`, and bound by whoever provides a
-/// match rather than by the promise name?
-pub fn is_open(variable: &str) -> bool {
-    variable.starts_with('?')
-}
-
 /// Is this variable name one of the reserved built-ins?
 pub fn is_builtin(variable: &str) -> bool {
     variable.starts_with('!')
@@ -64,6 +58,8 @@ pub enum PatternError {
     AdjacentVariables(String, String),
     /// `{{!x}}` where `x` is not a built-in.
     UnknownBuiltin(String),
+    /// `{{?x}}`, the removed open-variable syntax; holds `x`.
+    OpenVariable(String),
 }
 
 impl fmt::Display for PatternError {
@@ -73,7 +69,7 @@ impl fmt::Display for PatternError {
             PatternError::EmptyVariable => write!(f, "empty variable name in `{{{{}}}}`"),
             PatternError::InvalidVariable(v) => write!(
                 f,
-                "invalid variable name `{}`, expected only letters, digits, `_` or `-` (after a leading `?` for an open variable)",
+                "invalid variable name `{}`, expected only letters, digits, `_` or `-`",
                 v
             ),
             PatternError::AdjacentVariables(a, b) => write!(
@@ -85,6 +81,11 @@ impl fmt::Display for PatternError {
                 f,
                 "unknown built-in `{{{{{}}}}}`; the only one is `{{{{!self}}}}`",
                 v
+            ),
+            PatternError::OpenVariable(v) => write!(
+                f,
+                "`{{{{?{v}}}}}` is no longer supported: declare `forSome: [{v}]` on the promise and write `{{{{{v}}}}}`",
+                v = v
             ),
         }
     }
@@ -105,6 +106,14 @@ pub struct Pattern {
     /// Byte ranges of `source` that a substitution filled in, in order. For
     /// display only ([`Pattern::marked`]); never part of the identity.
     bound: Vec<(usize, usize)>,
+}
+
+/// A variable name an author may write: letters, digits, `_` and `-`.
+pub fn legal(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn render(segments: &[Segment]) -> String {
@@ -147,13 +156,9 @@ impl Pattern {
                 if !SELF_VARS.contains(&name) {
                     return Err(PatternError::UnknownBuiltin(name.to_string()));
                 }
-            } else if name == "?"
-                || !name
-                    .strip_prefix('?')
-                    .unwrap_or(name)
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
+            } else if let Some(open) = name.strip_prefix('?').filter(|open| legal(open)) {
+                return Err(PatternError::OpenVariable(open.to_string()));
+            } else if !legal(name) {
                 return Err(PatternError::InvalidVariable(name.to_string()));
             }
             if literal.is_empty() {
@@ -216,18 +221,6 @@ impl Pattern {
                 Segment::Literal(_) => None,
             })
             .collect()
-    }
-
-    /// Does this name hold an open variable, `{{?x}}`?
-    pub fn has_open(&self) -> bool {
-        self.vars().into_iter().any(is_open)
-    }
-
-    /// Does this name hold a variable that something has to supply before it
-    /// can be resolved? An open variable does not count: resolution itself
-    /// finds its value.
-    pub fn needs_binding(&self) -> bool {
-        self.vars().into_iter().any(|v| !is_open(v))
     }
 
     /// Match a concrete name, binding this pattern's variables.
@@ -1253,7 +1246,7 @@ mod tests {
         assert_eq!(p.spans_on("b1 backs up db"), Some(vec![(0, 2), (12, 14)]));
         assert_eq!(p.spans_on("b1 restores db"), None);
         // What was substituted earlier is carried onto the match.
-        let open = Pattern::parse("{{app}} has role {{?role}}")
+        let open = Pattern::parse("{{app}} has role {{role}}")
             .unwrap()
             .substitute(&Bindings::from([("app".to_string(), "é1".to_string())]));
         let spans = open.spans_on("é1 has role admin").unwrap();
@@ -1300,24 +1293,18 @@ mod tests {
     }
 
     #[test]
-    fn open_variables_parse_and_match_like_any_other() {
-        let p = Pattern::parse("{{?doc}} shows usage of R1 by {{agent}}").unwrap();
-        assert!(p.has_open());
-        assert!(p.needs_binding());
-        assert_eq!(p.source(), "{{?doc}} shows usage of R1 by {{agent}}");
-
-        // once the promise's own variable is filled in, only the open one is left
-        let goal = p.substitute(&binds(&[("agent", "A1")]));
-        assert_eq!(goal.source(), "{{?doc}} shows usage of R1 by A1");
-        assert!(goal.has_open());
-        assert!(!goal.needs_binding());
+    fn open_variables_are_rejected_with_the_rewrite() {
+        let err = Pattern::parse("{{?doc}} shows usage of R1 by {{agent}}").unwrap_err();
+        assert_eq!(err, PatternError::OpenVariable("doc".into()));
         assert_eq!(
-            goal.match_ground("D1 shows usage of R1 by A1"),
-            Some(binds(&[("?doc", "D1")]))
+            err.to_string(),
+            "`{{?doc}}` is no longer supported: declare `forSome: [doc]` on the promise and write `{{doc}}`"
         );
-        assert_eq!(goal.match_ground("D1 shows usage of R1 by A2"), None);
+        // and loads as the literal text it is, like any malformed name
+        let lossy = Pattern::parse_lossy("{{?doc}} shows usage");
+        assert!(lossy.is_ground());
+        assert_eq!(lossy.source(), "{{?doc}} shows usage");
 
-        assert!(!Pattern::parse("plain/{{x}}").unwrap().has_open());
         assert_eq!(
             Pattern::parse("{{?}}"),
             Err(PatternError::InvalidVariable("?".into()))

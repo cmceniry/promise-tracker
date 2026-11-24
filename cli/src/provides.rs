@@ -23,7 +23,7 @@ pub struct Parameters {
 
     /// Wrap values a variable was replaced with in `<>`: the agent's own
     /// name where it wrote `{{!self}}`, an Instance binding, a value a
-    /// condition took from a sibling's `{{?x}}`
+    /// condition found for a variable its promise declares (`forSome`)
     #[clap(long)]
     mark_bound: bool,
 
@@ -162,8 +162,8 @@ mod tests {
         lines(provides, marks.as_ref(), with_conditions)
     }
 
-    /// x keeps p1 on a condition written out and p2 on an open one that
-    /// matches the same behavior; p3 names x itself.
+    /// x keeps p1 on a condition written out and p2 on one holding a
+    /// declared variable that matches the same behavior; p3 names x itself.
     const TWO_WAYS: &str = r#"
 kind: Agent
 name: x
@@ -171,7 +171,8 @@ provides:
 - name: p1
   conditions: ["é1 is up"]
 - name: p2
-  conditions: ["{{?w}} is up"]
+  forSome: [w]
+  conditions: ["{{w}} is up"]
 - name: p3
   conditions: ["{{!self}} is fed"]
 - name: "{{who}} is ready"
@@ -190,7 +191,7 @@ provides:
             printed(&t, "x", true, true),
             vec![
                 "p1\tif \u{e9}1 is up (held)",
-                "p2\tif {{?w}} is up (held)",
+                "p2\tif {{w}} is up (held)",
                 "p3\tif <x> is fed (broken)",
                 "{{who}} is ready\t(pattern) if <x> serves {{who}}",
             ]
@@ -199,12 +200,12 @@ provides:
             printed(&t, "x", false, true),
             vec![
                 "p1\tif \u{e9}1 is up (held)",
-                "p2\tif {{?w}} is up (held)",
+                "p2\tif {{w}} is up (held)",
                 "p3\tif x is fed (broken)",
                 "{{who}} is ready\t(pattern) if x serves {{who}}",
             ]
         );
-        // What p2's open condition matched is still marked, as p2's.
+        // What p2's gathered row matched is still marked, as p2's.
         let marks = Marks::new(&t);
         assert_eq!(marks.condition("x", "p2", "\u{e9}1 is up"), "<\u{e9}1> is up");
     }
@@ -218,7 +219,7 @@ provides:
                 vec!["p1", "p2", "p3", "{{who}} is ready\t(pattern)"]
             );
         }
-        // Its promise is written out: x finding it with `{{?w}}` is x's
+        // Its promise is written out: x finding it through `{{w}}` is x's
         // doing, and does not mark the provider's own list.
         assert_eq!(printed(&t, "\u{e9}1", true, false), vec!["\u{e9}1 is up"]);
         assert_eq!(printed(&t, "\u{e9}1", false, false), vec!["\u{e9}1 is up"]);
