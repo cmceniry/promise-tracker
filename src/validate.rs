@@ -113,9 +113,11 @@ fn check_behaviors(
             if let Err(PatternError::OpenVariable(_)) = Pattern::parse(condition.source()) {
                 // A value the promise name already supplies is written
                 // plainly; any other is declared for the conditions to find.
-                let (from_name, found): (Vec<String>, Vec<String>) = open_names(condition.source())
+                let (from_name, rest): (Vec<String>, Vec<String>) = open_names(condition.source())
                     .into_iter()
                     .partition(|v| name_vars.contains(v));
+                let (already, found): (Vec<String>, Vec<String>) =
+                    rest.into_iter().partition(|v| declared.contains(v));
                 let mut advice = vec![];
                 if !found.is_empty() {
                     advice.push(format!(
@@ -130,7 +132,18 @@ fn check_behaviors(
                         written(&from_name, "")
                     ));
                 }
-                let open: Vec<String> = from_name.iter().chain(found.iter()).cloned().collect();
+                if !already.is_empty() {
+                    advice.push(format!(
+                        "write {}, which `forSome` already declares",
+                        written(&already, "")
+                    ));
+                }
+                let open: Vec<String> = from_name
+                    .iter()
+                    .chain(already.iter())
+                    .chain(found.iter())
+                    .cloned()
+                    .collect();
                 errors.push(SemanticError {
                     item: item.to_string(),
                     location: at.clone(),
@@ -456,6 +469,9 @@ provides:
   - name: \"{{?svc}} is down\"
     conditions: [\"{{?svc}} is off on {{?node}}\"]
   - name: \"{{?a}} and {{?b}}\"
+  - name: watched
+    forSome: [kc]
+    conditions: [\"{{?kc}} watches\"]
 wants:
   - name: \"{{?a}} and {{?b}}\"
 ",
@@ -468,6 +484,9 @@ wants:
                 "`{{?svc}}` is no longer supported: in a promise name write `{{svc}}`, which takes its value from whoever asks",
                 "`{{?svc}}`, `{{?node}}` are no longer supported: declare `forSome: [node]` on the promise and write `{{node}}`; write `{{svc}}`, which the promise name supplies",
                 "`{{?a}}`, `{{?b}}` are no longer supported: in a promise name write `{{a}}`, `{{b}}`, which take their values from whoever asks",
+                // (until the `?` goes, the condition is literal text)
+                "no condition uses `{{kc}}`",
+                "`{{?kc}}` is no longer supported: write `{{kc}}`, which `forSome` already declares",
                 "`{{?a}}`, `{{?b}}` are no longer supported, and a want names one behavior: write the values out, or have a promise declare `forSome: [a, b]` and write `{{a}}`, `{{b}}` in its conditions",
             ]
         );
