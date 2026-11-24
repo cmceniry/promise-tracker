@@ -138,12 +138,7 @@ fn check_behaviors(
                         written(&already, "")
                     ));
                 }
-                let open: Vec<String> = from_name
-                    .iter()
-                    .chain(already.iter())
-                    .chain(found.iter())
-                    .cloned()
-                    .collect();
+                let open = open_names(condition.source());
                 errors.push(SemanticError {
                     item: item.to_string(),
                     location: at.clone(),
@@ -472,6 +467,9 @@ provides:
   - name: watched
     forSome: [kc]
     conditions: [\"{{?kc}} watches\"]
+  - name: \"{{svc}} runs\"
+    forSome: [kc]
+    conditions: [\"{{?kc}} hosts {{?svc}} on {{?node}}\"]
 wants:
   - name: \"{{?a}} and {{?b}}\"
 ",
@@ -487,6 +485,9 @@ wants:
                 // (until the `?` goes, the condition is literal text)
                 "no condition uses `{{kc}}`",
                 "`{{?kc}}` is no longer supported: write `{{kc}}`, which `forSome` already declares",
+                // listed in the order written
+                "no condition uses `{{kc}}`",
+                "`{{?kc}}`, `{{?svc}}`, `{{?node}}` are no longer supported: declare `forSome: [node]` on the promise and write `{{node}}`; write `{{svc}}`, which the promise name supplies; write `{{kc}}`, which `forSome` already declares",
                 "`{{?a}}`, `{{?b}}` are no longer supported, and a want names one behavior: write the values out, or have a promise declare `forSome: [a, b]` and write `{{a}}`, `{{b}}` in its conditions",
             ]
         );
