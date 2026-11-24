@@ -567,4 +567,13 @@ completed is dropped.
 
 ### Implementation
 
-To be filled in as built.
+- `pattern.rs`: `Pattern::unify(other)` is the two-sided match. It works a
+  character at a time, a variable on the left settled before one on the
+  right, so with one side concrete it makes exactly `match_ground`'s choices.
+  It returns a `Unifier`: each side's variables with the other side's
+  segments they took (`left_values`, `right_values`, `aligned`). A variable
+  meeting a variable that already took text takes the same text; one meeting
+  a variable already lined up with a different one does not match (`{{x}}
+  and {{x}}` against `{{p}} and {{q}}`), the narrow reading of "exactly one
+  of the other side's variables". `Pattern::canonical()` renames variables
+  by order of appearance, for the search's in-progress stack.

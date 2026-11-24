@@ -245,6 +245,59 @@ impl Pattern {
         }
     }
 
+    /// Match this pattern against another one, each side's variables taking
+    /// values from the other: two-sided matching.
+    ///
+    /// The two sides have separate namespaces: `{{x}}` here and `{{x}}` in
+    /// `other` are different variables. A variable on either side takes the
+    /// other side's literal text, or lines up with exactly one of the other
+    /// side's variables; `{{kc}} deploys sampleapp gateway` against
+    /// `C deploys {{appname}} gateway` gives `kc = C`, `appname = sampleapp`.
+    /// The conventions are [`Pattern::match_ground`]'s — leftmost-shortest, a
+    /// binding never empty, a repeated variable agreeing — and with `other`
+    /// concrete this is `match_ground` exactly.
+    ///
+    /// Not matched (yet): a variable taking the other side's variable plus
+    /// text (`{{kc}}` against `C-{{zone}}`), and a variable lining up with one
+    /// that is already lined up with a different variable.
+    pub fn unify(&self, other: &Pattern) -> Option<Unifier> {
+        let left = tokens(&self.segments);
+        let right = tokens(&other.segments);
+        let mut unifier = Unifier::default();
+        if unify_from(&left, &right, &mut unifier) {
+            Some(unifier)
+        } else {
+            None
+        }
+    }
+
+    /// The same name with its variables renamed in order of first
+    /// appearance (`{{_0}}`, `{{_1}}`, ...), and the renaming used, from the
+    /// names as written to the new ones. Two names that differ only in what
+    /// their variables are called come out the same.
+    pub fn canonical(&self) -> (Pattern, BTreeMap<String, String>) {
+        let mut renaming: BTreeMap<String, String> = BTreeMap::new();
+        let segments: Vec<Segment> = self
+            .segments
+            .iter()
+            .map(|s| match s {
+                Segment::Var(v) => {
+                    let next = format!("_{}", renaming.len());
+                    Segment::Var(renaming.entry(v.clone()).or_insert(next).clone())
+                }
+                literal => literal.clone(),
+            })
+            .collect();
+        (
+            Pattern {
+                source: render(&segments),
+                segments,
+                bound: vec![],
+            },
+            renaming,
+        )
+    }
+
     /// Replace bound variables with their values.
     ///
     /// Unbound variables are left in place, so a partially bound pattern is
@@ -439,6 +492,217 @@ fn match_from(segs: &[Segment], input: &str, bindings: &mut Bindings) -> bool {
                 }
                 Some(Segment::Var(_)) => false,
             }
+        }
+    }
+}
+
+/// What two names matched against each other bound ([`Pattern::unify`]):
+/// each side's variables, by name, with the part of the other side each one
+/// took, as that side's segments.
+///
+/// Today a binding is always one literal (`kc = C`) or one variable (lined up
+/// with it, and recorded on both sides). Holding segments rather than either
+/// of those leaves room for a variable that takes the other side's variable
+/// plus text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unifier {
+    /// The left side's (`self`'s) variables.
+    pub left: BTreeMap<String, Vec<Segment>>,
+    /// The right side's (`other`'s) variables.
+    pub right: BTreeMap<String, Vec<Segment>>,
+}
+
+impl Unifier {
+    /// The left side's variables that took literal text, with that text.
+    pub fn left_values(&self) -> Bindings {
+        literal_values(&self.left)
+    }
+
+    /// The right side's variables that took literal text, with that text.
+    pub fn right_values(&self) -> Bindings {
+        literal_values(&self.right)
+    }
+
+    /// Each left variable lined up with a right variable, as (left, right).
+    pub fn aligned(&self) -> Vec<(String, String)> {
+        self.left
+            .iter()
+            .filter_map(|(variable, took)| match took.as_slice() {
+                [Segment::Var(other)] => Some((variable.clone(), other.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn literal_values(side: &BTreeMap<String, Vec<Segment>>) -> Bindings {
+    side.iter()
+        .filter_map(|(variable, took)| match took.as_slice() {
+            [Segment::Literal(text)] => Some((variable.clone(), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One character of literal text, or a variable, of one side of a
+/// two-sided match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Token<'a> {
+    Char(char),
+    Var(&'a str),
+}
+
+fn tokens(segments: &[Segment]) -> Vec<Token<'_>> {
+    let mut out = vec![];
+    for segment in segments {
+        match segment {
+            Segment::Literal(l) => out.extend(l.chars().map(Token::Char)),
+            Segment::Var(v) => out.push(Token::Var(v)),
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+impl Unifier {
+    fn side(&mut self, side: Side) -> &mut BTreeMap<String, Vec<Segment>> {
+        match side {
+            Side::Left => &mut self.left,
+            Side::Right => &mut self.right,
+        }
+    }
+}
+
+/// Two-sided matching, one token at a time. A variable on the left is
+/// settled first, then one on the right; two characters must be equal.
+fn unify_from(left: &[Token], right: &[Token], unifier: &mut Unifier) -> bool {
+    match (left.first(), right.first()) {
+        (None, None) => true,
+        (Some(Token::Var(v)), _) => bind_from(Side::Left, v, &left[1..], right, unifier),
+        (_, Some(Token::Var(v))) => bind_from(Side::Right, v, &right[1..], left, unifier),
+        (Some(Token::Char(a)), Some(Token::Char(b))) => {
+            a == b && unify_from(&left[1..], &right[1..], unifier)
+        }
+        _ => false,
+    }
+}
+
+/// Settle `variable`, from `side`, against the start of `other`, then match
+/// what follows: `rest` on the variable's side, the remainder of `other` on
+/// the other.
+fn bind_from(
+    side: Side,
+    variable: &str,
+    rest: &[Token],
+    other: &[Token],
+    unifier: &mut Unifier,
+) -> bool {
+    let opposite = match side {
+        Side::Left => Side::Right,
+        Side::Right => Side::Left,
+    };
+    let go_on = |rest: &[Token], other: &[Token], unifier: &mut Unifier| match side {
+        Side::Left => unify_from(rest, other, unifier),
+        Side::Right => unify_from(other, rest, unifier),
+    };
+    let chars = |text: &str| text.chars().map(Token::Char).collect::<Vec<_>>();
+
+    // A repeat has to take what was chosen for it before.
+    if let Some(held) = unifier.side(side).get(variable).cloned() {
+        return match held.as_slice() {
+            [Segment::Literal(text)] => match other.first() {
+                // The other side's variable meets a value: it takes the same.
+                Some(Token::Var(theirs)) => {
+                    let theirs = theirs.to_string();
+                    match unifier.side(opposite).get(&theirs).cloned() {
+                        None => {
+                            unifier.side(opposite).insert(theirs.clone(), held);
+                            if go_on(rest, &other[1..], unifier) {
+                                return true;
+                            }
+                            unifier.side(opposite).remove(&theirs);
+                            false
+                        }
+                        Some(same) => same == held && go_on(rest, &other[1..], unifier),
+                    }
+                }
+                _ => {
+                    let text = chars(text);
+                    other.starts_with(&text) && go_on(rest, &other[text.len()..], unifier)
+                }
+            },
+            [Segment::Var(lined_up)] => {
+                other.first() == Some(&Token::Var(lined_up.as_str()))
+                    && go_on(rest, &other[1..], unifier)
+            }
+            _ => false,
+        };
+    }
+
+    match other.first() {
+        None => false,
+        // Two variables meet: they line up, unless the other one is settled
+        // already, when this one takes what it took.
+        Some(Token::Var(theirs)) => {
+            let theirs = theirs.to_string();
+            match unifier.side(opposite).get(&theirs).cloned() {
+                None => {
+                    unifier
+                        .side(side)
+                        .insert(variable.to_string(), vec![Segment::Var(theirs.clone())]);
+                    unifier
+                        .side(opposite)
+                        .insert(theirs.clone(), vec![Segment::Var(variable.to_string())]);
+                    if go_on(rest, &other[1..], unifier) {
+                        return true;
+                    }
+                    unifier.side(side).remove(variable);
+                    unifier.side(opposite).remove(&theirs);
+                    false
+                }
+                Some(held) => match held.as_slice() {
+                    [Segment::Literal(_)] => {
+                        unifier.side(side).insert(variable.to_string(), held);
+                        if go_on(rest, &other[1..], unifier) {
+                            return true;
+                        }
+                        unifier.side(side).remove(variable);
+                        false
+                    }
+                    // Lined up with another variable already.
+                    _ => false,
+                },
+            }
+        }
+        // Literal text, as far as the next variable on the other side: try
+        // each length, shortest first. Never empty.
+        Some(Token::Char(_)) => {
+            let available = other
+                .iter()
+                .take_while(|t| matches!(t, Token::Char(_)))
+                .count();
+            for take in 1..=available {
+                let text: String = other[..take]
+                    .iter()
+                    .map(|t| match t {
+                        Token::Char(c) => *c,
+                        Token::Var(_) => unreachable!(),
+                    })
+                    .collect();
+                unifier
+                    .side(side)
+                    .insert(variable.to_string(), vec![Segment::Literal(text)]);
+                if go_on(rest, &other[take..], unifier) {
+                    return true;
+                }
+                unifier.side(side).remove(variable);
+            }
+            false
         }
     }
 }
@@ -891,6 +1155,188 @@ mod tests {
             Pattern::parse("{{a?}}"),
             Err(PatternError::InvalidVariable("a?".into()))
         );
+    }
+
+    fn literal(text: &str) -> Vec<Segment> {
+        vec![Segment::Literal(text.to_string())]
+    }
+
+    fn var(name: &str) -> Vec<Segment> {
+        vec![Segment::Var(name.to_string())]
+    }
+
+    #[test]
+    fn unify_fills_each_side_from_the_other() {
+        let goal = Pattern::parse("{{kc}} deploys sampleapp gateway").unwrap();
+        let promise = Pattern::parse("C deploys {{appname}} gateway").unwrap();
+        let u = goal.unify(&promise).unwrap();
+        assert_eq!(u.left_values(), binds(&[("kc", "C")]));
+        assert_eq!(u.right_values(), binds(&[("appname", "sampleapp")]));
+        assert!(u.aligned().is_empty());
+        // and the other way round
+        let u = promise.unify(&goal).unwrap();
+        assert_eq!(u.left_values(), binds(&[("appname", "sampleapp")]));
+        assert_eq!(u.right_values(), binds(&[("kc", "C")]));
+    }
+
+    #[test]
+    fn unify_keeps_the_two_namespaces_apart() {
+        // `kc` on each side is its own variable; here the two line up.
+        let goal = Pattern::parse("sampleapp deploys to {{kc}}").unwrap();
+        let promise = Pattern::parse("{{appname}} deploys to {{kc}}").unwrap();
+        let u = goal.unify(&promise).unwrap();
+        assert_eq!(u.left, BTreeMap::from([("kc".to_string(), var("kc"))]));
+        assert_eq!(
+            u.right,
+            BTreeMap::from([
+                ("appname".to_string(), literal("sampleapp")),
+                ("kc".to_string(), var("kc")),
+            ])
+        );
+        assert_eq!(u.aligned(), vec![("kc".to_string(), "kc".to_string())]);
+
+        // Different names line up just the same.
+        let u = Pattern::parse("{{x}} is up")
+            .unwrap()
+            .unify(&Pattern::parse("{{host}} is up").unwrap())
+            .unwrap();
+        assert_eq!(u.aligned(), vec![("x".to_string(), "host".to_string())]);
+    }
+
+    #[test]
+    fn unify_agrees_with_match_ground_when_one_side_is_concrete() {
+        let cases = [
+            ("process-execution", "process-execution"),
+            ("process-execution", "something-else"),
+            ("", ""),
+            ("", "x"),
+            ("process-execution/{{process}}", "process-execution/p1"),
+            ("process-execution/{{process}}", "process-execution/"),
+            ("process-execution/{{process}}", "other/p1"),
+            ("{{a}}-{{b}}", "x-y-z"),
+            ("{{p}}-{{p}}", "x-x"),
+            ("{{p}}-{{p}}", "x-y"),
+            ("{{a}}-{{a}}", "x-y-x-y"),
+            ("{{p}}", ""),
+            ("a{{p}}", "a"),
+            ("{{p}}a", "a"),
+            ("{{a}}-{{b}}", "héllo-wörld"),
+            ("{{a}}", "日本語"),
+            ("{{who}} backs up {{what}}", "b1 backs up db"),
+            ("{{who}} backs up {{what}}", "b1 restores db"),
+            ("x/{{a}}/y/{{b}}", "x/1/y/2/y/3"),
+            ("{{a}} and {{b}} and {{a}}", "p and q and p"),
+            ("{{a}} and {{b}} and {{a}}", "p and q and r"),
+        ];
+        for (pattern, ground) in cases {
+            let pattern = Pattern::parse(pattern).unwrap();
+            let concrete = Pattern::parse(ground).unwrap();
+            let expected = pattern.match_ground(ground);
+            assert_eq!(
+                pattern.unify(&concrete).map(|u| u.left_values()),
+                expected,
+                "{} against {}",
+                pattern,
+                ground
+            );
+            assert_eq!(
+                concrete.unify(&pattern).map(|u| u.right_values()),
+                expected,
+                "{} against {}, reversed",
+                pattern,
+                ground
+            );
+            // nothing lines up with a concrete name
+            if let Some(u) = pattern.unify(&concrete) {
+                assert!(u.aligned().is_empty() && u.right.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn unify_is_leftmost_shortest_on_both_sides() {
+        let u = Pattern::parse("{{a}}-{{b}}")
+            .unwrap()
+            .unify(&Pattern::parse("x-y-{{c}}").unwrap())
+            .unwrap();
+        // `a = x` leaves `b` to take `y-` and `{{c}}` together, which is not
+        // matched; the shortest `a` that works is `x-y`, and `b` lines up
+        // with `c`.
+        assert_eq!(u.left_values(), binds(&[("a", "x-y")]));
+        assert_eq!(u.aligned(), vec![("b".to_string(), "c".to_string())]);
+        assert_eq!(u.right.get("c"), Some(&var("b")));
+        assert!(Pattern::parse("{{a}}")
+            .unwrap()
+            .unify(&Pattern::parse("{{b}}").unwrap())
+            .is_some());
+    }
+
+    #[test]
+    fn unify_repeats_must_agree_across_the_sides() {
+        // `x` takes `a`, so `p`, meeting the second `x`, takes `a` too.
+        let u = Pattern::parse("{{x}} and {{x}}")
+            .unwrap()
+            .unify(&Pattern::parse("a and {{p}}").unwrap())
+            .unwrap();
+        assert_eq!(u.left_values(), binds(&[("x", "a")]));
+        assert_eq!(u.right_values(), binds(&[("p", "a")]));
+        // `p` took `a` and then meets `b`
+        assert_eq!(
+            Pattern::parse("a and b")
+                .unwrap()
+                .unify(&Pattern::parse("{{p}} and {{p}}").unwrap()),
+            None
+        );
+        // a variable lined up with one variable stays lined up with it
+        let u = Pattern::parse("{{x}} and {{x}}")
+            .unwrap()
+            .unify(&Pattern::parse("{{p}} and {{p}}").unwrap())
+            .unwrap();
+        assert_eq!(u.aligned(), vec![("x".to_string(), "p".to_string())]);
+        assert_eq!(
+            Pattern::parse("{{x}} and {{x}}")
+                .unwrap()
+                .unify(&Pattern::parse("{{p}} and {{q}}").unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn unify_never_binds_empty_or_a_variable_plus_text() {
+        let unify = |a: &str, b: &str| {
+            Pattern::parse(a)
+                .unwrap()
+                .unify(&Pattern::parse(b).unwrap())
+        };
+        assert_eq!(unify("a{{x}}", "a"), None);
+        assert_eq!(unify("a{{x}}b", "a{{y}}"), None);
+        // deferred: `kc` would have to take `C-` and `{{zone}}` together
+        assert_eq!(unify("{{kc}}", "C-{{zone}}"), None);
+        assert_eq!(unify("C-{{zone}}", "{{kc}}"), None);
+        // but a variable with text on both sides of it is fine
+        let u = unify("{{kc}}-east", "C-{{zone}}").unwrap();
+        assert_eq!(u.left_values(), binds(&[("kc", "C")]));
+        assert_eq!(u.right_values(), binds(&[("zone", "east")]));
+    }
+
+    #[test]
+    fn canonical_names_variables_by_order_of_appearance() {
+        let (a, renaming) = Pattern::parse("{{kc}} deploys {{app}} for {{kc}}")
+            .unwrap()
+            .canonical();
+        assert_eq!(a.source(), "{{_0}} deploys {{_1}} for {{_0}}");
+        assert_eq!(
+            renaming,
+            BTreeMap::from([
+                ("kc".to_string(), "_0".to_string()),
+                ("app".to_string(), "_1".to_string())
+            ])
+        );
+        let (b, _) = Pattern::parse("{{x}} deploys {{y}} for {{x}}")
+            .unwrap()
+            .canonical();
+        assert_eq!(a, b);
+        assert_eq!(Pattern::parse("plain").unwrap().canonical().0.source(), "plain");
     }
 
     #[test]
