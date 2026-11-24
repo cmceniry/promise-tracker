@@ -68,7 +68,20 @@ fn check_behaviors(
 ) {
     for (i, promise) in provides.iter().enumerate() {
         let at = format!("{}provides[{}]", prefix, i);
-        check_pattern(item, &at, promise.get_name_pattern(), errors);
+        match Pattern::parse(promise.get_name()) {
+            // A promise name takes its values from whoever asks: there is
+            // nothing to declare, only the `?` to drop.
+            Err(PatternError::OpenVariable(variable)) => errors.push(SemanticError {
+                item: item.to_string(),
+                location: at.clone(),
+                name: promise.get_name().clone(),
+                message: format!(
+                    "`{{{{?{v}}}}}` is no longer supported: in a promise name write `{{{{{v}}}}}`, which takes its value from whoever asks",
+                    v = variable
+                ),
+            }),
+            _ => check_pattern(item, &at, promise.get_name_pattern(), errors),
+        }
 
         // The safety rule: a condition may only use variables the promise
         // name binds or the promise declares for its conditions to find, or
@@ -337,8 +350,12 @@ wants:
             "`{{?doc}}` is no longer supported: declare `forSome: [doc]` on the promise and write `{{doc}}`"
         );
         assert_eq!(found[1].location, "provides[1]");
-        assert!(found[1].message.contains("declare `forSome: [svc]`"));
+        assert_eq!(
+            found[1].message,
+            "`{{?svc}}` is no longer supported: in a promise name write `{{svc}}`, which takes its value from whoever asks"
+        );
         assert_eq!(found[2].location, "wants[0]");
+        assert!(!found[2].message.contains("declare `forSome: [svc]` on the promise"));
         assert!(
             found[2].message.contains("a want names one behavior")
                 && found[2].message.contains("`forSome: [svc]`")
@@ -346,6 +363,24 @@ wants:
             "{}",
             found[2].message
         );
+    }
+
+    #[test]
+    fn following_the_rewrite_advice_gives_a_valid_contract() {
+        // In a condition: declare it and drop the `?`; in a name: just drop
+        // the `?`.
+        assert!(check(
+            "kind: Agent
+name: o1
+provides:
+  - name: \"configured for {{agent}}\"
+    forSome: [doc]
+    conditions:
+      - \"{{doc}} shows usage by {{agent}}\"
+  - name: \"{{svc}} is up\"
+"
+        )
+        .is_empty());
     }
 
     #[test]
