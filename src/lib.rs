@@ -1004,6 +1004,8 @@ impl Tracker {
         in_progress.push(goal.to_string());
         let mut r = Resolution::new(goal);
         let mut self_contained = true;
+        // Some promise's answer is uncertain because of the cap.
+        let mut promise_cut_short = false;
 
         let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
         agent_names.sort();
@@ -1039,9 +1041,7 @@ impl Tracker {
                     let (combinations, stands_alone, cut_short) =
                         self.resolve_readings(readings, conditions.len(), in_progress, settled);
                     self_contained &= stands_alone;
-                    if cut_short {
-                        r = r.with_cut_short();
-                    }
+                    promise_cut_short |= cut_short;
                     for resolved_conditions in combinations {
                         // if all conditions are satisfied, add this as a satisfied Offer
                         if resolved_conditions.iter().all(|x| x.is_satisfied()) {
@@ -1061,6 +1061,10 @@ impl Tracker {
             }
         }
 
+        // Kept by some offer, the answer is certain whatever the cap left.
+        if promise_cut_short && !r.is_satisfied() {
+            r = r.with_cut_short();
+        }
         in_progress.pop();
         if self_contained {
             settled.insert(goal.to_string(), r.clone());
@@ -1086,8 +1090,6 @@ const MAX_PARTIAL_READINGS: usize = MAX_CONDITION_READINGS * 16;
 /// no shared declared variable ties together, each with its own readings.
 struct Readings {
     groups: Vec<ReadingGroup>,
-    /// Some group's candidate values were cut by the cap.
-    cut_short: bool,
 }
 
 /// Conditions tied together by shared declared variables, and the ways of
@@ -1097,6 +1099,13 @@ struct ReadingGroup {
     /// The positions of the group's conditions among the promise's.
     conditions: Vec<usize>,
     readings: Vec<Vec<ConditionGoal>>,
+    /// The cap left some of the group's readings unresolved.
+    cut: bool,
+    /// What the group reads, whatever its variables are called and wherever
+    /// its conditions were written: its conditions' text with open
+    /// variables written alike, sorted. Groups are put together in this
+    /// order.
+    order: Vec<String>,
 }
 
 /// How one condition is to be resolved under one reading of its promise.
@@ -1146,14 +1155,23 @@ impl Tracker {
     /// Resolve every group's readings and put them together into the
     /// promise's offers: one list of resolved conditions per offer, in the
     /// promise's condition order. Groups are independent, so an offer is one
-    /// reading of each; readings that hold come first in each group, and
-    /// the combinations of those first of all, so the cap on offers
-    /// (`MAX_CONDITION_READINGS`) can only drop a combination that is not
-    /// kept while it keeps one that is.
+    /// reading of each, and the promise is kept exactly when every group has
+    /// a reading that holds. Readings that hold come first in each group.
+    ///
+    /// With more combinations than the cap on offers
+    /// (`MAX_CONDITION_READINGS`), the ones shown are chosen so that every
+    /// resolved reading of every group is in at least one: offer `i` takes
+    /// reading `i mod n` of each group of `n` (the first of these is a kept
+    /// combination when there is one), then the remaining combinations of
+    /// readings that hold, then the rest, until the cap. Groups are taken in
+    /// the order of what they read, so none of this depends on condition
+    /// order or variable names.
     ///
     /// Also returns whether the answers stand on their own (see
-    /// [`Tracker::resolve_goal`]), and whether the cap dropped anything here
-    /// or in the groups' readings.
+    /// [`Tracker::resolve_goal`]), and whether the answer is cut short: not
+    /// kept, and that only because the cap left a group unresolved — some
+    /// cut group has no reading that holds, and every group with no reading
+    /// that holds was cut.
     fn resolve_readings(
         &self,
         readings: Readings,
@@ -1162,9 +1180,9 @@ impl Tracker {
         settled: &mut HashMap<String, Resolution>,
     ) -> (Vec<Vec<Resolution>>, bool, bool) {
         let mut self_contained = true;
-        let cut_short = readings.cut_short;
-        // Each group's resolved readings, those that hold first.
-        let mut groups: Vec<(Vec<usize>, Vec<Vec<Resolution>>, usize)> = vec![];
+        // Each group's resolved readings, those that hold first; how many
+        // hold; and whether it was cut.
+        let mut groups: Vec<(Vec<usize>, Vec<Vec<Resolution>>, usize, bool)> = vec![];
         for group in readings.groups {
             let mut held = vec![];
             let mut not_held = vec![];
@@ -1179,46 +1197,50 @@ impl Tracker {
             }
             let holding = held.len();
             held.extend(not_held);
-            groups.push((group.conditions, held, holding));
+            groups.push((group.conditions, held, holding, group.cut));
         }
+        let failing = |g: &&(Vec<usize>, Vec<Vec<Resolution>>, usize, bool)| g.2 == 0;
+        let cut_short = groups.iter().filter(failing).any(|g| g.3)
+            && groups.iter().filter(failing).all(|g| g.3);
         // One group over all the conditions in order: its readings are the
         // offers as they stand, nothing to put together or copy.
         if groups.len() == 1 && groups[0].0.iter().enumerate().all(|(i, p)| i == *p) {
-            let (_, readings, _) = groups.pop().unwrap();
+            let (_, readings, _, _) = groups.pop().unwrap();
             return (readings, self_contained, cut_short);
         }
-        // Leaving combinations out of the offers shown is not cutting short:
-        // every group's readings were resolved, and the combinations of
-        // holding ones come first, so the answer is certain.
         let assemble = |choice: &[usize]| -> Vec<Resolution> {
             let mut out: Vec<Option<Resolution>> = vec![None; count];
-            for ((positions, resolved, _), at) in groups.iter().zip(choice) {
+            for ((positions, resolved, _, _), at) in groups.iter().zip(choice) {
                 for (position, condition) in positions.iter().zip(&resolved[*at]) {
                     out[*position] = Some(condition.clone());
                 }
             }
             out.into_iter().flatten().collect()
         };
-        let mut combinations: Vec<Vec<Resolution>> = vec![];
-        // Every combination of readings that hold, then the rest.
-        let holding: Vec<usize> = groups.iter().map(|(_, _, h)| *h).collect();
-        let all: Vec<usize> = groups.iter().map(|(_, r, _)| r.len()).collect();
-        for_each_choice(&holding, |choice| {
-            if combinations.len() >= MAX_CONDITION_READINGS {
+        let holding: Vec<usize> = groups.iter().map(|g| g.2).collect();
+        let all: Vec<usize> = groups.iter().map(|g| g.1.len()).collect();
+        let mut chosen: Vec<Vec<usize>> = vec![];
+        let mut taken: HashSet<Vec<usize>> = HashSet::new();
+        let mut take = |choice: Vec<usize>, chosen: &mut Vec<Vec<usize>>| -> bool {
+            if chosen.len() >= MAX_CONDITION_READINGS {
                 return false;
             }
-            combinations.push(assemble(choice));
-            true
-        });
-        for_each_choice(&all, |choice| {
-            if combinations.len() >= MAX_CONDITION_READINGS {
-                return false;
-            }
-            if !choice.iter().zip(&holding).all(|(c, h)| c < h) {
-                combinations.push(assemble(choice));
+            if taken.insert(choice.clone()) {
+                chosen.push(choice);
             }
             true
-        });
+        };
+        // Every reading of every group, at least once.
+        let widest = all.iter().copied().max().unwrap_or(0);
+        if all.iter().all(|n| *n > 0) {
+            for i in 0..widest {
+                take(all.iter().map(|n| i % n).collect(), &mut chosen);
+            }
+        }
+        // Then the other kept combinations, then the rest.
+        for_each_choice(&holding, |choice| take(choice.to_vec(), &mut chosen));
+        for_each_choice(&all, |choice| take(choice.to_vec(), &mut chosen));
+        let combinations = chosen.iter().map(|choice| assemble(choice)).collect();
         (combinations, self_contained, cut_short)
     }
 
@@ -1393,8 +1415,9 @@ impl Tracker {
                 groups: vec![ReadingGroup {
                     conditions: (0..conditions.len()).collect(),
                     readings: vec![reading],
+                    cut: false,
+                    order: vec![],
                 }],
-                cut_short: false,
             };
         }
         self.declared_readings(conditions, promise.get_for_some())
@@ -1455,7 +1478,6 @@ impl Tracker {
             members.entry(r).or_default().push(i);
         }
 
-        let mut cut_short = false;
         let mut groups = vec![];
         for (_, positions) in members {
             let mine: Vec<Pattern> = positions.iter().map(|i| conditions[*i].clone()).collect();
@@ -1465,7 +1487,8 @@ impl Tracker {
                 .cloned()
                 .collect();
             let (values, cut) = self.candidate_values(&mine, &their_shared);
-            cut_short |= cut;
+            let mut order: Vec<String> = mine.iter().map(unnamed_text).collect();
+            order.sort();
             let readings = if values.is_empty() {
                 vec![mine.iter().cloned().map(read).collect()]
             } else {
@@ -1477,9 +1500,12 @@ impl Tracker {
             groups.push(ReadingGroup {
                 conditions: positions,
                 readings,
+                cut,
+                order,
             });
         }
-        Readings { groups, cut_short }
+        groups.sort_by(|a, b| a.order.cmp(&b.order));
+        Readings { groups }
     }
 
     /// Every complete set of values for `shared` the conditions propose,
@@ -1611,14 +1637,13 @@ impl Tracker {
         let plain = Pattern::parse_lossy(text);
         let mut r = Resolution::new(text);
         let mut self_contained = true;
+        let mut gathered_cut_short = false;
         for name in self.gathered_names(pattern) {
             let (resolved, stands_alone) = self.resolve_goal(&name, in_progress, settled);
             self_contained &= stands_alone;
             // The row stands for each behavior it gathers: if one of those
-            // was cut short, so is the row.
-            if resolved.is_cut_short() {
-                r = r.with_cut_short();
-            }
+            // was cut short, so is the row, unless another keeps it.
+            gathered_cut_short |= resolved.is_cut_short();
             let matched = plain.spans_on(&name).unwrap_or_default();
             for offer in resolved.get_satisfying_offers() {
                 r = r.add_satisfying_offer(
@@ -1630,6 +1655,9 @@ impl Tracker {
                     offer.clone().answering(&name).with_matched(matched.clone()),
                 );
             }
+        }
+        if gathered_cut_short && !r.is_satisfied() {
+            r = r.with_cut_short();
         }
         in_progress.pop();
         if self_contained {
@@ -4185,7 +4213,8 @@ provides:
             // The one condition that names the pair names it complete, so
             // it is read before the 300 partial ones fill the cap.
             assert!(r.is_satisfied(), "{:?}", order);
-            assert!(r.is_cut_short(), "{:?}", order);
+            // Kept, so certain: nothing the cap left out could change it.
+            assert!(!r.is_cut_short(), "{:?}", order);
         }
     }
 
@@ -4268,7 +4297,7 @@ provides:
             ));
             let r = t.resolve("ready");
             assert!(r.is_satisfied(), "{} {}", b, o);
-            assert!(r.is_cut_short(), "{} {}", b, o);
+            assert!(!r.is_cut_short(), "{} {}", b, o);
         }
     }
 
@@ -4309,6 +4338,76 @@ provides:
         assert!(t.resolve("web served").is_satisfied());
         t.set_fold_collectives(false);
         assert!(t.resolve("web served").is_satisfied());
+    }
+
+    #[test]
+    fn test_a_group_failing_outright_makes_the_answer_certain() {
+        // `a` has 257 readings, one more than the cap, and only the last
+        // is good; but `missing thing` is a group of its own, resolved and
+        // failing, so nothing the cap left out could keep `go`.
+        let build = |missing: bool| {
+            let mut yaml = format!(
+                "kind: Agent\nname: A\nwants:\n  - name: go\nprovides:\n  - name: go\n    forSome: [a]\n    conditions: [\"{{{{a}}}} is A\", \"{{{{a}}}} is good\"{}]\n---\nkind: Agent\nname: Z\nprovides:\n",
+                if missing { ", \"missing thing\"" } else { "" }
+            );
+            for i in 0..257 {
+                yaml.push_str(&format!("  - name: \"a{i:03} is A\"\n"));
+            }
+            yaml.push_str("  - name: \"a256 is good\"\n");
+            crate::marks::tracker(&yaml)
+        };
+        let t = build(true);
+        let r = t.resolve("go");
+        assert!(!r.is_satisfied());
+        assert!(!r.is_cut_short());
+        let causes = &crate::query::unsatisfied(&t, crate::query::QueryOptions::default())[0].causes;
+        assert!(causes.iter().all(|c| c.kind != crate::query::CauseKind::CutShort));
+        assert!(causes.iter().any(|c| c.behavior == "missing thing"));
+        // Without it, the one reading that could keep `go` was never tried.
+        assert!(build(false).resolve("go").is_cut_short());
+    }
+
+    /// `w` for an `x` and a `y`, each needing two things: 20 values each,
+    /// `q1` and `q2` provided for none, so 400 combinations, none kept.
+    fn combos(x_first: bool) -> Tracker {
+        let x = "\"{{x}} r1\", \"{{x}} q1\"";
+        let y = "\"{{y}} r2\", \"{{y}} q2\"";
+        let (first, second) = if x_first { (x, y) } else { (y, x) };
+        let mut yaml = format!(
+            "kind: Agent\nname: A\nwants:\n  - name: w\nprovides:\n  - name: w\n    forSome: [x, y]\n    conditions: [{first}, {second}]\n---\nkind: Agent\nname: Z\nprovides:\n"
+        );
+        for i in 1..=20 {
+            yaml.push_str(&format!("  - name: \"a{i:02} r1\"\n  - name: \"b{i:02} r2\"\n"));
+        }
+        crate::marks::tracker(&yaml)
+    }
+
+    #[test]
+    fn test_offers_shown_over_the_cap_cover_every_reading_in_any_order() {
+        let summary = |t: &Tracker| -> Vec<String> {
+            let rows = crate::query::unsatisfied(t, crate::query::QueryOptions::default());
+            rows[0].causes.iter().map(|c| c.behavior.clone()).collect()
+        };
+        let (xy, yx) = (combos(true), combos(false));
+        let r = xy.resolve("w");
+        assert_eq!(r.get_unsatisfying_offers().len(), MAX_CONDITION_READINGS);
+        assert!(!r.is_cut_short());
+        // Every reading of both groups is in some offer shown, so every
+        // cause is listed: 20 `q1` and 20 `q2`.
+        let causes = summary(&xy);
+        assert_eq!(causes.len(), 40, "{:?}", causes);
+        assert_eq!(causes, summary(&yx));
+        // and the provides listing reads the same, condition by condition
+        let held = |t: &Tracker| -> BTreeSet<(String, bool)> {
+            crate::query::agent_provides(t, "A", crate::query::QueryOptions::default())
+                .unwrap()
+                .provides[0]
+                .conditions
+                .iter()
+                .map(|c| (c.behavior.clone(), c.held))
+                .collect()
+        };
+        assert_eq!(held(&xy), held(&yx));
     }
 
     #[test]
