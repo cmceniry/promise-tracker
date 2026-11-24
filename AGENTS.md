@@ -44,6 +44,9 @@ just build-wasm       # Build legacy WASM package
 
 ### Core Library (`src/`)
 - `lib.rs` - Main `Tracker` struct for managing agents and resolution
+- `components/pattern.rs` - Parameterized names: `match_ground` (a pattern
+  against a concrete name) and `unify` (two-sided, for declared variables,
+  with the "wording must correspond" rule in one private type)
 - `resolve.rs` - Resolution logic (who provides what).
   `Resolution::without_unneeded_alternatives` is the one rule behind the
   "Fold: Unneeded alternatives" display option (`--fold-alternatives`): at
@@ -51,7 +54,9 @@ just build-wasm       # Build legacy WASM package
   each with everything it rests on; a behavior nobody keeps keeps them all.
   Display only (see `docs/design/fold-alternatives.md`)
 - `query.rs` - Inventory queries as data: an agent's provides, a behavior's
-  providers/consumers, unsatisfied wants with leaf causes, unused promises.
+  providers/consumers, unsatisfied wants with leaf causes (a condition still
+  holding a declared variable is `CauseKind::Unfound`, naming the variable
+  and any promise that only held for any value), unused promises.
   `QueryOptions::fold_alternatives` drops promises that are not held, for a
   behavior something else keeps, from a behavior's providers and an agent's
   provides; unsatisfied and unused ignore it
@@ -93,6 +98,9 @@ Commands: `agents`, `behavior`, `check-unsatisfied`, `provides` (alias
 `schema`. Display flags matching the UI toggles, where meaningful:
 `--unfold` (SuperAgent members as agents), `--fold-self`, `--bundle`;
 `check-unsatisfied --summary` lists unsatisfied wants with leaf causes.
+`validate` also runs the checks that need every file: membership cycles,
+dangling instance bases, non-ground wants, and declared variables that can
+be anything (`Tracker::unnamable_variables`).
 `--mark-bound` on `provides` / `providers` / `unused` wraps substituted
 values in `<>` (see `docs/design/self-and-open-variables.md`).
 `--fold-alternatives` on `check-unsatisfied` / `simulate` / `providers` /
@@ -124,11 +132,17 @@ Key concepts:
 - **`{{!self}}`** (or `{{!SELF}}`): in a behavior name, condition or want,
   replaced with the declaring agent's own name (the instance's name for an
   Instance, the member's for a SuperAgent member) before resolution
-- **`{{?x}}`**: an open variable in a condition or want, met by any behavior
-  some agent promises outright that matches; not allowed in a provides name
-  or as a CLI behavior argument. A sibling condition of the same promise may
-  use the value it finds as plain `{{x}}`; each match is then tried as one
-  candidate across those conditions, one offer per candidate
+- **`forSome: [x]`**: on a promise (never a want), declares variables its
+  conditions find values for, written plainly as `{{x}}`; a condition
+  variable must be in the promise name or in `forSome`. Values are found by
+  two-sided matching against promises outright or parameterized
+  (`Pattern::unify`; with variables on both sides the wording must
+  correspond). A variable used by two or more conditions gives one offer per
+  candidate value; one used by a single condition makes that condition one
+  row gathering every match. Resolution stays concrete. A declared variable
+  only a holds-for-any promise answers is invalid (`validate`). The old
+  `{{?x}}` is a validation error that spells out this rewrite. See
+  `docs/design/self-and-open-variables.md` §3, §5
 
 ## Technology Stack
 

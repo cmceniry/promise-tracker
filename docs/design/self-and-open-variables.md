@@ -1,8 +1,8 @@
 # Self-Reference and Declared Variables
 
-**Status**: phase 1 implemented; phases 2 and 3 redefined (2026-11-24): the
-`{{?x}}` open variable is replaced by a `forSome` declaration on the promise
-and two-sided matching (§3, §5)
+**Status**: implemented (2026-11-24): `{{!self}}`; `forSome` declarations
+answered by two-sided matching, replacing the `{{?x}}` open variable (§3,
+§5). The "wording must correspond" rule awaits the owner's confirmation
 **Date**: 2026-11-19, revised 2026-11-24
 **Scope**: core library, CLI, frontend
 **Builds on**: `docs/design/parameterized-behaviors.md` (P0–P3 landed)

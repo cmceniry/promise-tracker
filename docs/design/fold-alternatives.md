@@ -36,9 +36,9 @@ So:
 - an unsatisfied behavior keeps all its offers;
 - a behavior with no offers is unchanged;
 - every satisfying offer is kept, however many there are;
-- an offer answering an open goal (`{{?x}}`) is an ordinary offer: candidates
-  that fail go when another candidate keeps the goal, and all stay when none
-  does;
+- an offer under a gathered row (a condition still holding a declared
+  `forSome` variable) is an ordinary offer: candidates that fail go when
+  another candidate keeps the row, and all stay when none does;
 - doing it twice changes nothing more, and `is_satisfied()` is the same
   before and after.
 
