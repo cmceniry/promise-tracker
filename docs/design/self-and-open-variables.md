@@ -431,19 +431,24 @@ The cap:
   a kept combination whenever one exists; then the other combinations of
   holding readings; then the rest, until the cap. Groups are taken in the
   order of what they read (their conditions' text, open variables written
-  alike, sorted), so which combinations are shown, and which reading the
+  alike, sorted), and where two read alike, in the order of what their
+  readings came to (each reading's conditions' text, sorted, open variables
+  written alike). Two groups that tie on that too make the same offers in
+  either order. So which combinations are shown, and which reading the
   provides listing shows as held on a tie, depend neither on condition
   order nor on variable names. Guaranteed: the answer, the complete set of
   causes, and the choice of offers shown. Not shown: combinations past the
   cap, which repeat readings already shown.
-- "Cut short" is reported exactly when the answer is uncertain: no offer
-  keeps the goal, some group whose readings the cap cut (more than 256
-  complete readings, or more partial ones than its cap) has no resolved
-  reading that holds, and every group with no reading that holds was cut.
-  If a group resolved in full has no reading that holds, the answer is
-  certainly "not kept" and nothing is cut short; if anything keeps the
+- "Cut short" is reported when no offer keeps the goal, some group whose
+  readings the cap cut (more than 256 complete readings, or more partial
+  ones than its cap) has no resolved reading that holds, and every group
+  with no reading that holds fails only uncertainly: it was cut, or one of
+  the conditions it fails on was itself cut short. A group resolved in
+  full that fails on nothing cut short fails certainly, and then the goal
+  is certainly not kept and nothing is cut short; if anything keeps the
   goal, nothing is cut short; leaving combinations out of the offers shown
-  never is. Then the goal's resolution says so
+  never is. A goal whose own groups were not cut is not flagged even when
+  a condition below it was; that condition is, and the report names it. Then the goal's resolution says so
   (`Resolution::is_cut_short`), as does a gathered row standing for that
   goal when nothing else keeps the row, and the unsatisfied report gives
   `CauseKind::CutShort` first for that behavior (`check-unsatisfied
@@ -517,8 +522,9 @@ command.
   first, takes the groups in the order of what they read (`ReadingGroup::
   order`), and builds at most `MAX_CONDITION_READINGS` offers: the
   `i mod n` diagonal, then the other combinations of holding readings, then
-  the rest. It reports cut short by the rule above, from each group's own
-  `cut`; `resolve_goal` and `resolve_gathered` set the flag only when the
+  the rest; groups that read alike are ordered by what their readings came
+  to. It reports cut short by the rule above, from each group's own `cut`
+  and whether a condition it fails on is cut short; `resolve_goal` and `resolve_gathered` set the flag only when the
   goal or row is not kept. A promise with nothing declared skips
   all of this (`Tracker::readings`) and its one reading is moved, not copied,
   into its offer; `reduce_one` and `Behavior::instantiate` likewise do no

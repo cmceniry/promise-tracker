@@ -147,10 +147,11 @@ Key concepts:
   reading of every group appears, independent of condition order and
   variable names). A variable used by a single condition makes that
   condition one row gathering every match. Resolution stays concrete.
-  Readings are capped at 256 per group (`MAX_CONDITION_READINGS`); only
-  when that leaves the answer uncertain (not kept, and every group with no
-  holding reading was cut) does the unsatisfied report say so, first
-  (`CauseKind::CutShort`). A declared variable only a holds-for-any
+  Readings are capped at 256 per group (`MAX_CONDITION_READINGS`). The
+  unsatisfied report says a goal was cut short, first
+  (`CauseKind::CutShort`), when it is not kept, one of its groups was cut
+  with nothing tried holding, and every group with nothing holding was cut
+  or fails on a condition itself cut short. A declared variable only a holds-for-any
   promise answers is invalid (`validate`). The old `{{?x}}` is a validation
   error that spells out the rewrite. See
   `docs/design/self-and-open-variables.md` §3, §5
