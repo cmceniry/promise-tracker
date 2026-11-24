@@ -144,7 +144,8 @@ pub enum CauseKind {
     /// The behavior is not kept, but a reading that could have changed that
     /// was never resolved: a promise for it had a group with more readings
     /// than the cap ([`crate::MAX_CONDITION_READINGS`]) and none of those
-    /// tried holds, while every other failing group was cut too. Reported
+    /// tried holds, while every other failing group was cut too or fails on
+    /// a condition itself cut short. Reported
     /// for the behavior whose promise was cut, or for a gathered row
     /// standing for it.
     CutShort,

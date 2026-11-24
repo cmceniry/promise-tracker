@@ -1171,7 +1171,8 @@ impl Tracker {
     /// [`Tracker::resolve_goal`]), and whether the answer is cut short: not
     /// kept, and that only because the cap left a group unresolved — some
     /// cut group has no reading that holds, and every group with no reading
-    /// that holds was cut.
+    /// that holds was cut or fails on a condition itself cut short. Groups
+    /// that read alike are ordered by what their readings came to.
     fn resolve_readings(
         &self,
         readings: Readings,
@@ -1181,8 +1182,17 @@ impl Tracker {
     ) -> (Vec<Vec<Resolution>>, bool, bool) {
         let mut self_contained = true;
         // Each group's resolved readings, those that hold first; how many
-        // hold; and whether it was cut.
-        let mut groups: Vec<(Vec<usize>, Vec<Vec<Resolution>>, usize, bool)> = vec![];
+        // hold; whether it was cut; and whether its failure, if it fails, is
+        // uncertain (cut, or resting on a condition that was cut short).
+        struct Resolved {
+            positions: Vec<usize>,
+            readings: Vec<Vec<Resolution>>,
+            holding: usize,
+            cut: bool,
+            uncertain: bool,
+            order: (Vec<String>, Vec<Vec<String>>),
+        }
+        let mut groups: Vec<Resolved> = vec![];
         for group in readings.groups {
             let mut held = vec![];
             let mut not_held = vec![];
@@ -1196,29 +1206,57 @@ impl Tracker {
                 }
             }
             let holding = held.len();
+            let uncertain = group.cut
+                || not_held
+                    .iter()
+                    .flatten()
+                    .any(|c| !c.is_satisfied() && c.is_cut_short());
             held.extend(not_held);
-            groups.push((group.conditions, held, holding, group.cut));
+            // Ties on what the group reads are broken by what its readings
+            // came to: their conditions' text, open variables written alike.
+            // Groups that tie on that too make the same offers either way.
+            let came_to: Vec<Vec<String>> = held
+                .iter()
+                .map(|reading| {
+                    let mut texts: Vec<String> = reading
+                        .iter()
+                        .map(|c| unnamed_text(&Pattern::parse_lossy(c.get_behavior_name())))
+                        .collect();
+                    texts.sort();
+                    texts
+                })
+                .collect();
+            groups.push(Resolved {
+                positions: group.conditions,
+                readings: held,
+                holding,
+                cut: group.cut,
+                uncertain,
+                order: (group.order, came_to),
+            });
         }
-        let failing = |g: &&(Vec<usize>, Vec<Vec<Resolution>>, usize, bool)| g.2 == 0;
-        let cut_short = groups.iter().filter(failing).any(|g| g.3)
-            && groups.iter().filter(failing).all(|g| g.3);
+        groups.sort_by(|a, b| a.order.cmp(&b.order));
+        // Cut short: some cut group has no reading that holds, and every
+        // group with none fails only uncertainly.
+        let cut_short = groups.iter().any(|g| g.holding == 0 && g.cut)
+            && groups.iter().filter(|g| g.holding == 0).all(|g| g.uncertain);
         // One group over all the conditions in order: its readings are the
         // offers as they stand, nothing to put together or copy.
-        if groups.len() == 1 && groups[0].0.iter().enumerate().all(|(i, p)| i == *p) {
-            let (_, readings, _, _) = groups.pop().unwrap();
+        if groups.len() == 1 && groups[0].positions.iter().enumerate().all(|(i, p)| i == *p) {
+            let readings = groups.pop().unwrap().readings;
             return (readings, self_contained, cut_short);
         }
         let assemble = |choice: &[usize]| -> Vec<Resolution> {
             let mut out: Vec<Option<Resolution>> = vec![None; count];
-            for ((positions, resolved, _, _), at) in groups.iter().zip(choice) {
-                for (position, condition) in positions.iter().zip(&resolved[*at]) {
+            for (group, at) in groups.iter().zip(choice) {
+                for (position, condition) in group.positions.iter().zip(&group.readings[*at]) {
                     out[*position] = Some(condition.clone());
                 }
             }
             out.into_iter().flatten().collect()
         };
-        let holding: Vec<usize> = groups.iter().map(|g| g.2).collect();
-        let all: Vec<usize> = groups.iter().map(|g| g.1.len()).collect();
+        let holding: Vec<usize> = groups.iter().map(|g| g.holding).collect();
+        let all: Vec<usize> = groups.iter().map(|g| g.readings.len()).collect();
         let mut chosen: Vec<Vec<usize>> = vec![];
         let mut taken: HashSet<Vec<usize>> = HashSet::new();
         let mut take = |choice: Vec<usize>, chosen: &mut Vec<Vec<usize>>| -> bool {
@@ -4408,6 +4446,172 @@ provides:
                 .collect()
         };
         assert_eq!(held(&xy), held(&yx));
+    }
+
+    /// `name` with `forSome: [v]` and conditions `{{v}} is K`, `{{v}} is
+    /// goodK`: `n` values of `v`, only the last good. Over 256, cut with
+    /// nothing holding among those tried.
+    fn cut_group(name: &str, v: &str, k: &str, n: usize, also: &[&str]) -> String {
+        let mut extra = String::new();
+        for c in also {
+            extra.push_str(&format!(", \"{c}\""));
+        }
+        let mut yaml = format!(
+            "  - name: \"{name}\"\n    forSome: [{v}]\n    conditions: [\"{{{{{v}}}}} is {k}\", \"{{{{{v}}}}} is good{k}\"{extra}]\n"
+        );
+        for i in 0..n {
+            yaml.push_str(&format!("  - name: \"{k}{i:03} is {k}\"\n"));
+        }
+        yaml.push_str(&format!("  - name: \"{k}{:03} is good{k}\"\n", n - 1));
+        yaml
+    }
+
+    fn agent_providing(body: &str) -> Tracker {
+        crate::marks::tracker(&format!(
+            "kind: Agent\nname: A\nwants:\n  - name: go\nprovides:\n{body}"
+        ))
+    }
+
+    #[test]
+    fn test_a_group_failing_on_a_cut_short_condition_is_uncertain() {
+        // `go`'s own group is cut, and `inner`, its other condition, fails
+        // only because it was cut short too: nothing about `go` is certain.
+        let t = agent_providing(&format!(
+            "{}{}",
+            cut_group("go", "a", "a", 257, &["inner"]),
+            cut_group("inner", "c", "c", 257, &[])
+        ));
+        let r = t.resolve("go");
+        assert!(!r.is_satisfied());
+        assert!(t.resolve("inner").is_cut_short());
+        assert!(r.is_cut_short());
+        // The same through a gathered row.
+        let t = agent_providing(&format!(
+            "{}{}",
+            cut_group("go", "a", "a", 257, &["{{g}} is deep"]).replace("forSome: [a]", "forSome: [a, g]"),
+            cut_group("x is deep", "c", "c", 257, &[])
+        ));
+        assert!(t.resolve("go").is_cut_short());
+        // `inner` resolved in full and failing is certain: not flagged.
+        let t = agent_providing(&format!(
+            "{}{}",
+            cut_group("go", "a", "a", 257, &["inner"]),
+            cut_group("inner", "c", "c", 3, &[]).replace("c002 is goodc", "nothing")
+        ));
+        assert!(!t.resolve("inner").is_cut_short());
+        assert!(!t.resolve("go").is_cut_short());
+    }
+
+    #[test]
+    fn test_two_cut_groups_are_cut_short() {
+        let mut body = cut_group("go", "a", "a", 257, &["{{c}} is c", "{{c}} is goodc"])
+            .replace("forSome: [a]", "forSome: [a, c]");
+        for i in 0..257 {
+            body.push_str(&format!("  - name: \"c{i:03} is c\"\n"));
+        }
+        body.push_str("  - name: \"c256 is goodc\"\n");
+        let r = agent_providing(&body).resolve("go");
+        assert!(!r.is_satisfied());
+        assert!(r.is_cut_short());
+    }
+
+    #[test]
+    fn test_a_gathered_row_kept_by_another_name_is_not_cut_short() {
+        // `{{x}} is go` stands for `p is go`, cut short, and `q is go`,
+        // kept: the row holds, so nothing is uncertain.
+        let t = agent_providing(&format!(
+            "  - name: go\n    forSome: [x]\n    conditions: [\"{{{{x}}}} is go\"]\n  - name: q is go\n{}",
+            cut_group("p is go", "a", "a", 257, &[])
+        ));
+        let r = t.resolve("go");
+        assert!(r.is_satisfied());
+        assert!(t.resolve("p is go").is_cut_short());
+        let row = &r.get_satisfying_offers()[0].get_resolved_conditions()[0];
+        assert!(row.is_satisfied());
+        assert!(!row.is_cut_short());
+        assert!(!r.is_cut_short());
+    }
+
+    /// One group per size, `v{k}` with `{{v{k}}} r{k}` (provided for every
+    /// value) and `{{v{k}}} q{k}` (for none), the groups written in the
+    /// given order. Nothing is kept; the causes are every `q`.
+    fn sized_groups(sizes: &[usize], reversed: bool) -> Tracker {
+        let mut groups: Vec<String> = (0..sizes.len())
+            .map(|k| format!("\"{{{{v{k}}}}} r{k}\", \"{{{{v{k}}}}} q{k}\""))
+            .collect();
+        if reversed {
+            groups.reverse();
+        }
+        let vars: Vec<String> = (0..sizes.len()).map(|k| format!("v{k}")).collect();
+        let mut yaml = format!(
+            "kind: Agent\nname: A\nwants:\n  - name: w\nprovides:\n  - name: w\n    forSome: [{}]\n    conditions: [{}]\n---\nkind: Agent\nname: Z\nprovides:\n",
+            vars.join(", "),
+            groups.join(", ")
+        );
+        for (k, n) in sizes.iter().enumerate() {
+            for i in 0..*n {
+                yaml.push_str(&format!("  - name: \"g{k}x{i:03} r{k}\"\n"));
+            }
+        }
+        crate::marks::tracker(&yaml)
+    }
+
+    #[test]
+    fn test_offers_shown_cover_every_reading_whatever_the_sizes() {
+        for sizes in [vec![12, 18], vec![20, 30], vec![8, 8, 8], vec![1, 256, 2], vec![12, 18, 24]] {
+            let causes = |t: &Tracker| -> Vec<String> {
+                crate::query::unsatisfied(t, crate::query::QueryOptions::default())[0]
+                    .causes
+                    .iter()
+                    .map(|c| c.behavior.clone())
+                    .collect()
+            };
+            let (forward, backward) = (sized_groups(&sizes, false), sized_groups(&sizes, true));
+            let r = forward.resolve("w");
+            assert!(!r.is_satisfied());
+            assert!(!r.is_cut_short());
+            assert!(r.get_unsatisfying_offers().len() <= MAX_CONDITION_READINGS);
+            let listed = causes(&forward);
+            assert_eq!(listed.len(), sizes.iter().sum::<usize>(), "{:?}", sizes);
+            assert_eq!(listed, causes(&backward), "{:?}", sizes);
+        }
+    }
+
+    /// Every offer as the sorted names of its conditions, sorted.
+    fn offers_as_text(r: &Resolution) -> Vec<Vec<String>> {
+        let mut out: Vec<Vec<String>> = r
+            .get_satisfying_offers()
+            .iter()
+            .chain(r.get_unsatisfying_offers())
+            .map(|o| {
+                let mut names = offer_conditions(o);
+                names.sort();
+                names
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn test_groups_that_read_alike_are_put_together_the_same_way_in_any_order() {
+        // Two groups reading the same with their variables unnamed, written
+        // in either order: 17 x 17 combinations, over the cap.
+        let build = |ab: bool| {
+            let first = "\"{{x}} to {{y}}\", \"{{x}} p\", \"{{y}} q\"";
+            let second = "\"{{u}} to {{v}}\", \"{{v}} p\", \"{{u}} q\"";
+            let (a, b) = if ab { (first, second) } else { (second, first) };
+            let mut yaml = format!(
+                "kind: Agent\nname: A\nwants:\n  - name: go\nprovides:\n  - name: go\n    forSome: [x, y, u, v]\n    conditions: [{a}, {b}]\n---\nkind: Agent\nname: Z\nprovides:\n"
+            );
+            for i in 0..17 {
+                yaml.push_str(&format!("  - name: \"s{i:02} to t{i:02}\"\n"));
+            }
+            crate::marks::tracker(&yaml)
+        };
+        let (ab, ba) = (build(true).resolve("go"), build(false).resolve("go"));
+        assert_eq!(ab.get_unsatisfying_offers().len(), MAX_CONDITION_READINGS);
+        assert_eq!(offers_as_text(&ab), offers_as_text(&ba));
     }
 
     #[test]
