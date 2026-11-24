@@ -1,8 +1,9 @@
-# Self-Reference and Open Variables
+# Self-Reference and Declared Variables
 
-**Status**: phases 1 and 2 implemented; of phase 3, sideways flow (a value
-shared between conditions) is implemented and upward flow is not started
-**Date**: 2026-11-19
+**Status**: phase 1 implemented; phases 2 and 3 redefined (2026-11-24): the
+`{{?x}}` open variable is replaced by a `forSome` declaration on the promise
+and two-sided matching (§3, §5)
+**Date**: 2026-11-19, revised 2026-11-24
 **Scope**: core library, CLI, frontend
 **Builds on**: `docs/design/parameterized-behaviors.md` (P0–P3 landed)
 
@@ -11,8 +12,11 @@ Three additions to parameterized behavior names, in the order they will land:
 | Phase | Addition | State of the definition |
 |---|---|---|
 | 1 | `{{!self}}` — an agent refers to itself by a reserved variable | specified here, implemented |
-| 2 | `{{?x}}` — an open variable, bound by whoever provides a match | specified here, implemented |
-| 3 | Binding direction — a value bound on the provider's side flows back up | open problem, §5 |
+| 2 | `forSome: [x]` — a variable a promise's conditions find a value for | specified here (§3) |
+| 3 | Two-sided matching — a value found on the provider's side, parameterized or not | specified here (§5); a variable taking a variable plus text is deferred |
+
+Phase 2 was first built as `{{?x}}`, an open variable written in the
+condition itself. That syntax is removed (§3, "What `{{?x}}` was").
 
 ## 1. Problem
 
@@ -76,8 +80,9 @@ kind: Agent
 name: O1
 provides:
 - name: "S1 configured to allow R1 read access for {{agent}}"
+  forSome: [doc]
   conditions:
-    - "{{?doc}} shows usage of R1 by {{agent}}"
+    - "{{doc}} shows usage of R1 by {{agent}}"
 ---
 kind: Agent
 name: D1
@@ -154,8 +159,10 @@ An optional marking wraps substituted values in `<>`: `<A1> reads R1`.
   - what a parameterized promise name took from the goal it keeps
     (`<A1> reads R1` against `{{agent}} reads R1`), and that value where it
     went on into the promise's conditions;
-  - a value one condition found with `{{?x}}`, where a sibling uses it;
-  - the part of a promised behavior an open goal's `{{?x}}` matched.
+  - the value a declared (`forSome`) variable took, in every condition
+    that uses it;
+  - the part of a promised behavior a condition still holding a declared
+    variable matched (a gathered row, §3).
 - A name is marked by who is looking at it. The agent that needs a behavior
   (a want, or a condition on its promise) marks what its side filled in; the
   agent that promises it marks what its own declaration names through a
@@ -169,14 +176,14 @@ An optional marking wraps substituted values in `<>`: `<A1> reads R1`.
   the earlier decision to keep marks off edge labels: the two declarations
   may be written differently, and the union is the reading that hides
   nothing. `<appname> has IAM role <approle>` is `appname`'s own
-  `{{!self}}` together with the asker's `{{?approle}}`.
+  `{{!self}}` together with the value the asker's declared `approle` took.
 - Where a name belongs to no one agent — the Inventory's behavior list and a
   behavior's heading, a dependency loop in the cycle banner, a line ending
   in a scratch group — it is marked with what any agent substituted.
 - A row shows what its own declaration substituted, and nothing a neighbor
   did with the same text. One agent can reach a name two ways — one promise
-  writes a condition out, another finds it with `{{?x}}`; a want is written
-  out, a condition names it through `{{!self}}` — and only the second of
+  writes a condition out, another finds it through a declared variable; a
+  want is written out, a condition names it through `{{!self}}` — and only the second of
   each is marked. So a list row is keyed by what it stands for: a want by
   (agent, want); a promise by (agent, the promise as written); a condition
   by (agent, the behavior its promise keeps, the condition). A trail is
@@ -186,7 +193,7 @@ An optional marking wraps substituted values in `<>`: `<A1> reads R1`.
   the needs of the agent's own promises it rested on, and can then list the
   same behavior from the same provider twice: `z is up`, the card's own
   condition written out, and `↩ <z> is up`, taken over from a folded promise
-  that found it with `{{?v}}`. They stay two rows, each marked as its own
+  that found it through a declared `v`. They stay two rows, each marked as its own
   condition has it.
 - Where one row or card stands for several occurrences it shows the union
   of theirs, and only theirs: a row bundled over several agents; a row the
@@ -199,8 +206,8 @@ An optional marking wraps substituted values in `<>`: `<A1> reads R1`.
 - A heading that names the want being looked at — the Detailed views'
   subtitle, the Trace title, the behavior select — shows it as its agent
   wrote it (`Tracker::marked_want`). File names stay plain.
-- The Detailed text view names the behavior an open need was answered by on
-  the offer's row, with the option on or off:
+- The Detailed text view names the behavior a gathered row was answered by
+  on the offer's row, with the option on or off:
   `OPTION: appname — appname has IAM role approle`. Marked, that is where the
   match's own marks show (`<appname> has IAM role <approle>`). Bundled into
   one row per provider, the need reads `need → behavior kept`.
@@ -212,7 +219,7 @@ Where each view takes its label from, with the option on:
 | View | Label |
 |---|---|
 | Overview graph | `fold::mark`: each promise on a line by `Marks::edge(source, target, behavior)`; a missing behavior's node by `Marks::needed`; the unsatisfied strip by `Marks::want(agent, want)`, a want as its agent wrote it |
-| Detailed, Text | the resolution itself: heading `Resolution::marked_name` (from `Tracker::resolve_want`), each behavior row under it `marked_name_with_offers`, an offer's row under an open need `Resolution::marked_offer` |
+| Detailed, Text | the resolution itself: heading `Resolution::marked_name` (from `Tracker::resolve_want`), each behavior row under it `marked_name_with_offers`, an offer's row under a gathered row `Resolution::marked_offer` |
 | Detailed, Sequence | `DiagramOptions::mark_bound`: each arrow by the offer's and the needing side's spans together; the marks are written `#lt;` `#gt;` so Mermaid draws them rather than reading markup |
 | Detailed, behavior select and frame subtitle | `Tracker::marked_want(component, want)` (`ViewOptions::want_label`) |
 | Trace | wants list and frame title `Tracker::marked_want(agent, want)`; cards and their needs `Trail::labels_when`, from the spans the trail took from its own resolution, with no whole-tracker `Marks` built: the want card as its agent wrote it; a need row as the one condition it stands for filled it in, with what the answering promise names through a variable; a promise card by its own promise and every need reaching it on the trail; a missing card by the needs reaching it |
@@ -281,8 +288,8 @@ As built:
 - `Resolution` and `Offer` carry the spans resolution filled in
   (`src/resolve.rs`): a resolution, the parts of its name the needing side
   substituted; an offer, the parts of the behavior it keeps that its promise
-  names through a variable, and under an open goal the parts the goal filled
-  in or matched. They are set in `Tracker::resolve_goal` and
+  names through a variable, and under a gathered row the parts the row
+  filled in or matched. They are set in `Tracker::resolve_goal` and
   `resolve_reading` from the substituted condition `Pattern`s. The spans take
   no part in equality, `Debug` or serialization (`#[serde(skip)]`: byte
   offsets are of no use to a reader of the JSON). A test reads them with
@@ -315,110 +322,120 @@ As built:
 - Views that already walk a resolution — the text view, the sequence
   diagram — read the spans off it directly.
 
-## 3. Phase 2 — open variables
+## 3. Phase 2 — declared variables (`forSome`)
 
 ### Semantics
 
-- An open variable is written `{{?x}}`. It is bound by whoever provides a
-  matching behavior, not by the promise name. The explicit sigil keeps today's
-  safety rule intact: a plain condition variable the promise name does not
-  bind is still an error, so a typo is still caught.
-- Allowed in conditions and in top-level wants.
-- An open goal matches **ground provided behaviors only**: the names working
-  agents declare, after self-substitution and instance bindings. It does not
-  match parameterized provides.
-- An open variable in a want is scoped to that want. A repeat inside one name
-  must bind consistently. In a condition, its value may also be used by sibling
-  conditions (§5); it never flows up into the promise name.
-- Several matches: the goal is satisfied if any one match is satisfied. Each
-  match is its own offer, shown under its ground name. This is today's
-  multi-provider rule.
-- No match: unsatisfied, shown under the pattern text itself.
+- A promise may declare variables its conditions find values for:
 
-### Determinism
+  ```yaml
+  - name: "{{appname}} gateway is configured"
+    forSome: [kc]
+    conditions:
+      - "{{appname}} deploys to {{kc}}"
+      - "{{kc}} deploys {{appname}} gateway"
+  ```
 
-The set an open goal is matched against is fixed once the working agents are
-built. It is never matched against names some other resolution derived, so an
-answer cannot depend on which resolutions ran first. Offers keep today's order:
-agents by name, then declaration order. The match set is finite, so open goals
-add no new termination risk.
+  The promise holds when, for some value of `kc`, every condition holds.
+  `kc` is written plainly, `{{kc}}`, wherever it is used.
+- A condition variable must be named by the promise name or listed in
+  `forSome`. Anything else is a validation error, so a typo is still caught.
+- Declared variables are local to the promise. They never flow into the
+  promise name; the name's variables are filled in from the goal first.
+- Wants are concrete once `{{!self}}` and Instance bindings are filled in. A
+  want still holding a variable is not searched: it is reported by
+  `Tracker::non_ground_wants` and stays unsatisfied, as it always was.
+- How a value is found is §5: every condition that mentions a declared
+  variable proposes values for it, from promises made outright or
+  parameterized, and the proposals are pooled. Condition order never
+  matters.
 
-### What ground-only matching gives up
+### Results
 
-```yaml
-kind: Agent
-name: A1
-wants:
-- name: "{{?svc}} grants {{!self}} read on R1"
----
-kind: Agent
-name: S1
-provides:
-- name: "{{!self}} grants {{agent}} read on R1"
-```
+Resolution stays concrete. The search only proposes values; the existing
+resolver, with its cache keyed on goal text, decides what is kept. The
+search may over-propose — a value one condition proposes that another
+condition does not hold for shows as an offer that is not kept — but it
+never decides "satisfied" itself.
 
-After self-substitution this is a pattern on both sides. It does not match in
-phase 2 and the want stays unsatisfied; it is the simplest phase 3 case. So
-that this is not a silent surprise, an open goal that finds no match says in
-its unsatisfied report that parameterized providers are not considered.
+- **Shared** — a declared variable used by two or more conditions. The
+  promise is read once per candidate value: one offer per candidate, its
+  conditions the concrete behaviors with that value filled in. Candidates
+  are never mixed: values found together (one match binding `a` and `b`)
+  stay together. The promise is kept if any reading is. Every candidate is
+  recorded, held or not.
+- **Gathered** — a condition still holding a declared variable once the
+  shared ones are filled in. It is one row, named by its pattern text,
+  gathering every match as alternatives, any one of which satisfies it. Each
+  offer names the concrete behavior it keeps (`Offer::get_behavior()`).
+  Two independent variables on one promise give one offer with two gathered
+  rows, not a cross product of offers.
+- **Nothing found** for a shared variable: one offer that is not kept, its
+  conditions left as written.
 
-### Validation — reserving phase 3's meaning
+### Invalid versus unsatisfied
 
-These are errors, so that no contract acquires a meaning upward flow would
-change:
+- **Invalid** (reported with the tracker-level checks, beside
+  `non_ground_wants` and `dangling_instance_bases`; not a schema error): a
+  declared variable whose only answer is a promise that holds for any value
+  of it (§5), and nothing anywhere could name a value. For example:
+  "`kc` can be anything: B's `{{appname}} deploys to {{kc}}` holds for any
+  value and nothing names one".
+- **Unsatisfied, not invalid**: something could name a value but not for
+  this asker (C promises the gateway deploy only for `otherapp`).
+- **Unsatisfied, not invalid**: nothing matches the condition at all.
 
-- `{{?x}}` in a provides name
-- one name used both as `{{x}}` in the promise name and `{{?x}}` in its
-  conditions
+### Validation
 
-Phase 2 also rejected a plain `{{doc}}` bound only by a sibling's `{{?doc}}`.
-That shape now has a meaning (§5). The same open name in two conditions of one
-promise is still an error, for the reason given there.
+Per document (`src/validate.rs`):
+
+- a condition variable that is neither in the promise name nor in `forSome`
+- `forSome` on a promise without `conditions`
+- a `forSome` name no condition uses
+- a `forSome` name that is also a variable of the promise name
+- a `forSome` name that is not a legal variable name
+- a `forSome` name listed twice
+- `forSome` on a want
+- `{{?x}}` anywhere (see "What `{{?x}}` was" below)
+
+### Determinism and termination
+
+Offers keep today's order: agents by name, then declaration order. The
+search uses resolution's two guards: an in-progress stack, compared with
+variables renamed so that the same question under different variable names
+is recognized, and the depth cap (`MAX_RESOLVE_DEPTH`, 64). Shared variables
+keep the cap of 256 readings per promise (`MAX_CONDITION_READINGS`);
+gathered rows have none.
 
 ### SuperAgent reduction
 
-An open condition passes through `reduce()` untouched and stays on the
-collective as an external condition, matched during normal resolution, where
-the collective itself may be the provider. This is the rule non-ground
-conditions already follow (`parameterized-behaviors.md` §8.1).
+`reduce()` hoists the conditions of an inner promise a collective meets
+itself into the outer promise. An inner promise's declared variables come
+along: they are added to the outer promise's `forSome`, renamed where they
+clash with a name already in use there. A condition still holding a variable
+is never met internally; it stays on the collective as an external
+condition, matched during normal resolution, where the collective itself may
+be the provider (`parameterized-behaviors.md` §8.1).
 
 ### CLI
 
-Command-line behavior arguments stay ground. `simulate` and `providers` reject
-an open pattern. Open goals are reached only through contracts.
+Command-line behavior arguments stay concrete. `simulate` and `providers`
+refuse an argument holding `{{`.
+
+### What `{{?x}}` was
+
+The first form of phase 2 wrote the variable open in the condition,
+`{{?doc}} shows usage`, and matched it only against behaviors promised
+outright. Whether a contract resolved then depended on which condition
+carried the `?`, and it never resolved when the answering promise was
+parameterized. `{{?x}}` is removed everywhere, wants included. It is a
+validation error whose message spells out the rewrite: declare
+`forSome: [x]` on the promise and write `{{x}}`. There is no rewrite
+command.
 
 ### Implementation
 
-As built:
-
-- `pattern.rs`: `{{?x}}` parses as a variable whose name keeps its `?`.
-  `Pattern::has_open()` and `needs_binding()` tell an open goal from a name
-  still waiting on a value. Matching an open goal against a concrete name is
-  the existing `match_ground`.
-- `Tracker::open_matches(goal)` lists the concrete promised names an open goal
-  matches. `resolve_goal` resolves each as the concrete goal it is and gathers
-  the offers under the open goal; `walk_for_cycles` descends the same way. The
-  per-goal cache is keyed on the goal text as before.
-- `Offer` carries the concrete behavior it keeps when it answers an open goal
-  (`Offer::get_behavior()`), absent from serialization otherwise, so existing
-  output is unchanged.
-- `Tracker::non_ground_wants()` reports only wants holding a plain variable.
-  `promise_graph.rs`, `trace.rs` and `diagram.rs` label an offer with the
-  behavior it keeps; with no match the pattern text is the missing node.
-  `src/query.rs` counts a promise matched by an open goal as used, lists an
-  open want among a behavior's consumers, and names the matched promise in a
-  failing chain's cause.
-- CLI `simulate` and `providers` refuse an argument holding `{{`.
-  `check-unsatisfied --summary` says, for an open goal with no match, that
-  parameterized promises are not considered.
-
-Not yet done:
-
-- `network_diagram.rs` (the legacy graph, drawn by no tab) still labels an open want's providers under the
-  pattern text, and carries no marking.
-- CLI `simulate`, `check-unsatisfied` have no `--mark-bound`.
-- The Inventory tab shows an unmatched open want as plainly "not provided",
-  without the note the CLI gives.
+To be filled in as built.
 
 ## 4. Test plan
 
@@ -438,151 +455,116 @@ Not yet done:
   condition, a pattern and an outright promise, two wants' trails; a card or
   row that merges several shows the union of exactly those. Headings mark
   the want only with the option on. A multi-byte name (`é1`) throughout.
-- **open** — the motivating chain end to end; two matching documents giving
-  two offers, satisfied if either is; no match unsatisfied under the pattern
-  text; an open want; a repeat within one name binding consistently; a
-  parameterized provider not matched, with the report saying so; each
-  reserved shape rejected by validation; an open condition surviving
-  `reduce()`; the CLI rejecting an open argument.
-- **shared values** — a value found by one condition used by a sibling, in
-  either declaration order; one offer per candidate, satisfied and not; a
-  candidate from one match never paired with another's sibling; nothing found
-  leaving the siblings as written; values chained through three conditions; a
-  loop through a shared value reported; conditions judged together in the
-  provides listing; a waiting sibling not reported as a cause; the rejected
-  shapes.
-- **regression** — every existing test passes untouched; contracts with no
-  `!` or `?` behave exactly as before.
+- **declared variables** — the three-agent gateway example (§5) in both
+  condition orders with the answering promise parameterized; a shared
+  variable giving one offer per value, candidates never mixed between
+  values; two independent single-condition variables giving one offer with
+  two gathered rows; a gathered row with two matches satisfied if either is;
+  a holds-for-any-only variable reported invalid while the two unsatisfied
+  cases are not; a promise reaching itself through a variable terminating and
+  reported as a loop; each declaring rule rejected; `{{?x}}` rejected with
+  the rewrite in the message; a folded SuperAgent whose inner promise
+  declares a variable; conditions judged together in the provides listing.
+- **two-sided matching** — agrees with `match_ground` whenever one side is
+  concrete; separate namespaces; a variable lining up with a variable;
+  leftmost-shortest, never empty, a repeat agreeing.
+- **regression** — every existing test that does not involve `{{?…}}` passes
+  untouched; contracts with no variables behave exactly as before.
 
-## 5. Phase 3 — binding direction
+## 5. Phase 3 — two-sided matching
 
 Before this phase a variable's value always came from the promise name,
-matched against a ground goal, and flowed down into the conditions. Phase 3
-asks what happens when the value comes from the provider's side instead. Under
-it a variable has exactly one binding occurrence, marked `?`; every plain
-`{{x}}` is a use.
+matched against a concrete goal, and flowed down into the conditions. A
+declared variable's value comes from the provider's side instead, and the
+provider may itself be parameterized. Finding it is a candidate search in
+front of the concrete resolver.
 
-It has two parts. Sideways flow is built. Upward flow is still an open
-problem.
-
-### Sideways flow — a value shared between conditions
-
-```yaml
-provides:
-- name: configured
-  conditions:
-    - "will support {{?thing}}"
-    - "{{thing}} does stuff"
-```
-
-- **One binder.** Exactly one condition of a promise opens a name, as
-  `{{?thing}}`. Sibling conditions that use it write plain `{{thing}}` and take
-  the value the binder finds. Declaration order does not matter.
-- **Candidates.** Each behavior the binder condition matches is one candidate
-  value. Matching is phase 2's: only behaviors promised outright.
-- **One offer per candidate.** The promise is read once per candidate: the
-  binder condition answered by that one match, the siblings with the value
-  filled in. Each reading is its own offer, satisfying when all its conditions
-  hold. The promise is kept if any reading is. Every candidate is recorded,
-  whether it holds or not.
-- **Nothing found.** One unsatisfying offer, the binder condition under its
-  pattern text and its siblings left as written. Only the binder is reported
-  as the cause.
-- **Chains.** A binder may itself use a sibling's value
-  (`{{?replica}} runs in {{region}}` beside `{{?region}} hosts {{team}}`).
-  Binders are taken in whatever order lets each have what it waits on, and the
-  candidates multiply.
-- **Not shared.** An open variable no sibling uses behaves as in phase 2: the
-  condition gathers every match and any one satisfies it.
-
-Why one binder, and not `{{?thing}}` in both conditions: two open occurrences
-would each search on their own, and the pair would have to be intersected
-afterwards. One finding and the rest using it says which condition the
-candidates come from, and keeps a typo in the plain use an error.
-
-Validation:
-
-- a plain `{{x}}` in a condition must be named by the promise or opened as
-  `{{?x}}` by a different condition of the same promise
-- the same open name in two conditions is an error, with the fix in the
-  message (write `{{x}}` in the second)
-- binder conditions that wait on each other's values are an error
-
-Limits:
-
-- A promise's conditions get at most 256 readings; further candidates are
-  dropped.
-- Values do not flow between a promise's conditions and its name, or between
-  wants.
-- In a folded SuperAgent, conditions that share a value are not ground, so
-  `reduce()` leaves them on the collective as external conditions.
-
-As built:
-
-- `Tracker::condition_readings` turns a promise's conditions, with the goal's
-  bindings filled in, into one list of goals per reading. `resolve_goal` and
-  `walk_for_cycles` descend through every reading. The binder's resolution in
-  a reading keeps the pattern text as its name and carries only the chosen
-  match's offers, each with the concrete behavior it keeps, so the graph, trace
-  and sequence diagram label it as they do any open goal.
-- `Tracker::resolve_conditions` gives the same readings to `src/query.rs`,
-  which judges conditions that share a value together: a provides listing
-  shows them by the candidate that lets the most of them hold.
-- `leaf_causes` skips a sibling still waiting on a value when the binder is
-  the real cause.
-
-Not yet done:
-
-- Nothing in the UI or CLI says which value an offer stands on, other than the
-  names of its conditions. With "Mark: Bound values" on, the value is at least
-  set apart in them (`… to <approle>`).
-- `Index::consumers` counts a sharing condition as a consumer of anything its
-  text could match (`{{thing}} does stuff` uses every `… does stuff`), not
-  only the candidates the binder found.
-
-### Upward flow (open problem)
-
-Not specified. It needs real unification and a termination argument to replace
-the numeric caps.
-
-**Provider's literal text answers the asker's open variable.** The example in
-§3: `{{?svc}} grants A1 read on R1` meets `S1 grants {{agent}} read on R1`.
-Each side fixes what the other left open — `svc = S1`, `agent = A1` — and A1's
-want is satisfied by S1 under `S1 grants A1 read on R1`.
-
-**A condition binds a variable in the promise's own name.**
+### The motivating case
 
 ```yaml
 kind: Agent
-name: A1
+name: A
 wants:
-- name: "{{?region}} copy of R1 readable by {{!self}}"
+  - name: "sampleapp gateway is configured"
+provides:
+  - name: "sampleapp CD deployjob is run"
 ---
 kind: Agent
-name: S1
+name: B
 provides:
-- name: "{{region}} copy of R1 readable by {{agent}}"
-  conditions:
-    - "{{?region}} replica of R1 is healthy"
+  - name: "{{appname}} gateway is configured"
+    forSome: [kc]
+    conditions:
+      - "{{appname}} deploys to {{kc}}"
+      - "{{kc}} deploys {{appname}} gateway"
+  - name: "{{appname}} deploys to {{kc}}"
+    conditions:
+      - "{{appname}} CD deployjob is run"
 ---
 kind: Agent
-name: Rep1
+name: C
 provides:
-- name: "us-east replica of R1 is healthy"
----
-kind: Agent
-name: Rep2
-provides:
-- name: "eu-west replica of R1 is healthy"
+  - name: "{{!self}} deploys {{appname}} gateway"
 ```
 
-A1 does not say which region, so S1's name cannot bind `region` from the goal.
-The condition is the binder: it matches twice, each value flows up into the
-name and back to A1, and A1's want gets two satisfied offers. Had A1 written a
-ground want, the goal would fix `region` first and the condition would only
-check it.
+A's want binds `appname = sampleapp`. Both conditions mention `kc`, so it is
+shared. `{{kc}} deploys sampleapp gateway` meets C's `C deploys {{appname}}
+gateway` and proposes `kc = C`. `sampleapp deploys to {{kc}}` meets B's
+second promise with `kc` lined up against B's own `kc`; none of that
+promise's conditions mention it, so it holds for any value and proposes
+nothing. The pool is `{C}`, and the one reading, `sampleapp deploys to C`
+and `C deploys sampleapp gateway`, is resolved as concrete goals: both hold,
+so the want is satisfied. In either condition order.
 
-### Constraint on what is built
+### Matching
 
-`?` remains the binder marker, and the shapes listed under phase 2 validation
-stay errors until upward flow gives them meaning.
+Two names are matched against each other with separate variable
+namespaces: `{{kc}}` in a goal and `{{kc}}` in the promise it meets are
+different variables.
+
+- A variable on either side takes the other side's literal text, or lines up
+  with exactly one of the other side's variables. `{{kc}} deploys sampleapp
+  gateway` against `C deploys {{appname}} gateway` gives `kc = C` and
+  `appname = sampleapp`.
+- `Pattern::match_ground`'s conventions hold: leftmost-shortest, a binding is
+  never empty, a repeated variable must agree (a variable lined up with a
+  variable must line up with it again).
+- With one side concrete this is exactly `match_ground`.
+- Deferred: a variable taking the other side's variable plus text (`{{kc}}`
+  against `C-{{zone}}`) simply does not match. A binding is held as a list of
+  the other side's segments — today always one literal or one variable — so
+  that can be added without changing the representation.
+
+### The search
+
+A goal here is a condition with what is known filled in, still holding
+variables to find values for. For each promise (agents by name, then
+declaration order) whose name matches the goal:
+
+- A goal variable that took the promise's literal text has that text as a
+  proposed value.
+- A goal variable lined up with a promise variable: the search continues into
+  that promise's conditions, with what the match filled in, to find values
+  for it. Each condition mentioning it proposes; the proposals are pooled.
+- If none of the promise's conditions mentions that variable, the promise
+  holds for any value of it: it proposes nothing for it, and accepts whatever
+  value something else proposes. This is what the invalid check (§3) looks
+  for.
+
+At the promise asking the question, every condition that mentions a shared
+variable proposes candidates, and they are pooled. A proposal may name only
+some of the variables; a reading is extended, with what it has filled in,
+until each shared variable has a value, and a reading that cannot be
+completed is dropped.
+
+### Limits
+
+- Values never flow into the promise name: a declared variable may not
+  appear in it, and a name variable is never found by a condition.
+- The search proposes from what working agents declare; it never reads what
+  another resolution happened to derive, so an answer does not depend on what
+  was resolved first.
+
+### Implementation
+
+To be filled in as built.
