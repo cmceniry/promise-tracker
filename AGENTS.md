@@ -143,11 +143,14 @@ Key concepts:
   binding). Conditions tied together by a shared variable form a group,
   read once per candidate value set; a promise's offers are one reading of
   each independent group, so with one group that is one offer per candidate,
-  and with several the groups combine. A variable used by a single condition
-  makes that condition one row gathering every match. Resolution stays
-  concrete. Readings are capped at 256 per group (`MAX_CONDITION_READINGS`);
-  when the cap leaves a reading unresolved, the unsatisfied report says so
-  first (`CauseKind::CutShort`). A declared variable only a holds-for-any
+  and with several the groups combine (at most 256 offers, chosen so every
+  reading of every group appears, independent of condition order and
+  variable names). A variable used by a single condition makes that
+  condition one row gathering every match. Resolution stays concrete.
+  Readings are capped at 256 per group (`MAX_CONDITION_READINGS`); only
+  when that leaves the answer uncertain (not kept, and every group with no
+  holding reading was cut) does the unsatisfied report say so, first
+  (`CauseKind::CutShort`). A declared variable only a holds-for-any
   promise answers is invalid (`validate`). The old `{{?x}}` is a validation
   error that spells out the rewrite. See
   `docs/design/self-and-open-variables.md` §3, §5

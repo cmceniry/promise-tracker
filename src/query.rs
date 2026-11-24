@@ -141,11 +141,12 @@ pub enum CauseKind {
     /// Someone promises it, but only by way of itself: the promise sits on a
     /// dependency loop (or a chain too deep to follow) and so keeps nothing.
     Cycle,
-    /// A promise for the behavior had more readings than the cap
-    /// ([`crate::MAX_CONDITION_READINGS`]), and a reading that could have
-    /// changed the answer was never resolved: the behavior may be kept by
-    /// one that was not tried. Reported for the behavior whose promise was
-    /// cut, or for a gathered row standing for it.
+    /// The behavior is not kept, but a reading that could have changed that
+    /// was never resolved: a promise for it had a group with more readings
+    /// than the cap ([`crate::MAX_CONDITION_READINGS`]) and none of those
+    /// tried holds, while every other failing group was cut too. Reported
+    /// for the behavior whose promise was cut, or for a gathered row
+    /// standing for it.
     CutShort,
     /// A condition still holding a declared (`forSome`) variable that no
     /// promise names a value for.

@@ -358,9 +358,11 @@ search may over-propose — a value one condition proposes that another
 condition does not hold for shows as an offer that is not kept — but it
 never decides "satisfied" itself.
 
-- **Shared** — a declared variable used by two or more conditions. The
-  promise is read once per candidate value: one offer per candidate, its
-  conditions the concrete behaviors with that value filled in. Candidates
+- **Shared** — a declared variable used by two or more conditions. Its
+  conditions are read once per candidate value: with one such group, one
+  offer per candidate, its conditions the concrete behaviors with that value
+  filled in; with several independent groups, an offer is one reading of
+  each (see "The cap" below). Candidates
   are never mixed: values found together (one match binding `a` and `b`)
   stay together. The promise is kept if any reading is. Every candidate is
   recorded, held or not.
@@ -421,19 +423,35 @@ The cap:
   changes nothing. (Values only break ties between readings that read the
   same, and so make the same offer.)
 - The offers one promise makes are combinations of one reading per group,
-  every combination of holding readings first, at most 256. Leaving the
-  rest out of the offers shown changes nothing: the promise is kept exactly
-  when every group has a reading that holds, and then a kept combination is
-  shown.
-- "Cut short" means a reading that could have changed the answer was never
-  resolved: a group had more than 256 complete readings, or more partial
-  ones than its cap. Then the goal's resolution says so
+  at most 256. The promise is kept exactly when every group has a reading
+  that holds. When there are more combinations than that, the ones shown
+  are chosen so that: offer `i` takes reading `i mod n` of each group of `n`
+  readings, so every resolved reading of every group is in at least one
+  offer shown and the causes listed are complete, and the first of them is
+  a kept combination whenever one exists; then the other combinations of
+  holding readings; then the rest, until the cap. Groups are taken in the
+  order of what they read (their conditions' text, open variables written
+  alike, sorted), so which combinations are shown, and which reading the
+  provides listing shows as held on a tie, depend neither on condition
+  order nor on variable names. Guaranteed: the answer, the complete set of
+  causes, and the choice of offers shown. Not shown: combinations past the
+  cap, which repeat readings already shown.
+- "Cut short" is reported exactly when the answer is uncertain: no offer
+  keeps the goal, some group whose readings the cap cut (more than 256
+  complete readings, or more partial ones than its cap) has no resolved
+  reading that holds, and every group with no reading that holds was cut.
+  If a group resolved in full has no reading that holds, the answer is
+  certainly "not kept" and nothing is cut short; if anything keeps the
+  goal, nothing is cut short; leaving combinations out of the offers shown
+  never is. Then the goal's resolution says so
   (`Resolution::is_cut_short`), as does a gathered row standing for that
-  goal, and the unsatisfied report gives `CauseKind::CutShort` first for
-  that behavior (`check-unsatisfied --summary`, the Inventory). Leaving
-  combinations out of the offers shown is not cutting short.
-- Offers within one promise come in the order of their readings, so they
-  are ordered by what the readings read, not by value.
+  goal when nothing else keeps the row, and the unsatisfied report gives
+  `CauseKind::CutShort` first for that behavior (`check-unsatisfied
+  --summary`, the Inventory).
+- Within each group, readings that hold come first, then the rest; each
+  part in the order of what the readings read, not by value. Offers follow
+  the combinations above, and a resolution keeps its satisfying and
+  unsatisfying offers apart.
 - A promise that declares no variables takes the path it always did: one
   reading, nothing grouped or searched.
 
@@ -496,9 +514,12 @@ command.
   under any variable names; complete readings count towards
   `MAX_CONDITION_READINGS`, partial ones towards a cap 16 times that.
   `resolve_readings` resolves each group's readings, puts those that hold
-  first, and builds the offers as combinations, every combination of
-  holding readings before the rest, at most `MAX_CONDITION_READINGS`; only
-  a group's own cut sets `cut_short`. A promise with nothing declared skips
+  first, takes the groups in the order of what they read (`ReadingGroup::
+  order`), and builds at most `MAX_CONDITION_READINGS` offers: the
+  `i mod n` diagonal, then the other combinations of holding readings, then
+  the rest. It reports cut short by the rule above, from each group's own
+  `cut`; `resolve_goal` and `resolve_gathered` set the flag only when the
+  goal or row is not kept. A promise with nothing declared skips
   all of this (`Tracker::readings`) and its one reading is moved, not copied,
   into its offer; `reduce_one` and `Behavior::instantiate` likewise do no
   extra work when nothing is declared. Each

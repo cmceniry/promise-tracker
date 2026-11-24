@@ -21,9 +21,11 @@ pub struct Resolution {
     /// form stays as it always was.
     #[serde(skip)]
     bound: Spans,
-    /// Some promise for this goal had more readings than the cap
-    /// (`MAX_CONDITION_READINGS`), so not every one was tried: an answer of
-    /// "not kept" may be the cap's, not the contract's. Left out of equality
+    /// Not kept, but only as far as resolution went: a promise for this goal
+    /// had a group whose readings the cap (`MAX_CONDITION_READINGS`) cut,
+    /// none of those tried holds, and every other failing group was cut
+    /// too, so a reading never tried could have kept it. Never set on a
+    /// goal that is kept. Left out of equality
     /// and `Debug`, and serialized only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     cut_short: bool,

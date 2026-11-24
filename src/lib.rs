@@ -1077,9 +1077,9 @@ impl Tracker {
 /// values tried for one group of conditions tied together by shared
 /// variables, and on the offers one promise makes for one goal. Each
 /// condition that shares a value multiplies the readings by its matches, so
-/// a contract can ask for far more than is worth resolving. When the cap
-/// drops readings the goal's resolution says so
-/// ([`Resolution::is_cut_short`]).
+/// a contract can ask for far more than is worth resolving. When what the
+/// cap left unresolved could have kept a goal nothing else keeps, the
+/// goal's resolution says so ([`Resolution::is_cut_short`]).
 pub const MAX_CONDITION_READINGS: usize = 256;
 
 /// How many partial readings (some shared variables still without a value)
