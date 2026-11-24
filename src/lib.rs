@@ -3528,20 +3528,10 @@ provides:
             let t = gateway(first, second, "{{appname}}");
             let r = t.resolve("sampleapp gateway is configured");
             assert!(r.is_satisfied(), "{} / {}", first, second);
-            // C is the candidate that holds, and the offer stands on
-            // concrete goals.
+            // The only candidate is C: one offer, standing on concrete goals,
+            // and nothing else.
             assert_eq!(r.get_satisfying_offers().len(), 1);
-            // Matched as text, `sampleapp deploys to {{kc}}` also meets B's
-            // own `{{appname}} gateway is configured` (appname = `sampleapp
-            // deploys to`, kc = `gateway is configured`), so that value is
-            // proposed too and shows as an offer that is not kept. The
-            // search may over-propose; it is the resolver that rejects it.
-            for unkept in r.get_unsatisfying_offers() {
-                assert!(unkept
-                    .get_resolved_conditions()
-                    .iter()
-                    .any(|c| c.get_behavior_name() == "gateway is configured deploys sampleapp gateway"));
-            }
+            assert!(r.get_unsatisfying_offers().is_empty());
             let offer = &r.get_satisfying_offers()[0];
             assert_eq!(offer.get_agent_name(), "B");
             let mut names: Vec<&str> = offer
@@ -3596,14 +3586,9 @@ provides:
     #[test]
     fn test_propose_reports_what_holds_for_any_value() {
         let t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
-        // B's own `deploys to` names no value for `kc`. (The text match
-        // against B's gateway promise does name one; see
-        // `test_declared_variable_is_found_through_a_parameterized_promise`.)
+        // B's own `deploys to` names no value for `kc`.
         let p = t.propose("sampleapp deploys to {{kc}}");
-        assert_eq!(
-            p.values,
-            vec![Bindings::from([("kc".to_string(), "gateway is configured".to_string())])]
-        );
+        assert!(p.values.is_empty());
         assert_eq!(
             p.holding_for_any("kc"),
             vec![&HoldsForAny {
@@ -3829,6 +3814,52 @@ provides:
     }
 
     #[test]
+    fn test_gateway_without_c_is_invalid() {
+        let mut t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
+        assert!(t.unnamable_variables().is_empty());
+        t = crate::marks::tracker(
+            r#"kind: Agent
+name: A
+wants:
+  - name: "sampleapp gateway is configured"
+provides:
+  - name: "sampleapp CD deployjob is run"
+---
+kind: Agent
+name: B
+provides:
+  - name: "{{appname}} gateway is configured"
+    forSome: [kc]
+    conditions:
+      - "{{appname}} deploys to {{kc}}"
+      - "{{kc}} deploys {{appname}} gateway"
+  - name: "{{appname}} deploys to {{kc}}"
+    conditions:
+      - "{{appname}} CD deployjob is run"
+"#,
+        );
+        let found = t.unnamable_variables();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].to_string(),
+            "`kc` can be anything: B's `{{appname}} deploys to {{kc}}` holds for any value and nothing names one"
+        );
+        // and it is unsatisfied, with nothing found: the conditions as written
+        assert_eq!(
+            t.resolve("sampleapp gateway is configured"),
+            Resolution::new("sampleapp gateway is configured").add_unsatisfying_offer(
+                Offer::new_conditional(
+                    "B",
+                    vec![
+                        Resolution::new("sampleapp deploys to {{kc}}"),
+                        Resolution::new("{{kc}} deploys sampleapp gateway"),
+                    ]
+                )
+            )
+        );
+    }
+
+    #[test]
     fn test_a_variable_only_a_holds_for_any_promise_answers_is_invalid() {
         let t = serving(None, true);
         let found = t.unnamable_variables();
@@ -3922,12 +3953,9 @@ provides:
             ],
             &["kc".to_string()],
         );
-        // kc = C holds; kc = `gateway is configured`, proposed by the text
-        // match, does not.
-        assert!(readings
-            .iter()
-            .any(|r| r.iter().all(|c| c.is_satisfied())
-                && r[0].get_behavior_name() == "sampleapp deploys to C"));
+        assert_eq!(readings.len(), 1);
+        assert!(readings[0].iter().all(|c| c.is_satisfied()));
+        assert_eq!(readings[0][0].get_behavior_name(), "sampleapp deploys to C");
     }
 
     #[test]

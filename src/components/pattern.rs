@@ -260,10 +260,17 @@ impl Pattern {
     /// Not matched (yet): a variable taking the other side's variable plus
     /// text (`{{kc}}` against `C-{{zone}}`), and a variable lining up with one
     /// that is already lined up with a different variable.
+    ///
+    /// With variables on both sides, the wording has to correspond as well
+    /// ([`Wording`]): `{{replica}} is healthy` does not match `placed for
+    /// {{team}}`, though `placed for is healthy` is an instance of both.
     pub fn unify(&self, other: &Pattern) -> Option<Unifier> {
         let left = tokens(&self.segments);
         let right = tokens(&other.segments);
-        let mut unifier = Unifier::default();
+        let mut unifier = Unifier {
+            wording: Wording::new(self, other),
+            ..Unifier::default()
+        };
         if unify_from(&left, &right, &mut unifier) {
             Some(unifier)
         } else {
@@ -539,12 +546,126 @@ fn match_from(segs: &[Segment], input: &str, bindings: &mut Bindings) -> bool {
 /// with it, and recorded on both sides). Holding segments rather than either
 /// of those leaves room for a variable that takes the other side's variable
 /// plus text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct Unifier {
     /// The left side's (`self`'s) variables.
     pub left: BTreeMap<String, Vec<Segment>>,
     /// The right side's (`other`'s) variables.
     pub right: BTreeMap<String, Vec<Segment>>,
+    /// The wording rule's bookkeeping while matching; no part of the result.
+    wording: Wording,
+}
+
+impl PartialEq for Unifier {
+    fn eq(&self, other: &Self) -> bool {
+        self.left == other.left && self.right == other.right
+    }
+}
+impl Eq for Unifier {}
+
+/// The "wording must correspond" rule of two-sided matching, kept here in
+/// one place so that it can be changed or dropped without touching anything
+/// else (`docs/design/self-and-open-variables.md` §5).
+///
+/// It applies only when both sides hold variables; with either side
+/// concrete, matching is `match_ground`'s. Each literal segment's wording is
+/// its characters outside what a substitution filled in (`Pattern::bound`).
+/// A segment whose wording holds a letter or digit must have at least one
+/// such character matched against literal text of the other side, not taken
+/// by one of the other side's variables. Segments without one (a separator,
+/// or nothing but a substituted value) are exempt. A match failing this is no
+/// match, and matching goes on to the next way of matching.
+#[derive(Debug, Clone, Default)]
+struct Wording {
+    applies: bool,
+    left: SideWording,
+    right: SideWording,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SideWording {
+    /// For each token, the wording segment it is a letter or digit of.
+    segment_of: Vec<Option<usize>>,
+    /// For each wording segment, how many of its letters and digits are
+    /// matched against the other side's literal text so far.
+    matched: Vec<usize>,
+}
+
+impl SideWording {
+    fn new(pattern: &Pattern) -> SideWording {
+        let mut segment_of = vec![];
+        let mut segments = 0;
+        let mut at = 0;
+        for segment in &pattern.segments {
+            match segment {
+                Segment::Var(v) => {
+                    segment_of.push(None);
+                    at += v.len() + 4;
+                }
+                Segment::Literal(l) => {
+                    let mut wording = false;
+                    for c in l.chars() {
+                        let filled_in = pattern.bound.iter().any(|(s, e)| *s <= at && at < *e);
+                        if c.is_alphanumeric() && !filled_in {
+                            wording = true;
+                            segment_of.push(Some(segments));
+                        } else {
+                            segment_of.push(None);
+                        }
+                        at += c.len_utf8();
+                    }
+                    if wording {
+                        segments += 1;
+                    }
+                }
+            }
+        }
+        SideWording {
+            segment_of,
+            matched: vec![0; segments],
+        }
+    }
+
+    /// The token `remaining` tokens from the end.
+    fn at(&self, remaining: usize) -> Option<usize> {
+        self.segment_of[self.segment_of.len() - remaining]
+    }
+
+    fn corresponds(&self) -> bool {
+        self.matched.iter().all(|n| *n > 0)
+    }
+}
+
+impl Wording {
+    fn new(left: &Pattern, right: &Pattern) -> Wording {
+        Wording {
+            applies: !left.is_ground() && !right.is_ground(),
+            left: SideWording::new(left),
+            right: SideWording::new(right),
+        }
+    }
+
+    /// Two literal characters, `left_remaining` and `right_remaining` tokens
+    /// from the end of their sides, matched against each other (`by` 1), or
+    /// that match undone (`by` -1).
+    fn literal_match(&mut self, left_remaining: usize, right_remaining: usize, undo: bool) {
+        if !self.applies {
+            return;
+        }
+        for (side, remaining) in [(&mut self.left, left_remaining), (&mut self.right, right_remaining)] {
+            if let Some(segment) = side.at(remaining) {
+                if undo {
+                    side.matched[segment] -= 1;
+                } else {
+                    side.matched[segment] += 1;
+                }
+            }
+        }
+    }
+
+    fn corresponds(&self) -> bool {
+        !self.applies || (self.left.corresponds() && self.right.corresponds())
+    }
 }
 
 impl Unifier {
@@ -617,11 +738,20 @@ impl Unifier {
 /// settled first, then one on the right; two characters must be equal.
 fn unify_from(left: &[Token], right: &[Token], unifier: &mut Unifier) -> bool {
     match (left.first(), right.first()) {
-        (None, None) => true,
+        (None, None) => unifier.wording.corresponds(),
         (Some(Token::Var(v)), _) => bind_from(Side::Left, v, &left[1..], right, unifier),
         (_, Some(Token::Var(v))) => bind_from(Side::Right, v, &right[1..], left, unifier),
         (Some(Token::Char(a)), Some(Token::Char(b))) => {
-            a == b && unify_from(&left[1..], &right[1..], unifier)
+            if a != b {
+                return false;
+            }
+            let (l, r) = (left.len(), right.len());
+            unifier.wording.literal_match(l, r, false);
+            if unify_from(&left[1..], &right[1..], unifier) {
+                return true;
+            }
+            unifier.wording.literal_match(l, r, true);
+            false
         }
         _ => false,
     }
@@ -1300,14 +1430,14 @@ mod tests {
 
     #[test]
     fn unify_is_leftmost_shortest_on_both_sides() {
-        let u = Pattern::parse("{{a}}-{{b}}")
+        let u = Pattern::parse("{{a}} on {{b}}")
             .unwrap()
-            .unify(&Pattern::parse("x-y-{{c}}").unwrap())
+            .unify(&Pattern::parse("x on y on {{c}}").unwrap())
             .unwrap();
-        // `a = x` leaves `b` to take `y-` and `{{c}}` together, which is not
-        // matched; the shortest `a` that works is `x-y`, and `b` lines up
-        // with `c`.
-        assert_eq!(u.left_values(), binds(&[("a", "x-y")]));
+        // `a = x` leaves `b` to take `y on ` and `{{c}}` together, which is
+        // not matched; the shortest `a` that works is `x on y`, and `b`
+        // lines up with `c`.
+        assert_eq!(u.left_values(), binds(&[("a", "x on y")]));
         assert_eq!(u.aligned(), vec![("b".to_string(), "c".to_string())]);
         assert_eq!(u.right.get("c"), Some(&var("b")));
         assert!(Pattern::parse("{{a}}")
@@ -1359,7 +1489,7 @@ mod tests {
         assert_eq!(unify("{{kc}}", "C-{{zone}}"), None);
         assert_eq!(unify("C-{{zone}}", "{{kc}}"), None);
         // but a variable with text on both sides of it is fine
-        let u = unify("{{kc}}-east", "C-{{zone}}").unwrap();
+        let u = unify("{{kc}} in east", "C in {{zone}}").unwrap();
         assert_eq!(u.left_values(), binds(&[("kc", "C")]));
         assert_eq!(u.right_values(), binds(&[("zone", "east")]));
     }
@@ -1374,6 +1504,53 @@ mod tests {
         assert_eq!(out.source(), "web on {{k_2}} by web");
         assert_eq!(out.marked(), "<web> on {{k_2}} by <web>");
         assert_eq!(Pattern::parse(out.source()).unwrap(), out);
+    }
+
+    #[test]
+    fn unify_needs_the_wording_to_correspond() {
+        let unify = |a: &str, b: &str| {
+            Pattern::parse(a)
+                .unwrap()
+                .unify(&Pattern::parse(b).unwrap())
+        };
+        // `placed for is healthy` is an instance of both, but neither side's
+        // wording is matched by the other's.
+        assert_eq!(unify("{{replica}} is healthy", "placed for {{team}}"), None);
+        assert_eq!(
+            unify("sampleapp deploys to {{kc}}", "{{appname}} gateway is configured"),
+            None
+        );
+        assert_eq!(
+            unify("{{kc}} deploys {{appname}} gateway", "{{appname}} deploys to {{kc}}"),
+            None
+        );
+        // Wording that corresponds still matches.
+        let u = unify("{{kc}} deploys sampleapp gateway", "C deploys {{appname}} gateway").unwrap();
+        assert_eq!(u.left_values(), binds(&[("kc", "C")]));
+        assert_eq!(u.right_values(), binds(&[("appname", "sampleapp")]));
+        // A substituted value is not wording: `db` came from `{{!self}}`, so
+        // `{{who}}` may take it, and `db/` is left with only a separator.
+        let promise = Pattern::parse("{{!self}}/{{env}} reads R1").unwrap().bind_self("db");
+        assert_eq!(promise.source(), "db/{{env}} reads R1");
+        let u = Pattern::parse("{{who}}/prod reads R1").unwrap().unify(&promise).unwrap();
+        assert_eq!(u.left_values(), binds(&[("who", "db")]));
+        assert_eq!(u.right_values(), binds(&[("env", "prod")]));
+        // Written out by hand, `db` is wording, and nothing matches it.
+        assert_eq!(unify("{{who}}/prod reads R1", "db/{{env}} reads R1"), None);
+        // The known limit: a hand-written value right before a variable is
+        // wording, so a goal variable cannot take `us-east` from it.
+        assert_eq!(
+            unify("{{region}} replica is healthy", "us-east {{thing}} is healthy"),
+            None
+        );
+        // With either side concrete, the rule does not apply.
+        assert_eq!(
+            Pattern::parse("{{replica}} is healthy")
+                .unwrap()
+                .unify(&Pattern::parse("placed for is healthy").unwrap())
+                .map(|u| u.left_values()),
+            Some(binds(&[("replica", "placed for")]))
+        );
     }
 
     #[test]

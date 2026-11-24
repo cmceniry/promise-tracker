@@ -497,18 +497,8 @@ command.
   declared names, for `src/query.rs`, whose `Resolver::conditions` now
   takes the promise.
 
-Consequences of pooling, kept as the rules give them:
+A consequence of pooling, kept as the rules give it:
 
-- Matched as text, a condition can meet a promise nobody had in mind. In
-  the gateway example `sampleapp deploys to {{kc}}` also meets B's own
-  `{{appname}} gateway is configured` (`appname = sampleapp deploys to`,
-  `kc = gateway is configured`). That value is proposed too; its reading
-  is an offer that is not kept, and resolving it reaches ever longer goals
-  until the depth cap. C is still the only candidate that holds. The same
-  text matching is why the gateway example without C is not reported as
-  invalid: `{{kc}} deploys {{appname}} gateway`, with `appname` open, meets
-  B's `{{appname}} deploys to {{kc}}` with `appname = to`, and B's
-  condition names a value through that.
 - Two shared variables proposed by separate conditions are read in every
   combination proposed (a value for `a` from `{{a}} is ok`, one for `b` from
   `{{b}} is ok`), each its own offer.
@@ -606,6 +596,31 @@ different variables.
   never empty, a repeated variable must agree (a variable lined up with a
   variable must line up with it again).
 - With one side concrete this is exactly `match_ground`.
+- **Wording must correspond** (the orchestrator's rule after the first
+  round, not yet confirmed by the owner). Free-text variables make almost
+  any two patterns unify: `{{replica}} is healthy` and `placed for {{team}}`
+  share the instance `placed for is healthy`, which is not what an author
+  means; left alone, a contract's own promises answered its conditions with
+  such values, and the goals they spawned grew until the depth cap. So when
+  both sides hold variables, each literal segment whose wording (its
+  characters outside the pattern's substituted spans, `Pattern::bound`)
+  holds a letter or digit must have at least one letter or digit of that
+  wording matched against literal text of the other side, not taken by one
+  of its variables. A segment that is only separators, or only a substituted
+  value, is exempt. A match failing this is not a match, and the matcher goes
+  on to the next way of matching. With either side concrete the rule does
+  not apply.
+  - Consequences: `{{replica}} is healthy` does not match `placed for
+    {{team}}`; `sampleapp deploys to {{kc}}` does not match `{{appname}}
+    gateway is configured`; `{{kc}} deploys {{appname}} gateway` does not
+    match `{{appname}} deploys to {{kc}}`; `{{kc}} deploys sampleapp gateway`
+    still matches `C deploys {{appname}} gateway`; `{{who}}/prod reads R1`
+    still matches `db/{{env}} reads R1` when `db` came from `{{!self}}`.
+  - Known limit: a hand-written value directly followed by a variable
+    (`us-east {{thing}} is healthy`) is wording, so a goal variable cannot
+    take `us-east` from it (`{{region}} replica is healthy` does not match).
+    Writing the value through `{{!self}}` or an Instance binding makes it a
+    value.
 - Deferred: a variable taking the other side's variable plus text (`{{kc}}`
   against `C-{{zone}}`) simply does not match. A binding is held as a list of
   the other side's segments — today always one literal or one variable — so
@@ -651,5 +666,9 @@ completed is dropped.
   meeting a variable that already took text takes the same text; one meeting
   a variable already lined up with a different one does not match (`{{x}}
   and {{x}}` against `{{p}} and {{q}}`), the narrow reading of "exactly one
-  of the other side's variables". `Pattern::canonical()` renames variables
+  of the other side's variables". The wording rule is the private
+  `Wording` type in `pattern.rs`, consulted at two points in the matcher (a
+  literal character matched against a literal character, and the end of a
+  match); removing it leaves the rest of the matcher and the search as they
+  are. `Pattern::canonical()` renames variables
   by order of appearance, for the search's in-progress stack.
