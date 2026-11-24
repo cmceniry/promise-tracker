@@ -342,13 +342,8 @@ const MAX_REDUCE_STEPS: usize = 1_000;
 fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
     let own = behavior.get_name().clone();
     let mut for_some: Vec<String> = behavior.get_for_some().to_vec();
-    let mut in_use: BTreeSet<String> = behavior
-        .get_name_pattern()
-        .vars()
-        .into_iter()
-        .map(str::to_string)
-        .chain(for_some.iter().cloned())
-        .collect();
+    // The names already taken, worked out only once something is hoisted.
+    let mut in_use: Option<BTreeSet<String>> = None;
     // Conditions already dealt with, so that a chain reconverging on one is
     // expanded once rather than once per path into it.
     let mut seen: HashSet<String> = HashSet::new();
@@ -378,6 +373,15 @@ fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
         match internally_met(&condition, provides) {
             Some((inner, declared)) => {
                 let mut renaming: BTreeMap<String, String> = BTreeMap::new();
+                let in_use = in_use.get_or_insert_with(|| {
+                    behavior
+                        .get_name_pattern()
+                        .vars()
+                        .into_iter()
+                        .map(str::to_string)
+                        .chain(behavior.get_for_some().iter().cloned())
+                        .collect()
+                });
                 for variable in declared {
                     let mut name = variable.clone();
                     let mut n = 2;
@@ -391,7 +395,11 @@ fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
                         renaming.insert(variable, name);
                     }
                 }
-                queue.extend(inner.into_iter().map(|c| c.rename_vars(&renaming)));
+                if renaming.is_empty() {
+                    queue.extend(inner);
+                } else {
+                    queue.extend(inner.into_iter().map(|c| c.rename_vars(&renaming)));
+                }
             }
             None => {
                 external.insert(condition);

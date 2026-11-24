@@ -1162,7 +1162,7 @@ impl Tracker {
         settled: &mut HashMap<String, Resolution>,
     ) -> (Vec<Vec<Resolution>>, bool, bool) {
         let mut self_contained = true;
-        let mut cut_short = readings.cut_short;
+        let cut_short = readings.cut_short;
         // Each group's resolved readings, those that hold first.
         let mut groups: Vec<(Vec<usize>, Vec<Vec<Resolution>>, usize)> = vec![];
         for group in readings.groups {
@@ -1181,12 +1181,15 @@ impl Tracker {
             held.extend(not_held);
             groups.push((group.conditions, held, holding));
         }
-        let total = groups
-            .iter()
-            .fold(1usize, |n, (_, r, _)| n.saturating_mul(r.len()));
-        if total > MAX_CONDITION_READINGS {
-            cut_short = true;
+        // One group over all the conditions in order: its readings are the
+        // offers as they stand, nothing to put together or copy.
+        if groups.len() == 1 && groups[0].0.iter().enumerate().all(|(i, p)| i == *p) {
+            let (_, readings, _) = groups.pop().unwrap();
+            return (readings, self_contained, cut_short);
         }
+        // Leaving combinations out of the offers shown is not cutting short:
+        // every group's readings were resolved, and the combinations of
+        // holding ones come first, so the answer is certain.
         let assemble = |choice: &[usize]| -> Vec<Resolution> {
             let mut out: Vec<Option<Resolution>> = vec![None; count];
             for ((positions, resolved, _), at) in groups.iter().zip(choice) {
@@ -1373,6 +1376,27 @@ impl Tracker {
     /// The ways a promise's conditions can be read: by groups of conditions
     /// that share declared variables (`declared_readings`).
     fn readings(&self, promise: &Behavior, conditions: &[Pattern]) -> Readings {
+        if promise.get_for_some().is_empty() {
+            // Nothing declared: one reading, each condition as it stands, as
+            // before declared variables existed.
+            let reading = conditions
+                .iter()
+                .map(|c| {
+                    if c.is_ground() {
+                        ConditionGoal::Goal(c.clone())
+                    } else {
+                        ConditionGoal::Unbound(c.clone())
+                    }
+                })
+                .collect();
+            return Readings {
+                groups: vec![ReadingGroup {
+                    conditions: (0..conditions.len()).collect(),
+                    readings: vec![reading],
+                }],
+                cut_short: false,
+            };
+        }
         self.declared_readings(conditions, promise.get_for_some())
     }
 
@@ -1470,27 +1494,43 @@ impl Tracker {
     /// were written in. Only complete readings count towards
     /// `MAX_CONDITION_READINGS`; partial ones have their own, larger cap.
     fn candidate_values(&self, conditions: &[Pattern], shared: &[String]) -> (Vec<Bindings>, bool) {
-        let mut done: BTreeSet<Bindings> = BTreeSet::new();
+        // A reading's place in line: how many shared variables it still
+        // misses, then the conditions as it fills them in, sorted, with any
+        // variable still open written the same whatever it is called. None
+        // of that depends on what a variable is called or where a condition
+        // was written, so neither can change which readings the cap keeps.
+        // The values themselves only break ties between readings that read
+        // the same, and so make the same offer.
+        type Place = (usize, Vec<String>, Bindings);
+        let place = |b: Bindings| -> Place {
+            let missing = shared.iter().filter(|v| !b.contains_key(*v)).count();
+            let mut texts: Vec<String> = conditions
+                .iter()
+                .map(|c| unnamed_text(&c.substitute(&b)))
+                .collect();
+            texts.sort();
+            (missing, texts, b)
+        };
+        let mut done: BTreeSet<(Vec<String>, Bindings)> = BTreeSet::new();
         let mut seen: BTreeSet<Bindings> = BTreeSet::new();
-        let mut todo: BTreeSet<(usize, Bindings)> = BTreeSet::new();
-        let missing_in = |b: &Bindings| shared.iter().filter(|v| !b.contains_key(*v)).count();
-        todo.insert((missing_in(&Bindings::new()), Bindings::new()));
+        let mut todo: BTreeSet<Place> = BTreeSet::new();
+        todo.insert(place(Bindings::new()));
         let mut memo: HashMap<String, Proposals> = HashMap::new();
         let mut cut = false;
-        while let Some((_, reading)) = todo.pop_first() {
-            let missing: Vec<&String> = shared
-                .iter()
-                .filter(|v| !reading.contains_key(*v))
-                .collect();
-            if missing.is_empty() {
+        while let Some((missing_count, texts, reading)) = todo.pop_first() {
+            if missing_count == 0 {
                 if done.len() < MAX_CONDITION_READINGS {
-                    done.insert(reading);
+                    done.insert((texts, reading));
                 } else {
                     cut = true;
                 }
                 continue;
             }
-            let mut next_readings: BTreeSet<Bindings> = BTreeSet::new();
+            let missing: Vec<&String> = shared
+                .iter()
+                .filter(|v| !reading.contains_key(*v))
+                .collect();
+            let mut next_readings: BTreeSet<Place> = BTreeSet::new();
             for condition in conditions {
                 let vars = condition.vars();
                 if !missing.iter().any(|v| vars.contains(v.as_str())) {
@@ -1502,24 +1542,21 @@ impl Tracker {
                     let mut next = reading.clone();
                     let before = next.len();
                     next.extend(proposal.into_iter().filter(|(k, _)| missing.contains(&k)));
-                    if next.len() > before {
-                        next_readings.insert(next);
+                    if next.len() > before && !seen.contains(&next) {
+                        next_readings.insert(place(next));
                     }
                 }
             }
             for next in next_readings {
-                if seen.contains(&next) {
-                    continue;
-                }
                 if seen.len() >= MAX_PARTIAL_READINGS {
                     cut = true;
                     break;
                 }
-                seen.insert(next.clone());
-                todo.insert((missing_in(&next), next));
+                seen.insert(next.2.clone());
+                todo.insert(next);
             }
         }
-        (done.into_iter().collect(), cut)
+        (done.into_iter().map(|(_, b)| b).collect(), cut)
     }
 
     /// The concrete behaviors a gathered row could be answered by: every
@@ -1577,6 +1614,11 @@ impl Tracker {
         for name in self.gathered_names(pattern) {
             let (resolved, stands_alone) = self.resolve_goal(&name, in_progress, settled);
             self_contained &= stands_alone;
+            // The row stands for each behavior it gathers: if one of those
+            // was cut short, so is the row.
+            if resolved.is_cut_short() {
+                r = r.with_cut_short();
+            }
             let matched = plain.spans_on(&name).unwrap_or_default();
             for offer in resolved.get_satisfying_offers() {
                 r = r.add_satisfying_offer(
@@ -1752,6 +1794,19 @@ impl Tracker {
         }
         (found.renamed(&back), complete)
     }
+}
+
+/// `pattern`'s text with every variable written `{{}}`, whatever it is
+/// called: for ordering readings without regard to variable names.
+fn unnamed_text(pattern: &Pattern) -> String {
+    pattern
+        .segments()
+        .iter()
+        .map(|s| match s {
+            components::Segment::Literal(l) => l.as_str(),
+            components::Segment::Var(_) => "{{}}",
+        })
+        .collect()
 }
 
 /// Call `each` with every way of choosing one of `sizes[i]` things for each
@@ -3691,13 +3746,18 @@ provides:
             assert_eq!(names[1], format!("{} is ok", a));
             assert_eq!(names[2], format!("{} is ok", b));
         }
-        // Readings are by value, so their order is too.
-        let mut sorted = offers.clone();
-        sorted.sort();
-        assert_eq!(
-            r.get_unsatisfying_offers().iter().map(offer_conditions).collect::<Vec<_>>(),
-            sorted.into_iter().filter(|o| o[0] != "3 pairs with 4").collect::<Vec<_>>()
-        );
+        // Readings are in the order of what they read (their conditions'
+        // text, sorted), never of what the variables are called.
+        let unkept: Vec<Vec<String>> =
+            r.get_unsatisfying_offers().iter().map(offer_conditions).collect();
+        let by_text = |o: &Vec<String>| {
+            let mut t = o.clone();
+            t.sort();
+            t
+        };
+        let mut sorted = unkept.clone();
+        sorted.sort_by_key(by_text);
+        assert_eq!(unkept, sorted);
         // nothing pairs 1 with 4, so with 3 not ok nothing holds
         assert!(!pairs(&[("1", "2"), ("3", "4")], &["1", "4"]).resolve("paired").is_satisfied());
     }
@@ -4094,9 +4154,10 @@ provides:
         assert_eq!(folded.get_satisfying_offers().len(), 1);
         t.set_fold_collectives(false);
         assert!(t.resolve("web served").is_satisfied());
-        // The kept combination came first, so the cap dropped only ones
-        // that are not kept; and it says it dropped some.
-        assert!(folded.is_cut_short());
+        // Every group's readings were resolved; only combinations that are
+        // not kept were left out of the offers, so nothing was cut short.
+        assert!(!folded.is_cut_short());
+        assert!(folded.get_unsatisfying_offers().len() < 400);
     }
 
     /// `go` for an `a` and `b` that pair up, 300 values of `a`.
@@ -4162,6 +4223,116 @@ provides:
                     needed_by: None,
                 }
             );
+        }
+    }
+
+    #[test]
+    fn test_cut_short_shows_through_a_gathered_row() {
+        // `p is go` is cut short; `go` reaches it through `{{x}} is go`.
+        let mut yaml = String::from(
+            "kind: Agent\nname: A\nwants:\n  - name: go\nprovides:\n  - name: go\n    forSome: [x]\n    conditions: [\"{{x}} is go\"]\n---\nkind: Agent\nname: Z\nprovides:\n  - name: p is go\n    forSome: [a]\n    conditions: [\"{{a}} is A\", \"{{a}} is good\"]\n",
+        );
+        for i in 0..257 {
+            yaml.push_str(&format!("  - name: \"a{i:03} is A\"\n"));
+        }
+        yaml.push_str("  - name: \"a256 is good\"\n");
+        let t = crate::marks::tracker(&yaml);
+        let r = t.resolve("go");
+        assert!(!r.is_satisfied());
+        let row = &r.get_unsatisfying_offers()[0].get_resolved_conditions()[0];
+        assert_eq!(row.get_behavior_name(), "{{x}} is go");
+        assert!(row.is_cut_short());
+        let rows = crate::query::unsatisfied(&t, crate::query::QueryOptions::default());
+        assert_eq!(rows[0].causes[0].kind, crate::query::CauseKind::CutShort);
+    }
+
+    /// `b` likes `o`, 300 pairs, `b000 likes c299` the only one where `b`
+    /// is good and `o` is ok. Sorted by `b`'s values that pair comes
+    /// first; sorted by `o`'s, last, beyond the cap.
+    fn liking(b: &str, o: &str) -> String {
+        let mut yaml = format!(
+            "    forSome: [{b}, {o}]\n    conditions: [\"{{{{{b}}}}} likes {{{{{o}}}}}\", \"{{{{{b}}}}} is good\", \"{{{{{o}}}}} is ok\"]\n---\nkind: Agent\nname: Z\nprovides:\n  - name: b000 is good\n  - name: c299 is ok\n  - name: f1 is front\n"
+        );
+        for i in 0..300 {
+            yaml.push_str(&format!("  - name: \"b{i:03} likes c{:03}\"\n", 299 - i));
+        }
+        yaml
+    }
+
+    #[test]
+    fn test_renaming_a_variable_does_not_change_what_the_cap_keeps() {
+        for (b, o) in [("b", "c"), ("z", "c"), ("b", "a"), ("q", "b0")] {
+            let t = crate::marks::tracker(&format!(
+                "kind: Agent\nname: A\nwants:\n  - name: ready\nprovides:\n  - name: ready\n{}",
+                liking(b, o)
+            ));
+            let r = t.resolve("ready");
+            assert!(r.is_satisfied(), "{} {}", b, o);
+            assert!(r.is_cut_short(), "{} {}", b, o);
+        }
+    }
+
+    #[test]
+    fn test_folding_renames_without_changing_what_the_cap_keeps() {
+        // be declares `b` and `b0`; folded into fe's promise, `b` is
+        // renamed `b_2` because fe has its own `b`. Folded and unfolded
+        // must agree.
+        let yaml = format!(
+            r#"kind: Agent
+name: A
+wants:
+  - name: "web served"
+---
+kind: SuperAgent
+name: team
+agents: [fe, be]
+---
+kind: Agent
+name: fe
+provides:
+  - name: "web served"
+    forSome: [b]
+    conditions: ["backend ready", "{{{{b}}}} is front"]
+---
+kind: Agent
+name: be
+provides:
+  - name: "backend ready"
+{}"#,
+            liking("b", "b0")
+        );
+        let mut t = crate::marks::tracker(&yaml);
+        let hoisted = t.get_agent_promises("team").unwrap();
+        assert!(hoisted
+            .iter()
+            .any(|p| p.get_for_some().contains(&"b_2".to_string())));
+        assert!(t.resolve("web served").is_satisfied());
+        t.set_fold_collectives(false);
+        assert!(t.resolve("web served").is_satisfied());
+    }
+
+    #[test]
+    fn test_combinations_left_out_are_not_cut_short() {
+        // Two independent groups, 17 and 16 readings: every reading is
+        // resolved, so the answer is certain whatever the cap leaves out
+        // of the offers shown.
+        let build = |n: usize| {
+            let mut yaml = String::from(
+                "kind: Agent\nname: A\nwants:\n  - name: go\nprovides:\n  - name: go\n    forSome: [a, b]\n    conditions: [\"{{a}} is A\", \"{{a}} is agood\", \"{{b}} is B\", \"{{b}} is bgood\"]\n---\nkind: Agent\nname: Z\nprovides:\n",
+            );
+            for i in 0..n {
+                yaml.push_str(&format!("  - name: \"a{i:03} is A\"\n"));
+            }
+            for i in 0..16 {
+                yaml.push_str(&format!("  - name: \"b{i:03} is B\"\n"));
+            }
+            yaml.push_str("  - name: \"b015 is bgood\"\n");
+            crate::marks::tracker(&yaml)
+        };
+        for n in [16, 17] {
+            let r = build(n).resolve("go");
+            assert!(!r.is_satisfied());
+            assert!(!r.is_cut_short(), "n={}", n);
         }
     }
 

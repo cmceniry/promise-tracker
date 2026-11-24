@@ -137,16 +137,23 @@ impl Behavior {
     /// A variable the promise declares with `forSome` is its own, found by
     /// its conditions, so a binding of the same name does not reach it.
     pub fn instantiate(&self, bindings: &Bindings) -> Behavior {
-        let mut bindings = bindings.clone();
-        bindings.retain(|variable, _| !self.for_some.contains(variable));
+        let own;
+        let bindings = if self.for_some.iter().any(|v| bindings.contains_key(v)) {
+            let mut kept = bindings.clone();
+            kept.retain(|variable, _| !self.for_some.contains(variable));
+            own = kept;
+            &own
+        } else {
+            bindings
+        };
         Behavior {
-            name: self.name.substitute(&bindings),
+            name: self.name.substitute(bindings),
             comment: self.comment.clone(),
             for_some: self.for_some.clone(),
             conditions: self
                 .conditions
                 .iter()
-                .map(|c| c.substitute(&bindings))
+                .map(|c| c.substitute(bindings))
                 .collect(),
         }
     }
