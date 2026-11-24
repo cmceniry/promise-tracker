@@ -435,7 +435,15 @@ command.
 
 ### Implementation
 
-To be filled in as built.
+- `Behavior` (`src/components/behavior.rs`) has `for_some`, written
+  `forSome` and placed before `conditions`, omitted when empty.
+  `Behavior::instantiate` does not substitute a declared variable, so an
+  Instance binding of the same name does not reach it. Wants are `Behavior`s
+  too, which is why `forSome` on a want is a validation error rather than a
+  parse error. The `deny_unknown_fields` message now lists `forSome` among
+  the expected keys.
+- `src/validate.rs`: `check_for_some` holds the declaring rules; the
+  condition rule accepts a declared name.
 
 ## 4. Test plan
 

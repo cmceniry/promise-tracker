@@ -50,7 +50,9 @@ impl From<Agent> for IntermediateAgent {
                     .filter(|c| !global_conditions.contains(c))
                     .cloned()
                     .collect();
-                Behavior::new(p.get_name().clone()).with_conditions(conditions)
+                Behavior::new(p.get_name().clone())
+                    .with_for_some(p.get_for_some().to_vec())
+                    .with_conditions(conditions)
             })
             .collect::<Vec<Behavior>>();
 
@@ -540,6 +542,14 @@ globalConditions:
         let s = serde_yaml::to_string(&a).expect("Unable to serialize");
         let expected = "name: foo\nprovides:\n- name: p1\n  conditions:\n  - p1c1\n  - p1c2\n- name: p2\nwants:\n- name: w1\n- name: w2\n";
         assert_eq!(s, expected);
+    }
+
+    #[test]
+    fn to_yaml_keeps_for_some() {
+        let yaml = "name: B\nprovides:\n- name: '{{app}} is up'\n  forSome:\n  - kc\n  conditions:\n  - '{{app}} runs on {{kc}}'\n- name: p2\n";
+        let a: Agent = serde_yaml::from_str(yaml).expect("Unable to parse");
+        assert_eq!(a.provides()[0].get_for_some(), &["kc".to_string()]);
+        assert_eq!(serde_yaml::to_string(&a).expect("Unable to serialize"), yaml);
     }
 
     #[test]

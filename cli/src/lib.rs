@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(
             out.lines().next().unwrap(),
             "contracts.yaml:5:5: provides[0]: unknown field `bogus`, \
-             expected one of `name`, `comment`, `conditions`"
+             expected one of `name`, `comment`, `forSome`, `conditions`"
         );
     }
 

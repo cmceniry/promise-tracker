@@ -96,6 +96,8 @@ fn check_behaviors(
                 ),
             );
         }
+        let declared = promise.get_for_some();
+        check_for_some(&name_at, promise, &mut report);
         // Which condition opens each name. A value one condition finds is
         // shared with its siblings, which use the name plainly, so a name has
         // exactly one condition that opens it.
@@ -103,6 +105,18 @@ fn check_behaviors(
         for (j, condition) in promise.get_condition_patterns().iter().enumerate() {
             let at = format!("{}.conditions[{}]", name_at, j);
             for variable in condition.vars().into_iter().filter(|v| is_open(v)) {
+                if !declared.is_empty() {
+                    report(
+                        &at,
+                        condition.source(),
+                        format!(
+                            "`{{{{{}}}}}` cannot be used on a promise that declares `forSome`; list `{}` there and write `{{{{{}}}}}`",
+                            variable,
+                            &variable[1..],
+                            &variable[1..]
+                        ),
+                    );
+                }
                 if bound.contains(&variable[1..]) {
                     report(
                         &at,
@@ -139,8 +153,12 @@ fn check_behaviors(
                 if is_builtin(variable) || is_open(variable) {
                     continue;
                 }
-                // A sibling that opens the name supplies it.
-                if bound.contains(variable) || opened.get(variable).is_some_and(|by| *by != j) {
+                // A sibling that opens the name supplies it, and the
+                // conditions together find a declared one.
+                if bound.contains(variable)
+                    || declared.iter().any(|d| d == variable)
+                    || opened.get(variable).is_some_and(|by| *by != j)
+                {
                     continue;
                 }
                 let message = if opened.contains_key(variable) {
@@ -150,8 +168,8 @@ fn check_behaviors(
                     )
                 } else {
                     format!(
-                        "`{{{{{}}}}}` is not named by the promise or opened as `{{{{?{}}}}}` by another condition, so nothing supplies a value for it",
-                        variable, variable
+                        "`{{{{{}}}}}` is not named by the promise, declared in `forSome` or opened as `{{{{?{}}}}}` by another condition, so nothing supplies a value for it; to have the conditions find it, add `forSome: [{}]`",
+                        variable, variable, variable
                     )
                 };
                 errors.push(SemanticError {
@@ -213,6 +231,78 @@ fn check_behaviors(
     for (i, want) in wants.iter().enumerate() {
         let at = format!("{}wants[{}]", prefix, i);
         check_pattern(item, &at, want.get_name_pattern(), errors);
+        if !want.get_for_some().is_empty() {
+            errors.push(SemanticError {
+                item: item.to_string(),
+                location: format!("{}.forSome", at),
+                name: want.get_for_some().join(", "),
+                message: String::from(
+                    "`forSome` belongs on a promise, for its conditions to find values; a want names one behavior",
+                ),
+            });
+        }
+    }
+}
+
+/// The declaring rules for `forSome`: each name a legal variable, listed
+/// once, not one the promise name already has, and used by a condition; and
+/// conditions there to use them.
+fn check_for_some(
+    at: &str,
+    promise: &Behavior,
+    report: &mut impl FnMut(&str, &str, String),
+) {
+    let declared = promise.get_for_some();
+    if declared.is_empty() {
+        return;
+    }
+    let conditions = promise.get_condition_patterns();
+    if conditions.is_empty() {
+        report(
+            &format!("{}.forSome", at),
+            &declared.join(", "),
+            String::from(
+                "`forSome` declares variables for the promise's conditions to find, and it has no conditions",
+            ),
+        );
+    }
+    let in_name = promise.get_name_pattern().vars();
+    for (k, variable) in declared.iter().enumerate() {
+        let at = format!("{}.forSome[{}]", at, k);
+        if variable.is_empty()
+            || !variable
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            report(
+                &at,
+                variable,
+                String::from("not a legal variable name; expected only letters, digits, `_` or `-`"),
+            );
+            continue;
+        }
+        if declared[..k].contains(variable) {
+            report(&at, variable, String::from("listed twice in `forSome`"));
+            continue;
+        }
+        if in_name.contains(variable.as_str()) {
+            report(
+                &at,
+                variable,
+                format!(
+                    "`{{{{{}}}}}` is a variable of the promise name, which takes its value from whoever asks; a `forSome` variable is found by the conditions, so give it another name",
+                    variable
+                ),
+            );
+            continue;
+        }
+        if !conditions.is_empty() && !conditions.iter().any(|c| c.vars().contains(variable.as_str())) {
+            report(
+                &at,
+                variable,
+                format!("no condition uses `{{{{{}}}}}`", variable),
+            );
+        }
     }
 }
 
@@ -419,6 +509,61 @@ provides:
         assert!(found[1].contains("provides[1].conditions[0]") && found[1].contains("this same condition"));
         assert!(found[2].contains("provides[2].conditions[0]") && found[2].contains("waits on a value"));
         assert!(found[3].contains("provides[2].conditions[1]") && found[3].contains("waits on a value"));
+    }
+
+    #[test]
+    fn a_declared_variable_may_be_used_by_the_conditions() {
+        assert!(check(
+            "kind: Agent
+name: B
+provides:
+  - name: \"{{appname}} gateway is configured\"
+    forSome: [kc]
+    conditions:
+      - \"{{appname}} deploys to {{kc}}\"
+      - \"{{kc}} deploys {{appname}} gateway\"
+  - name: configured
+    forSome: [doc, reviewer]
+    conditions:
+      - \"{{doc}} shows usage\"
+      - \"{{reviewer}} signed off on {{doc}}\"
+"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn each_declaring_rule_is_enforced() {
+        let found = messages(
+            "kind: Agent
+name: o1
+provides:
+  - name: no-conditions
+    forSome: [x]
+  - name: \"{{app}} is up\"
+    forSome: [app, \"a b\", kc, kc, unused]
+    conditions:
+      - \"{{app}} runs on {{kc}}\"
+      - \"{{typo}} is healthy\"
+wants:
+  - name: w1
+    forSome: [x]
+",
+        );
+        assert_eq!(found.len(), 7, "{:#?}", found);
+        assert!(found[0].contains("provides[0].forSome:") && found[0].contains("no conditions"));
+        assert!(found[1].contains("provides[1].forSome[0]") && found[1].contains("variable of the promise name"));
+        assert!(found[2].contains("provides[1].forSome[1]") && found[2].contains("not a legal variable name"));
+        assert!(found[3].contains("provides[1].forSome[3]") && found[3].contains("listed twice"));
+        assert!(found[4].contains("provides[1].forSome[4]") && found[4].contains("no condition uses"));
+        assert!(
+            found[5].contains("provides[1].conditions[1]")
+                && found[5].contains("not named by the promise, declared in `forSome`")
+                && found[5].contains("forSome: [typo]"),
+            "{}",
+            found[5]
+        );
+        assert!(found[6].contains("wants[0].forSome") && found[6].contains("belongs on a promise"));
     }
 
     #[test]

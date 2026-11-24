@@ -11,6 +11,10 @@ use std::collections::HashSet;
 // still does; the pattern accessors are for code that needs to match or
 // substitute.
 //
+// `forSome` declares variables the conditions find values for, rather than
+// taking them from the promise name (`docs/design/self-and-open-variables.md`
+// §3). It is written before the conditions it serves.
+//
 // Deliberately not a doc comment: schemars copies those into the generated
 // JSON schema, and this type's schema is meant to stay byte-identical.
 #[derive(
@@ -24,6 +28,11 @@ pub struct Behavior {
     comment: String,
 
     #[serde(default)]
+    #[serde(rename = "forSome")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    for_some: Vec<String>,
+
+    #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     conditions: Vec<Pattern>,
 }
@@ -33,6 +42,7 @@ impl Behavior {
         Behavior {
             name: Pattern::parse_lossy(&name),
             comment: String::from(""),
+            for_some: vec![],
             conditions: vec![],
         }
     }
@@ -41,6 +51,7 @@ impl Behavior {
         Behavior {
             name: Pattern::parse_lossy(&name),
             comment: String::from(""),
+            for_some: vec![],
             conditions: conditions.iter().map(|c| Pattern::parse_lossy(c)).collect(),
         }
     }
@@ -56,6 +67,12 @@ impl Behavior {
 
     pub fn with_condition_patterns(mut self, conditions: Vec<Pattern>) -> Behavior {
         self.conditions = conditions;
+        self
+    }
+
+    /// Declare the variables this promise's conditions find values for.
+    pub fn with_for_some(mut self, variables: Vec<String>) -> Behavior {
+        self.for_some = variables;
         self
     }
 
@@ -87,6 +104,11 @@ impl Behavior {
         &self.comment
     }
 
+    /// The variables declared with `forSome`, as written.
+    pub fn get_for_some(&self) -> &[String] {
+        &self.for_some
+    }
+
     /// The conditions as written.
     pub fn get_conditions(&self) -> Vec<String> {
         self.conditions.iter().map(|c| c.source().clone()).collect()
@@ -111,14 +133,20 @@ impl Behavior {
     }
 
     /// A copy with `bindings` substituted through the name and the conditions.
+    ///
+    /// A variable the promise declares with `forSome` is its own, found by
+    /// its conditions, so a binding of the same name does not reach it.
     pub fn instantiate(&self, bindings: &Bindings) -> Behavior {
+        let mut bindings = bindings.clone();
+        bindings.retain(|variable, _| !self.for_some.contains(variable));
         Behavior {
-            name: self.name.substitute(bindings),
+            name: self.name.substitute(&bindings),
             comment: self.comment.clone(),
+            for_some: self.for_some.clone(),
             conditions: self
                 .conditions
                 .iter()
-                .map(|c| c.substitute(bindings))
+                .map(|c| c.substitute(&bindings))
                 .collect(),
         }
     }
@@ -173,10 +201,38 @@ mod tests {
     }
 
     #[test]
+    fn for_some_reads_and_writes_before_the_conditions() {
+        let yaml = "name: '{{app}} gateway is configured'\nforSome:\n- kc\nconditions:\n- '{{app}} deploys to {{kc}}'\n- '{{kc}} deploys {{app}} gateway'\n";
+        let p: Behavior = serde_yaml::from_str(yaml).expect("Unable to parse");
+        assert_eq!(p.get_for_some(), &["kc".to_string()]);
+        assert_eq!(serde_yaml::to_string(&p).unwrap(), yaml);
+        // and a promise without it writes nothing for it
+        let plain: Behavior = serde_yaml::from_str("name: foo").unwrap();
+        assert!(plain.get_for_some().is_empty());
+        assert_eq!(serde_yaml::to_string(&plain).unwrap(), "name: foo\n");
+    }
+
+    #[test]
+    fn instantiate_leaves_declared_variables_alone() {
+        let p = Behavior::build("{{app}} is up")
+            .with_for_some(vec!["kc".into()])
+            .with_conditions(vec!["{{app}} runs on {{kc}}".into()]);
+        let bindings = Bindings::from([
+            ("app".to_string(), "web".to_string()),
+            ("kc".to_string(), "c1".to_string()),
+        ]);
+        let out = p.instantiate(&bindings);
+        assert_eq!(out.get_name(), "web is up");
+        assert_eq!(out.get_conditions(), vec!["web runs on {{kc}}".to_string()]);
+        assert_eq!(out.get_for_some(), &["kc".to_string()]);
+    }
+
+    #[test]
     fn add_condition() {
         let mut p = Behavior {
             name: Pattern::from("a"),
             comment: String::from(""),
+            for_some: vec![],
             conditions: vec![],
         };
         p.add_condition(String::from("c1"));
@@ -199,6 +255,7 @@ mod tests {
         let mut p = Behavior {
             name: Pattern::from("a"),
             comment: String::from(""),
+            for_some: vec![],
             conditions: vec![],
         };
         assert!(p.is_unconditional());
@@ -211,6 +268,7 @@ mod tests {
         let p = Behavior {
             name: Pattern::from("b1"),
             comment: String::from(""),
+            for_some: vec![],
             conditions: vec![Pattern::from("c1"), Pattern::from("c2")],
         };
         let mut conditions = HashSet::new();
