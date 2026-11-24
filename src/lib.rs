@@ -3868,6 +3868,51 @@ provides:
     }
 
     #[test]
+    fn test_folded_collective_keeps_an_inner_declared_variable() {
+        // `site` folds `op` and `web`: `served` rests on `web runs`, met
+        // inside, which needs some node it is placed on that is up.
+        let build = |up: &str| {
+            let mut t = Tracker::new();
+            t.add_agent(Agent::build("op").with_provides(vec![
+                Behavior::build("served").with_conditions(vec!["web runs".into()]),
+            ]));
+            t.add_agent(Agent::build("web").with_provides(vec![Behavior::build("web runs")
+                .with_for_some(vec!["node".into()])
+                .with_conditions(vec![
+                    "web placed on {{node}} node".into(),
+                    "{{node}} node is up".into(),
+                ])]));
+            t.add_superagent(
+                SuperAgent::new(String::from("site"))
+                    .with_agent("op")
+                    .with_agent("web"),
+            );
+            t.add_agent(Agent::build("infra").with_provides(vec![
+                Behavior::build("web placed on n1 node"),
+                Behavior::build(&format!("{} node is up", up)),
+            ]));
+            t
+        };
+        let t = build("n1");
+        assert_eq!(t.get_working_agent_names(), vec!["infra", "site"]);
+        let served = t
+            .get_agent_promises("site")
+            .unwrap()
+            .into_iter()
+            .find(|p| p.get_name() == "served")
+            .unwrap();
+        assert_eq!(served.get_for_some(), &["node".to_string()]);
+        let r = t.resolve("served");
+        assert!(r.is_satisfied());
+        assert_eq!(
+            offer_conditions(&r.get_satisfying_offers()[0]),
+            vec!["web placed on n1 node", "n1 node is up"]
+        );
+        // n2 is up, but web is placed on n1
+        assert!(!build("n2").resolve("served").is_satisfied());
+    }
+
+    #[test]
     fn test_declared_variables_judged_together_in_the_provides_listing() {
         let t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
         let readings = t.resolve_conditions(

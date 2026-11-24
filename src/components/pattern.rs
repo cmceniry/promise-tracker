@@ -359,6 +359,41 @@ impl Pattern {
         }
     }
 
+    /// The same name with some of its variables called something else:
+    /// `{{k}} is up` with `k` renamed to `k_2` is `{{k_2}} is up`. What a
+    /// substitution filled in earlier moves with the text around it.
+    pub fn rename_vars(&self, renaming: &BTreeMap<String, String>) -> Pattern {
+        let mut segments: Vec<Segment> = vec![];
+        let mut bound: Vec<(usize, usize)> = vec![];
+        let mut old_at = 0;
+        let mut new_at = 0;
+        for segment in &self.segments {
+            match segment {
+                Segment::Var(v) => {
+                    let renamed = renaming.get(v).unwrap_or(v);
+                    old_at += v.len() + 4;
+                    new_at += renamed.len() + 4;
+                    segments.push(Segment::Var(renamed.clone()));
+                }
+                Segment::Literal(l) => {
+                    for (start, end) in &self.bound {
+                        if *start >= old_at && *end <= old_at + l.len() {
+                            bound.push((start - old_at + new_at, end - old_at + new_at));
+                        }
+                    }
+                    old_at += l.len();
+                    new_at += l.len();
+                    segments.push(Segment::Literal(l.clone()));
+                }
+            }
+        }
+        Pattern {
+            source: render(&segments),
+            segments,
+            bound,
+        }
+    }
+
     /// Replace `{{!self}}` with the name of the agent that wrote it.
     pub fn bind_self(&self, name: &str) -> Pattern {
         self.substitute(&self_bindings(name))
@@ -1327,6 +1362,18 @@ mod tests {
         let u = unify("{{kc}}-east", "C-{{zone}}").unwrap();
         assert_eq!(u.left_values(), binds(&[("kc", "C")]));
         assert_eq!(u.right_values(), binds(&[("zone", "east")]));
+    }
+
+    #[test]
+    fn rename_vars_keeps_what_was_filled_in() {
+        let p = Pattern::parse("{{a}} on {{k}} by {{a}}")
+            .unwrap()
+            .substitute(&binds(&[("a", "web")]));
+        assert_eq!(p.marked(), "<web> on {{k}} by <web>");
+        let out = p.rename_vars(&BTreeMap::from([("k".to_string(), "k_2".to_string())]));
+        assert_eq!(out.source(), "web on {{k_2}} by web");
+        assert_eq!(out.marked(), "<web> on {{k_2}} by <web>");
+        assert_eq!(Pattern::parse(out.source()).unwrap(), out);
     }
 
     #[test]

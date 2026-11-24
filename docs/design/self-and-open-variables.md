@@ -476,6 +476,11 @@ command.
   holds for any. Its `Display` is the message. CLI `validate` reports it with
   the other tracker-level checks; that is the only place those are reported
   (the API and the editor run the per-document pass only).
+- SuperAgent folding: `reduce_one` (`src/components/agent.rs`) declares an
+  inner promise's `forSome` names on the outer promise when it hoists the
+  inner conditions, renaming one already in use there (the outer name's
+  variables, its own `forSome`, or one hoisted before) to `name_2`,
+  `name_3`, ... with `Pattern::rename_vars`.
 - Failure reporting: `src/query.rs` `leaf_causes` reports a condition row
   still holding a declared variable, with no offers, as
   `CauseKind::Unfound { variables, holds_for_any }`: the variables the

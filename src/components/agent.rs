@@ -2,7 +2,7 @@ use crate::components::behavior::Behavior;
 use crate::components::pattern::{self_bindings, Bindings, Pattern};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -338,8 +338,21 @@ const MAX_REDUCE_STEPS: usize = 1_000;
 
 /// One promise with its internally-met conditions replaced by their own
 /// external conditions, transitively.
+///
+/// A promise met inside may declare variables its conditions find
+/// (`forSome`). Its conditions come along holding them, so the variables are
+/// declared on the outer promise too, renamed (`kc` to `kc_2`, ...) where
+/// the outer promise already uses the name.
 fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
     let own = behavior.get_name().clone();
+    let mut for_some: Vec<String> = behavior.get_for_some().to_vec();
+    let mut in_use: BTreeSet<String> = behavior
+        .get_name_pattern()
+        .vars()
+        .into_iter()
+        .map(str::to_string)
+        .chain(for_some.iter().cloned())
+        .collect();
     // Conditions already dealt with, so that a chain reconverging on one is
     // expanded once rather than once per path into it.
     let mut seen: HashSet<String> = HashSet::new();
@@ -367,7 +380,23 @@ fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
             continue;
         }
         match internally_met(&condition, provides) {
-            Some(inner) => queue.extend(inner),
+            Some((inner, declared)) => {
+                let mut renaming: BTreeMap<String, String> = BTreeMap::new();
+                for variable in declared {
+                    let mut name = variable.clone();
+                    let mut n = 2;
+                    while in_use.contains(&name) {
+                        name = format!("{}_{}", variable, n);
+                        n += 1;
+                    }
+                    in_use.insert(name.clone());
+                    for_some.push(name.clone());
+                    if name != variable {
+                        renaming.insert(variable, name);
+                    }
+                }
+                queue.extend(inner.into_iter().map(|c| c.rename_vars(&renaming)));
+            }
             None => {
                 external.insert(condition);
             }
@@ -377,28 +406,34 @@ fn reduce_one(behavior: &Behavior, provides: &[Behavior]) -> Behavior {
     behavior
         .clone()
         .with_condition_patterns(external.into_iter().collect())
+        .with_for_some(for_some)
 }
 
 /// If one of `provides` already covers `condition`, what that promise depends
-/// on in turn, with the condition's own values substituted through.
+/// on in turn, with the condition's own values substituted through, and the
+/// variables it declares for those conditions to find.
 ///
 /// Only ground conditions are expanded. A parameterized condition would have to
 /// be matched against a parameterized provider — two open sides, the general
 /// unification this design avoids — so it passes through as external.
-fn internally_met(condition: &Pattern, provides: &[Behavior]) -> Option<Vec<Pattern>> {
+fn internally_met(
+    condition: &Pattern,
+    provides: &[Behavior],
+) -> Option<(Vec<Pattern>, Vec<String>)> {
     if !condition.is_ground() {
         return None;
     }
     // Where several promises could cover it, the first declared wins.
     for candidate in provides {
         if let Some(bindings) = candidate.match_goal(condition.source()) {
-            return Some(
+            return Some((
                 candidate
                     .get_condition_patterns()
                     .iter()
                     .map(|c| c.substitute(&bindings))
                     .collect(),
-            );
+                candidate.get_for_some().to_vec(),
+            ));
         }
     }
     None
@@ -771,6 +806,48 @@ provides:
                     ]
                 )])
                 .with_wants(vec![Behavior::new(String::from("w1"))])
+        );
+    }
+
+    #[test]
+    fn test_reduce_carries_declared_variables_along() {
+        let mut a: Agent = serde_yaml::from_str(
+            "name: sa
+provides:
+  - name: \"{{node}} served\"
+    forSome: [kc]
+    conditions:
+      - web runs
+      - \"{{kc}} hosts {{node}}\"
+  - name: web runs
+    forSome: [node, kc]
+    conditions:
+      - \"web on {{node}} via {{kc}}\"
+      - \"{{node}} is up\"
+",
+        )
+        .unwrap();
+        a.reduce();
+        // `web runs` is met inside, so its conditions move up to the outer
+        // promise with their variables; `node` and `kc` are taken there
+        // (one by the name, one by its own `forSome`), so they are renamed.
+        assert_eq!(
+            a.provides,
+            vec![
+                Behavior::build("web runs")
+                    .with_for_some(vec!["node".into(), "kc".into()])
+                    .with_conditions(vec![
+                        "web on {{node}} via {{kc}}".into(),
+                        "{{node}} is up".into()
+                    ]),
+                Behavior::build("{{node}} served")
+                    .with_for_some(vec!["kc".into(), "node_2".into(), "kc_2".into()])
+                    .with_conditions(vec![
+                        "web on {{node_2}} via {{kc_2}}".into(),
+                        "{{kc}} hosts {{node}}".into(),
+                        "{{node_2}} is up".into(),
+                    ]),
+            ]
         );
     }
 
