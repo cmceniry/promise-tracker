@@ -481,7 +481,12 @@ command.
   variable, the search runs on every condition using it as written (the
   promise name's variables open too, so a value named for any asker counts),
   and the variable is listed when nothing names a value and some promise
-  holds for any. Its `Display` is the message. CLI `validate` reports it with
+  holds for any. It walks declarations as written, not working agents: each
+  agent's promises (a collective's member and an instance's base included)
+  and each instance's own, so a folded member is reported once, under its
+  own name and the variable name it wrote, never as the collective or a
+  renamed `db_2`. The search itself runs against the working agents, so a
+  holder may be named as a collective. Its `Display` is the message. CLI `validate` reports it with
   the other tracker-level checks; that is the only place those are reported
   (the API and the editor run the per-document pass only).
 - SuperAgent folding: `reduce_one` (`src/components/agent.rs`) declares an

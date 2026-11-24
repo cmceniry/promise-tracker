@@ -490,41 +490,55 @@ impl Tracker {
     /// Like [`Tracker::non_ground_wants`], this needs every document in
     /// play to answer.
     pub fn unnamable_variables(&self) -> Vec<UnnamableVariable> {
+        // Each declaration as its author wrote it, under the document that
+        // wrote it: an agent (a collective's member or an instance's base
+        // included) or an instance's own promises. Not the working agents,
+        // where folding puts a member's promise under the collective and
+        // hoisting renames what an inner promise declared. The search runs
+        // against the working agents, as resolution does.
+        let mut declarations: Vec<(String, Behavior)> = vec![];
+        for agent in &self.available_agents {
+            for promise in agent.bind_self().provides() {
+                declarations.push((agent.get_name().clone(), promise.clone()));
+            }
+        }
+        for instance in &self.available_instances {
+            for promise in instance.get_provides() {
+                declarations.push((
+                    instance.get_name().clone(),
+                    promise.bind_self(instance.get_name()),
+                ));
+            }
+        }
         let mut ret: Vec<UnnamableVariable> = vec![];
         let mut memo: HashMap<String, Proposals> = HashMap::new();
-        let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
-        agent_names.sort();
-        for agent_name in agent_names {
-            for variant in &self.working_agents[agent_name] {
-                for promise in variant.provides() {
-                    for variable in promise.get_for_some() {
-                        let mut named = false;
-                        let mut holders: Vec<HoldsForAny> = vec![];
-                        for condition in promise.get_condition_patterns() {
-                            if !condition.vars().contains(variable.as_str()) {
-                                continue;
-                            }
-                            let (found, _) = self.search(condition, &mut vec![], &mut memo);
-                            named |= found.names(variable);
-                            for holder in found.holding_for_any(variable) {
-                                if !holders.contains(holder) {
-                                    holders.push(holder.clone());
-                                }
-                            }
-                        }
-                        if named || holders.is_empty() {
-                            continue;
-                        }
-                        let found = UnnamableVariable {
-                            agent: agent_name.clone(),
-                            promise: promise.get_name().clone(),
-                            variable: variable.clone(),
-                            holders,
-                        };
-                        if !ret.contains(&found) {
-                            ret.push(found);
+        for (agent_name, promise) in &declarations {
+            for variable in promise.get_for_some() {
+                let mut named = false;
+                let mut holders: Vec<HoldsForAny> = vec![];
+                for condition in promise.get_condition_patterns() {
+                    if !condition.vars().contains(variable.as_str()) {
+                        continue;
+                    }
+                    let (found, _) = self.search(condition, &mut vec![], &mut memo);
+                    named |= found.names(variable);
+                    for holder in found.holding_for_any(variable) {
+                        if !holders.contains(holder) {
+                            holders.push(holder.clone());
                         }
                     }
+                }
+                if named || holders.is_empty() {
+                    continue;
+                }
+                let found = UnnamableVariable {
+                    agent: agent_name.clone(),
+                    promise: promise.get_name().clone(),
+                    variable: variable.clone(),
+                    holders,
+                };
+                if !ret.contains(&found) {
+                    ret.push(found);
                 }
             }
         }
@@ -3774,6 +3788,57 @@ provides:
                 .collect();
             let expected: Vec<bool> = order.iter().map(|o| *o == "by-self").collect();
             assert_eq!(held, expected, "{:?}", order);
+        }
+    }
+
+    #[test]
+    fn test_invalid_variable_is_reported_once_as_written_folded_or_not() {
+        // be's `db` can be anything; fe's is named (`pg is fast`). Folded,
+        // be's promise is hoisted into fe's and its `db` renamed there.
+        for fold in [true, false] {
+            let mut t = crate::marks::tracker(
+                r#"kind: Agent
+name: A
+wants:
+  - name: "web served"
+---
+kind: SuperAgent
+name: team
+agents: [fe, be]
+---
+kind: Agent
+name: fe
+provides:
+  - name: "web served"
+    forSome: [db]
+    conditions:
+      - "backend ready"
+      - "{{db}} is fast"
+---
+kind: Agent
+name: be
+provides:
+  - name: "backend ready"
+    forSome: [db]
+    conditions:
+      - "{{db}} is primary"
+---
+kind: Agent
+name: D
+provides:
+  - name: "{{x}} is primary"
+  - name: "pg is fast"
+"#,
+            );
+            t.set_fold_collectives(fold);
+            let found = t.unnamable_variables();
+            assert_eq!(found.len(), 1, "fold={} {:?}", fold, found);
+            assert_eq!(
+                (found[0].agent.as_str(), found[0].promise.as_str(), found[0].variable.as_str()),
+                ("be", "backend ready", "db"),
+                "fold={}",
+                fold
+            );
         }
     }
 
