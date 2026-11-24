@@ -227,7 +227,7 @@ pub fn agent_provides(
         if options.fold_self && index.is_self_promise(agent, promise.get_name()) {
             continue;
         }
-        let conditions = resolver.conditions(promise.get_conditions());
+        let conditions = resolver.conditions(promise);
         let held = conditions.iter().all(|c| c.held);
         // An unneeded alternative: this promise is not held, so if the
         // behavior is kept at all, some other offer keeps it.
@@ -281,7 +281,7 @@ pub fn behavior_use(
         if folded_away {
             continue;
         }
-        let conditions = resolver.conditions(promise.instantiate(&bindings).get_conditions());
+        let conditions = resolver.conditions(&promise.instantiate(&bindings));
         let pattern = (!promise.get_name_pattern().is_ground()).then(|| promise.get_name().clone());
         let row = ProviderRow {
             agents: vec![agent.clone()],
@@ -513,12 +513,15 @@ impl<'a> Resolver<'a> {
     /// Whether each of a promise's conditions holds. Conditions that share a
     /// value are judged together, by the value that lets the most of them
     /// hold — all of them, where any value does.
-    fn conditions(&mut self, conditions: Vec<String>) -> Vec<ConditionStatus> {
-        let shares = conditions
-            .iter()
-            .any(|c| Pattern::parse_lossy(c).needs_binding());
+    fn conditions(&mut self, promise: &Behavior) -> Vec<ConditionStatus> {
+        let conditions = promise.get_conditions();
+        let declared = promise.get_for_some();
+        let shares = !declared.is_empty()
+            || conditions
+                .iter()
+                .any(|c| Pattern::parse_lossy(c).needs_binding());
         let held: Vec<bool> = if shares {
-            let readings = self.tracker.resolve_conditions(&conditions);
+            let readings = self.tracker.resolve_conditions(&conditions, declared);
             let count = |r: &Vec<Resolution>| r.iter().filter(|c| c.is_satisfied()).count();
             let mut best: Option<&Vec<Resolution>> = None;
             for reading in &readings {

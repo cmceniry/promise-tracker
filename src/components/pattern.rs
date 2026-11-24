@@ -687,6 +687,16 @@ fn bind_from(
                 .take_while(|t| matches!(t, Token::Char(_)))
                 .count();
             for take in 1..=available {
+                // Only a length after which the variable's own side can go
+                // on: its next character has to be the next one there.
+                match (rest.first(), other.get(take)) {
+                    (None, Some(_)) => continue,
+                    (Some(Token::Char(mine)), Some(Token::Char(theirs))) if mine != theirs => {
+                        continue
+                    }
+                    (Some(Token::Char(_)), None) => continue,
+                    _ => {}
+                }
                 let text: String = other[..take]
                     .iter()
                     .map(|t| match t {

@@ -9,6 +9,7 @@ pub mod trace;
 
 use components::Agent;
 use components::BaseKind;
+use components::Bindings;
 use components::Behavior;
 use components::Instance;
 use components::Item;
@@ -895,11 +896,16 @@ impl Tracker {
                         .iter()
                         .map(|c| c.substitute(&bindings))
                         .collect();
-                    for reading in self.condition_readings(&conditions) {
+                    for reading in self.readings(&behavior, &conditions) {
                         for condition in reading {
                             let sub_goal = match condition {
                                 ConditionGoal::Goal(sub_goal) => sub_goal.source().clone(),
                                 ConditionGoal::Chosen { name, .. } => name,
+                                ConditionGoal::Gathered(pattern) => {
+                                    complete &=
+                                        self.walk_gathered(&pattern, in_progress, clean, found);
+                                    continue;
+                                }
                                 ConditionGoal::Unbound(_) => continue,
                             };
                             complete &= self.walk_for_cycles(&sub_goal, in_progress, clean, found);
@@ -1006,7 +1012,7 @@ impl Tracker {
                         .iter()
                         .map(|c| c.substitute(&bindings))
                         .collect();
-                    for reading in self.condition_readings(&conditions) {
+                    for reading in self.readings(&behavior, &conditions) {
                         let (resolved_conditions, stands_alone) =
                             self.resolve_reading(reading, in_progress, settled);
                         self_contained &= stands_alone;
@@ -1083,6 +1089,9 @@ enum ConditionGoal {
     /// An open condition whose value its siblings share, answered here by the
     /// one concrete behavior `name`.
     Chosen { pattern: Pattern, name: String },
+    /// Still holding a variable its promise declares (`forSome`), shared with
+    /// no other condition: one row gathering every match as alternatives.
+    Gathered(Pattern),
     /// Still holding a variable nothing supplied a value for.
     Unbound(Pattern),
 }
@@ -1092,7 +1101,7 @@ enum ConditionGoal {
 /// those and its `{{?x}}` fall in each behavior matched. Display only; the
 /// offers are untouched.
 fn as_reached_by(mut resolved: Resolution, reached: &Pattern) -> Resolution {
-    if reached.has_open() {
+    if !reached.is_ground() {
         for offer in resolved.offers_mut() {
             let matched = offer.get_behavior().and_then(|kept| reached.spans_on(kept));
             if let Some(matched) = matched {
@@ -1108,10 +1117,17 @@ impl Tracker {
     /// the order the conditions were given. There is more than one reading
     /// only where a condition finds a value its siblings share, and then one
     /// for each value found.
-    pub fn resolve_conditions(&self, conditions: &[String]) -> Vec<Vec<Resolution>> {
+    ///
+    /// `declared` are the variables the promise declares with `forSome`.
+    pub fn resolve_conditions(
+        &self,
+        conditions: &[String],
+        declared: &[String],
+    ) -> Vec<Vec<Resolution>> {
         let patterns: Vec<Pattern> = conditions.iter().map(|c| Pattern::parse_lossy(c)).collect();
         let mut settled: HashMap<String, Resolution> = HashMap::new();
-        self.condition_readings(&patterns)
+        let promise = Behavior::build("").with_for_some(declared.to_vec());
+        self.readings(&promise, &patterns)
             .into_iter()
             .map(|reading| self.resolve_reading(reading, &mut vec![], &mut settled).0)
             .collect()
@@ -1154,6 +1170,12 @@ impl Tracker {
                         );
                     }
                     resolved_conditions.push(chosen);
+                }
+                ConditionGoal::Gathered(pattern) => {
+                    let (resolved, stands_alone) =
+                        self.resolve_gathered(&pattern, in_progress, settled);
+                    self_contained &= stands_alone;
+                    resolved_conditions.push(as_reached_by(resolved, &pattern));
                 }
                 ConditionGoal::Unbound(source) => {
                     resolved_conditions.push(
@@ -1278,6 +1300,403 @@ impl Tracker {
                     .collect()
             })
             .collect()
+    }
+}
+
+/// What the candidate search proposes for the variables of one goal
+/// ([`Tracker::propose`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Proposals {
+    /// Values for the goal's variables, each the set one answering promise
+    /// names together. A set may leave some variables out: the promise held
+    /// for any value of those, or something further down named only some.
+    /// In the order found (agents by name, then declaration order), each once.
+    pub values: Vec<Bindings>,
+    /// Promises that answered a variable while holding for any value of it,
+    /// each once.
+    pub any: Vec<HoldsForAny>,
+}
+
+/// A promise that answers one of a goal's variables while none of its own
+/// conditions says anything about that value: it holds for any value, so it
+/// proposes nothing, and accepts whatever something else proposes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HoldsForAny {
+    /// The goal's variable.
+    pub variable: String,
+    /// The agent making the promise.
+    pub agent: String,
+    /// The promise, as written.
+    pub promise: String,
+}
+
+impl Proposals {
+    /// Does any proposal name a value for `variable`?
+    pub fn names(&self, variable: &str) -> bool {
+        self.values.iter().any(|v| v.contains_key(variable))
+    }
+
+    /// The promises that held for any value of `variable`.
+    pub fn holding_for_any(&self, variable: &str) -> Vec<&HoldsForAny> {
+        self.any.iter().filter(|a| a.variable == variable).collect()
+    }
+
+    fn renamed(&self, renaming: &BTreeMap<String, String>) -> Proposals {
+        let rename = |v: &String| renaming.get(v).cloned().unwrap_or_else(|| v.clone());
+        Proposals {
+            values: self
+                .values
+                .iter()
+                .map(|b| b.iter().map(|(k, v)| (rename(k), v.clone())).collect())
+                .collect(),
+            any: self
+                .any
+                .iter()
+                .map(|a| HoldsForAny {
+                    variable: rename(&a.variable),
+                    ..a.clone()
+                })
+                .collect(),
+        }
+    }
+
+    fn push_value(&mut self, value: Bindings) {
+        // Naming nothing proposes nothing.
+        if !value.is_empty() && !self.values.contains(&value) {
+            self.values.push(value);
+        }
+    }
+
+    fn push_any(&mut self, any: HoldsForAny) {
+        if !self.any.contains(&any) {
+            self.any.push(any);
+        }
+    }
+}
+
+/// The settled-cache key for a gathered row, kept apart from the concrete
+/// goals the cache otherwise holds.
+fn gathered_key(text: &str) -> String {
+    format!("\u{0}{}", text)
+}
+
+impl Tracker {
+    /// The ways a promise's conditions can be read together: by its declared
+    /// variables when it has any, or as `{{?x}}` conditions otherwise.
+    fn readings(&self, promise: &Behavior, conditions: &[Pattern]) -> Vec<Vec<ConditionGoal>> {
+        if promise.get_for_some().is_empty() {
+            self.condition_readings(conditions)
+        } else {
+            self.declared_readings(conditions, promise.get_for_some())
+        }
+    }
+
+    /// The readings of conditions holding variables their promise declares.
+    ///
+    /// A declared variable two or more conditions use is shared: every
+    /// candidate value the search proposes for it is one reading, with the
+    /// value filled in throughout. A condition still holding a declared
+    /// variable after that is gathered: one row, any match of which
+    /// satisfies it. When no candidate is found for a shared variable there
+    /// is one reading, its conditions left as written, so the promise shows
+    /// as an offer that cannot be kept.
+    fn declared_readings(
+        &self,
+        conditions: &[Pattern],
+        declared: &[String],
+    ) -> Vec<Vec<ConditionGoal>> {
+        let uses = |c: &Pattern, v: &str| c.vars().contains(v);
+        let shared: Vec<String> = declared
+            .iter()
+            .filter(|v| conditions.iter().filter(|c| uses(c, v)).count() >= 2)
+            .cloned()
+            .collect();
+        let read = |c: Pattern| {
+            if c.is_ground() {
+                ConditionGoal::Goal(c)
+            } else if c.vars().iter().all(|v| declared.iter().any(|d| d == v))
+                && !shared.iter().any(|v| uses(&c, v))
+            {
+                ConditionGoal::Gathered(c)
+            } else {
+                ConditionGoal::Unbound(c)
+            }
+        };
+        let values = self.candidate_values(conditions, &shared);
+        if values.is_empty() {
+            return vec![conditions.iter().cloned().map(read).collect()];
+        }
+        values
+            .iter()
+            .map(|value| conditions.iter().map(|c| read(c.substitute(value))).collect())
+            .collect()
+    }
+
+    /// Every complete set of values for `shared` the conditions propose,
+    /// sorted. Each condition mentioning a variable still missing proposes,
+    /// with what the reading has so far filled in, and the proposals are
+    /// pooled; a reading that cannot be completed is dropped. With nothing
+    /// shared, the one empty reading.
+    fn candidate_values(&self, conditions: &[Pattern], shared: &[String]) -> Vec<Bindings> {
+        let mut done: BTreeSet<Bindings> = BTreeSet::new();
+        let mut seen: BTreeSet<Bindings> = BTreeSet::new();
+        let mut todo: std::collections::VecDeque<Bindings> = [Bindings::new()].into();
+        let mut memo: HashMap<String, Proposals> = HashMap::new();
+        while let Some(reading) = todo.pop_front() {
+            let missing: Vec<&String> = shared
+                .iter()
+                .filter(|v| !reading.contains_key(*v))
+                .collect();
+            if missing.is_empty() {
+                done.insert(reading);
+                continue;
+            }
+            for condition in conditions {
+                let vars = condition.vars();
+                if !missing.iter().any(|v| vars.contains(v.as_str())) {
+                    continue;
+                }
+                let goal = condition.substitute(&reading);
+                let (found, _) = self.search(&goal, &mut vec![], &mut memo);
+                for proposal in found.values {
+                    let mut next = reading.clone();
+                    let before = next.len();
+                    next.extend(proposal.into_iter().filter(|(k, _)| missing.contains(&k)));
+                    if next.len() == before {
+                        continue;
+                    }
+                    if done.len() + todo.len() < MAX_CONDITION_READINGS && seen.insert(next.clone())
+                    {
+                        todo.push_back(next);
+                    }
+                }
+            }
+        }
+        done.into_iter().collect()
+    }
+
+    /// The concrete behaviors a gathered row could be answered by: every
+    /// complete filling-in of its variables the search proposes, in the order
+    /// found, each once.
+    fn gathered_names(&self, pattern: &Pattern) -> Vec<String> {
+        let mut names: Vec<String> = vec![];
+        let mut seen: BTreeSet<Bindings> = BTreeSet::new();
+        let mut todo: std::collections::VecDeque<Bindings> = [Bindings::new()].into();
+        let mut memo: HashMap<String, Proposals> = HashMap::new();
+        while let Some(reading) = todo.pop_front() {
+            let goal = pattern.substitute(&reading);
+            if goal.is_ground() {
+                if !names.contains(goal.source()) {
+                    names.push(goal.source().clone());
+                }
+                continue;
+            }
+            let vars = goal.vars();
+            let (found, _) = self.search(&goal, &mut vec![], &mut memo);
+            for proposal in found.values {
+                let mut next = reading.clone();
+                let before = next.len();
+                next.extend(proposal.into_iter().filter(|(k, _)| vars.contains(k.as_str())));
+                if next.len() > before && seen.insert(next.clone()) {
+                    todo.push_back(next);
+                }
+            }
+        }
+        names
+    }
+
+    /// A gathered row: one resolution under the condition's pattern text,
+    /// with the offers of every behavior it could be answered by, each
+    /// naming the behavior it keeps. Cached by the pattern text, like a
+    /// concrete goal; what depends on how it was reached is put on by
+    /// [`as_reached_by`].
+    fn resolve_gathered(
+        &self,
+        pattern: &Pattern,
+        in_progress: &mut Vec<String>,
+        settled: &mut HashMap<String, Resolution>,
+    ) -> (Resolution, bool) {
+        let text = pattern.source();
+        if in_progress.iter().any(|g| g == text) || in_progress.len() >= MAX_RESOLVE_DEPTH {
+            return (Resolution::new(text), false);
+        }
+        if let Some(known) = settled.get(&gathered_key(text)) {
+            return (known.clone(), true);
+        }
+        in_progress.push(text.clone());
+        let plain = Pattern::parse_lossy(text);
+        let mut r = Resolution::new(text);
+        let mut self_contained = true;
+        for name in self.gathered_names(pattern) {
+            let (resolved, stands_alone) = self.resolve_goal(&name, in_progress, settled);
+            self_contained &= stands_alone;
+            let matched = plain.spans_on(&name).unwrap_or_default();
+            for offer in resolved.get_satisfying_offers() {
+                r = r.add_satisfying_offer(
+                    offer.clone().answering(&name).with_matched(matched.clone()),
+                );
+            }
+            for offer in resolved.get_unsatisfying_offers() {
+                r = r.add_unsatisfying_offer(
+                    offer.clone().answering(&name).with_matched(matched.clone()),
+                );
+            }
+        }
+        in_progress.pop();
+        if self_contained {
+            settled.insert(gathered_key(text), r.clone());
+        }
+        (r, self_contained)
+    }
+
+    /// [`Tracker::walk_for_cycles`] through a gathered row: it depends on
+    /// every behavior it could be answered by, and sits on the loop under its
+    /// pattern text.
+    fn walk_gathered(
+        &self,
+        pattern: &Pattern,
+        in_progress: &mut Vec<String>,
+        clean: &mut HashSet<String>,
+        found: &mut BTreeSet<Vec<String>>,
+    ) -> bool {
+        let text = pattern.source();
+        if let Some(at) = in_progress.iter().position(|g| g == text) {
+            found.insert(rotate_to_first(&in_progress[at..]));
+            return false;
+        }
+        if in_progress.len() >= MAX_RESOLVE_DEPTH {
+            return false;
+        }
+        let key = gathered_key(text);
+        if clean.contains(&key) {
+            return true;
+        }
+        in_progress.push(text.clone());
+        let mut complete = true;
+        for name in self.gathered_names(pattern) {
+            complete &= self.walk_for_cycles(&name, in_progress, clean, found);
+        }
+        in_progress.pop();
+        if complete {
+            clean.insert(key);
+        }
+        complete
+    }
+
+    /// What promises propose for the variables of `goal`, a name still
+    /// holding some: the candidate search, two-sided
+    /// ([`Pattern::unify`]). See [`Proposals`].
+    ///
+    /// Display and checks use this; resolution uses it to choose candidates
+    /// and leaves deciding what holds to the concrete resolver.
+    pub fn propose(&self, goal: &str) -> Proposals {
+        self.search(&Pattern::parse_lossy(goal), &mut vec![], &mut HashMap::new())
+            .0
+    }
+
+    /// The candidate search. For each promise whose name matches `goal`
+    /// two-sided: a variable that took the promise's text has that text as a
+    /// value; one lined up with a promise variable is looked for in the
+    /// promise's conditions that mention it, with what the match filled in,
+    /// and if none does the promise holds for any value of it.
+    ///
+    /// Guarded like resolution: an in-progress stack of goals with their
+    /// variables renamed ([`Pattern::canonical`]), so the same question under
+    /// other names is recognized, and the depth cap. A goal cut short by
+    /// either proposes nothing, and the second return value is false.
+    /// Answers not cut short are kept in `memo`, by the renamed text.
+    fn search(
+        &self,
+        goal: &Pattern,
+        stack: &mut Vec<String>,
+        memo: &mut HashMap<String, Proposals>,
+    ) -> (Proposals, bool) {
+        let (canonical, renaming) = goal.canonical();
+        let back: BTreeMap<String, String> = renaming
+            .into_iter()
+            .map(|(written, renamed)| (renamed, written))
+            .collect();
+        let key = canonical.source().clone();
+        if stack.contains(&key) || stack.len() >= MAX_RESOLVE_DEPTH {
+            return (Proposals::default(), false);
+        }
+        if let Some(known) = memo.get(&key) {
+            return (known.renamed(&back), true);
+        }
+        stack.push(key.clone());
+        let mut found = Proposals::default();
+        let mut complete = true;
+
+        let mut agent_names: Vec<&String> = self.working_agents.keys().collect();
+        agent_names.sort();
+        for agent_name in agent_names {
+            for variant in &self.working_agents[agent_name] {
+                for promise in variant.provides() {
+                    let Some(unifier) = canonical.unify(promise.get_name_pattern()) else {
+                        continue;
+                    };
+                    let taken = unifier.left_values();
+                    let aligned = unifier.aligned();
+                    if aligned.is_empty() {
+                        found.push_value(taken);
+                        continue;
+                    }
+                    let known = unifier.right_values();
+                    let conditions: Vec<Pattern> = promise
+                        .get_condition_patterns()
+                        .iter()
+                        .map(|c| c.substitute(&known))
+                        .collect();
+                    let mentions = |c: &Pattern, v: &str| c.vars().contains(v);
+                    for (ours, theirs) in &aligned {
+                        if !conditions.iter().any(|c| mentions(c, theirs)) {
+                            found.push_any(HoldsForAny {
+                                variable: ours.clone(),
+                                agent: agent_name.clone(),
+                                promise: promise.get_name().clone(),
+                            });
+                        }
+                    }
+                    let asking: Vec<&Pattern> = conditions
+                        .iter()
+                        .filter(|c| aligned.iter().any(|(_, theirs)| mentions(c, theirs)))
+                        .collect();
+                    if asking.is_empty() {
+                        found.push_value(taken);
+                        continue;
+                    }
+                    for condition in asking {
+                        let (deeper, whole) = self.search(condition, stack, memo);
+                        complete &= whole;
+                        for value in deeper.values {
+                            let mut proposal = taken.clone();
+                            for (ours, theirs) in &aligned {
+                                if let Some(v) = value.get(theirs) {
+                                    proposal.insert(ours.clone(), v.clone());
+                                }
+                            }
+                            found.push_value(proposal);
+                        }
+                        for any in deeper.any {
+                            if let Some((ours, _)) =
+                                aligned.iter().find(|(_, theirs)| *theirs == any.variable)
+                            {
+                                found.push_any(HoldsForAny {
+                                    variable: ours.clone(),
+                                    ..any
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stack.pop();
+        if complete {
+            memo.insert(key, found.clone());
+        }
+        (found.renamed(&back), complete)
     }
 }
 
@@ -2965,6 +3384,348 @@ provides:
                     .add_satisfying_offer(Offer::new("team").answering("d1 shows usage"))]
             ))
         );
+    }
+
+    /// The spec's three agents: B keeps the gateway configured for some
+    /// `kc` that the app deploys to and that deploys the app's gateway; C,
+    /// parameterized, deploys any app's gateway.
+    fn gateway(first: &str, second: &str, c_deploys: &str) -> Tracker {
+        gateway_with(first, second, &format!("{{{{!self}}}} deploys {} gateway", c_deploys), &[])
+    }
+
+    fn gateway_with(first: &str, second: &str, c: &str, c_conditions: &[&str]) -> Tracker {
+        let c_conditions: String = c_conditions
+            .iter()
+            .map(|x| format!("      - \"{}\"\n", x))
+            .collect();
+        let c_conditions = if c_conditions.is_empty() {
+            String::new()
+        } else {
+            format!("    conditions:\n{}", c_conditions)
+        };
+        crate::marks::tracker(&format!(
+            r#"kind: Agent
+name: A
+wants:
+  - name: "sampleapp gateway is configured"
+provides:
+  - name: "sampleapp CD deployjob is run"
+---
+kind: Agent
+name: B
+provides:
+  - name: "{{{{appname}}}} gateway is configured"
+    forSome: [kc]
+    conditions:
+      - "{first}"
+      - "{second}"
+  - name: "{{{{appname}}}} deploys to {{{{kc}}}}"
+    conditions:
+      - "{{{{appname}}}} CD deployjob is run"
+---
+kind: Agent
+name: C
+provides:
+  - name: "{c}"
+{c_conditions}"#
+        ))
+    }
+
+    const DEPLOYS_TO: &str = "{{appname}} deploys to {{kc}}";
+    const DEPLOYS_GATEWAY: &str = "{{kc}} deploys {{appname}} gateway";
+
+    #[test]
+    fn test_declared_variable_is_found_through_a_parameterized_promise() {
+        for (first, second) in [(DEPLOYS_TO, DEPLOYS_GATEWAY), (DEPLOYS_GATEWAY, DEPLOYS_TO)] {
+            let t = gateway(first, second, "{{appname}}");
+            let r = t.resolve("sampleapp gateway is configured");
+            assert!(r.is_satisfied(), "{} / {}", first, second);
+            // C is the candidate that holds, and the offer stands on
+            // concrete goals.
+            assert_eq!(r.get_satisfying_offers().len(), 1);
+            // Matched as text, `sampleapp deploys to {{kc}}` also meets B's
+            // own `{{appname}} gateway is configured` (appname = `sampleapp
+            // deploys to`, kc = `gateway is configured`), so that value is
+            // proposed too and shows as an offer that is not kept. The
+            // search may over-propose; it is the resolver that rejects it.
+            for unkept in r.get_unsatisfying_offers() {
+                assert!(unkept
+                    .get_resolved_conditions()
+                    .iter()
+                    .any(|c| c.get_behavior_name() == "gateway is configured deploys sampleapp gateway"));
+            }
+            let offer = &r.get_satisfying_offers()[0];
+            assert_eq!(offer.get_agent_name(), "B");
+            let mut names: Vec<&str> = offer
+                .get_resolved_conditions()
+                .iter()
+                .map(|c| c.get_behavior_name())
+                .collect();
+            names.sort();
+            assert_eq!(names, vec!["C deploys sampleapp gateway", "sampleapp deploys to C"]);
+            // The value `kc` took is marked where it went.
+            let marked: Vec<String> = offer
+                .get_resolved_conditions()
+                .iter()
+                .map(|c| c.marked_name())
+                .collect();
+            assert!(marked.contains(&"<sampleapp> deploys to <C>".to_string()), "{:?}", marked);
+            assert!(t.dependency_cycles().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_declared_variable_named_only_for_another_asker_is_unsatisfied() {
+        // C deploys only otherapp's gateway: something names a value, not
+        // for this asker.
+        let t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "otherapp");
+        let r = t.resolve("sampleapp gateway is configured");
+        assert!(!r.is_satisfied());
+        // C names a value, for otherapp only.
+        assert!(!t.propose("{{kc}} deploys sampleapp gateway").names("kc"));
+        assert!(t.propose("{{kc}} deploys otherapp gateway").names("kc"));
+    }
+
+    #[test]
+    fn test_shared_variable_with_nothing_found_leaves_the_conditions_as_written() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("configured")
+            .with_for_some(vec!["thing".into()])
+            .with_conditions(vec!["{{thing}} does stuff".into(), "will support {{thing}}".into()])]));
+        assert_eq!(
+            t.resolve("configured"),
+            Resolution::new("configured").add_unsatisfying_offer(Offer::new_conditional(
+                "O1",
+                vec![
+                    Resolution::new("{{thing}} does stuff"),
+                    Resolution::new("will support {{thing}}")
+                ]
+            ))
+        );
+        assert!(t.dependency_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_propose_reports_what_holds_for_any_value() {
+        let t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
+        // B's own `deploys to` names no value for `kc`. (The text match
+        // against B's gateway promise does name one; see
+        // `test_declared_variable_is_found_through_a_parameterized_promise`.)
+        let p = t.propose("sampleapp deploys to {{kc}}");
+        assert_eq!(
+            p.values,
+            vec![Bindings::from([("kc".to_string(), "gateway is configured".to_string())])]
+        );
+        assert_eq!(
+            p.holding_for_any("kc"),
+            vec![&HoldsForAny {
+                variable: "kc".into(),
+                agent: "B".into(),
+                promise: "{{appname}} deploys to {{kc}}".into(),
+            }]
+        );
+        // C's text names one.
+        let p = t.propose("{{kc}} deploys sampleapp gateway");
+        assert_eq!(p.values, vec![Bindings::from([("kc".to_string(), "C".to_string())])]);
+        assert!(p.any.is_empty());
+        // A variable lined up with a promise's variable is looked for in its
+        // conditions: B's `deploys to` needs `{{appname}} CD deployjob is
+        // run`, which A names for sampleapp.
+        let p = t.propose("{{app}} deploys to C");
+        assert_eq!(
+            p.values,
+            vec![Bindings::from([("app".to_string(), "sampleapp".to_string())])]
+        );
+    }
+
+    /// O1 keeps `paired` for an `a` and `b` that pair up and both hold.
+    fn pairs(pairs: &[(&str, &str)], ok: &[&str]) -> Tracker {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("paired")
+            .with_for_some(vec!["a".into(), "b".into()])
+            .with_conditions(vec![
+                "{{a}} pairs with {{b}}".into(),
+                "{{a}} is ok".into(),
+                "{{b}} is ok".into(),
+            ])]));
+        t.add_agent(Agent::build("P").with_provides(
+            pairs
+                .iter()
+                .map(|(a, b)| Behavior::build(&format!("{} pairs with {}", a, b)))
+                .collect(),
+        ));
+        t.add_agent(Agent::build("K").with_provides(
+            ok.iter().map(|x| Behavior::build(&format!("{} is ok", x))).collect(),
+        ));
+        t
+    }
+
+    fn offer_conditions(offer: &Offer) -> Vec<String> {
+        offer
+            .get_resolved_conditions()
+            .iter()
+            .map(|c| c.get_behavior_name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_shared_variables_give_one_offer_per_value_never_mixed() {
+        // 1 pairs with 2 and 3 with 4. Every one is ok except 2, so 1/2
+        // fails; 1 with 4 would hold, but nothing pairs them.
+        let t = pairs(&[("1", "2"), ("3", "4")], &["1", "3", "4"]);
+        let r = t.resolve("paired");
+        assert!(r.is_satisfied());
+        assert_eq!(r.get_satisfying_offers().len(), 1);
+        assert_eq!(
+            offer_conditions(&r.get_satisfying_offers()[0]),
+            vec!["3 pairs with 4", "3 is ok", "4 is ok"]
+        );
+        // Every condition mentioning a variable proposes, and the proposals
+        // are pooled: `{{a}} is ok` proposes 1, 3 and 4 for `a` whatever `b`
+        // is. So other pairings are read too, each one value per variable
+        // throughout its offer, and each not kept.
+        let offers: Vec<Vec<String>> = r
+            .get_satisfying_offers()
+            .iter()
+            .chain(r.get_unsatisfying_offers())
+            .map(offer_conditions)
+            .collect();
+        assert!(offers.contains(&vec![
+            "1 pairs with 2".to_string(),
+            "1 is ok".to_string(),
+            "2 is ok".to_string()
+        ]));
+        for names in &offers {
+            let a = names[0].split(' ').next().unwrap();
+            let b = names[0].rsplit(' ').next().unwrap();
+            assert_eq!(names[1], format!("{} is ok", a));
+            assert_eq!(names[2], format!("{} is ok", b));
+        }
+        // Readings are by value, so their order is too.
+        let mut sorted = offers.clone();
+        sorted.sort();
+        assert_eq!(
+            r.get_unsatisfying_offers().iter().map(offer_conditions).collect::<Vec<_>>(),
+            sorted.into_iter().filter(|o| o[0] != "3 pairs with 4").collect::<Vec<_>>()
+        );
+        // nothing pairs 1 with 4, so with 3 not ok nothing holds
+        assert!(!pairs(&[("1", "2"), ("3", "4")], &["1", "4"]).resolve("paired").is_satisfied());
+    }
+
+    #[test]
+    fn test_independent_declared_variables_are_gathered_rows_of_one_offer() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("reviewed")
+            .with_for_some(vec!["doc".into(), "who".into()])
+            .with_conditions(vec!["{{doc}} shows usage".into(), "{{who}} signed off".into()])]));
+        t.add_agent(Agent::build("D").with_provides(vec![
+            Behavior::build("d1 shows usage").with_conditions(vec!["d1 is approved".into()]),
+            Behavior::build("d2 shows usage"),
+        ]));
+        t.add_agent(Agent::build("R").with_provides(vec![
+            Behavior::build("r1 signed off"),
+            Behavior::build("r2 signed off"),
+        ]));
+        let r = t.resolve("reviewed");
+        // one offer, not one per (doc, who)
+        assert_eq!(
+            r,
+            Resolution::new("reviewed").add_satisfying_offer(Offer::new_conditional(
+                "O1",
+                vec![
+                    Resolution::new("{{doc}} shows usage")
+                        .add_unsatisfying_offer(
+                            Offer::new_conditional("D", vec![Resolution::new("d1 is approved")])
+                                .answering("d1 shows usage")
+                        )
+                        .add_satisfying_offer(Offer::new("D").answering("d2 shows usage")),
+                    Resolution::new("{{who}} signed off")
+                        .add_satisfying_offer(Offer::new("R").answering("r1 signed off"))
+                        .add_satisfying_offer(Offer::new("R").answering("r2 signed off")),
+                ]
+            ))
+        );
+        // what each match took is marked on its offer
+        let doc = &r.get_satisfying_offers()[0].get_resolved_conditions()[0];
+        assert_eq!(
+            doc.marked_offer(&doc.get_satisfying_offers()[0]),
+            "<d2> shows usage"
+        );
+    }
+
+    #[test]
+    fn test_gathered_row_with_no_match_is_unsatisfied_under_its_own_text() {
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("O1").with_provides(vec![Behavior::build("reviewed")
+            .with_for_some(vec!["doc".into()])
+            .with_conditions(vec!["{{doc}} shows usage".into()])]));
+        assert_eq!(
+            t.resolve("reviewed"),
+            Resolution::new("reviewed").add_unsatisfying_offer(Offer::new_conditional(
+                "O1",
+                vec![Resolution::new("{{doc}} shows usage")]
+            ))
+        );
+        assert!(t.dependency_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_promise_reaching_itself_through_a_variable_is_a_loop() {
+        // a is ready if something is ready, and the only thing is a.
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("a").with_provides(vec![Behavior::build("a is ready")
+            .with_for_some(vec!["x".into()])
+            .with_conditions(vec!["{{x}} is ready".into()])]));
+        assert!(!t.resolve("a is ready").is_satisfied());
+        assert_eq!(
+            t.dependency_cycles(),
+            vec![vec!["a is ready".to_string(), "{{x}} is ready".to_string()]]
+        );
+
+        // The gateway, where C's deploy needs the gateway configured first:
+        // B reaches itself through `kc = C`.
+        let t = gateway_with(
+            DEPLOYS_TO,
+            DEPLOYS_GATEWAY,
+            "{{!self}} deploys {{appname}} gateway",
+            &["{{appname}} gateway is configured"],
+        );
+        assert!(!t.resolve("sampleapp gateway is configured").is_satisfied());
+        assert!(t.dependency_cycles().contains(&vec![
+            "C deploys sampleapp gateway".to_string(),
+            "sampleapp gateway is configured".to_string()
+        ]));
+
+        // A search that comes back to its own question under other names
+        // stops, and proposes nothing.
+        let mut t = Tracker::new();
+        t.add_agent(Agent::build("p").with_provides(vec![
+            Behavior::build("{{a}} up").with_conditions(vec!["{{a}} down".into()]),
+            Behavior::build("{{b}} down").with_conditions(vec!["{{b}} up".into()]),
+            Behavior::build("r")
+                .with_for_some(vec!["x".into()])
+                .with_conditions(vec!["{{x}} up".into()]),
+        ]));
+        assert_eq!(t.propose("{{x}} up"), Proposals::default());
+        assert!(!t.resolve("r").is_satisfied());
+    }
+
+    #[test]
+    fn test_declared_variables_judged_together_in_the_provides_listing() {
+        let t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
+        let readings = t.resolve_conditions(
+            &[
+                "sampleapp deploys to {{kc}}".to_string(),
+                "{{kc}} deploys sampleapp gateway".to_string(),
+            ],
+            &["kc".to_string()],
+        );
+        // kc = C holds; kc = `gateway is configured`, proposed by the text
+        // match, does not.
+        assert!(readings
+            .iter()
+            .any(|r| r.iter().all(|c| c.is_satisfied())
+                && r[0].get_behavior_name() == "sampleapp deploys to C"));
     }
 
     #[test]

@@ -444,6 +444,45 @@ command.
   the expected keys.
 - `src/validate.rs`: `check_for_some` holds the declaring rules; the
   condition rule accepts a declared name.
+- `src/lib.rs`: `resolve_goal` and `walk_for_cycles` read a promise's
+  conditions through `Tracker::readings(promise, conditions)`, which for a
+  promise with `forSome` is `declared_readings`: the shared variables are
+  those two or more conditions use; `candidate_values` pools what every
+  condition mentioning a missing one proposes (`Tracker::search`), extends
+  partial readings until complete, drops the ones that cannot be, caps them
+  at `MAX_CONDITION_READINGS` and sorts them by value. Each reading's
+  conditions are `ConditionGoal::Goal` once concrete, `Gathered` while still
+  holding unshared declared variables, `Unbound` otherwise (nothing found,
+  or a variable nobody declared).
+- A gathered row is `Tracker::resolve_gathered`: the names
+  `gathered_names` completes from the search, each resolved as the concrete
+  goal it is, the offers kept under the pattern text with
+  `Offer::answering(name)` and what the row's variables matched
+  (`with_matched`). It is cached in `settled` under the pattern text, kept
+  apart from concrete goals, and sits on the in-progress stack under that
+  text, so a loop through it is reported by `dependency_cycles` with the
+  pattern in it. `as_reached_by` re-marks any non-ground row the way it
+  marked an open goal.
+- `Tracker::search` is the candidate search, `Tracker::propose(goal)` its
+  public face, returning `Proposals { values, any }`: the value sets found,
+  and the promises that held for any value (`HoldsForAny`). Its stack holds
+  canonical goals; an answer not cut short is memoized by canonical text for
+  the length of one call. Empty proposals are dropped.
+- `Tracker::resolve_conditions(conditions, declared)` takes the promise's
+  declared names, for `src/query.rs`, whose `Resolver::conditions` now
+  takes the promise.
+
+Consequences of pooling, kept as the rules give them:
+
+- Matched as text, a condition can meet a promise nobody had in mind. In
+  the gateway example `sampleapp deploys to {{kc}}` also meets B's own
+  `{{appname}} gateway is configured` (`appname = sampleapp deploys to`,
+  `kc = gateway is configured`). That value is proposed too; its reading
+  is an offer that is not kept, and resolving it reaches ever longer goals
+  until the depth cap. C is still the only candidate that holds.
+- Two shared variables proposed by separate conditions are read in every
+  combination proposed (a value for `a` from `{{a}} is ok`, one for `b` from
+  `{{b}} is ok`), each its own offer.
 
 ## 4. Test plan
 
