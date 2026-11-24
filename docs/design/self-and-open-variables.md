@@ -403,9 +403,16 @@ Per document (`src/validate.rs`):
 Offers keep today's order: agents by name, then declaration order. The
 search uses resolution's two guards: an in-progress stack, compared with
 variables renamed so that the same question under different variable names
-is recognized, and the depth cap (`MAX_RESOLVE_DEPTH`, 64). Shared variables
-keep the cap of 256 readings per promise (`MAX_CONDITION_READINGS`);
-gathered rows have none.
+is recognized, and the depth cap (`MAX_RESOLVE_DEPTH`, 64). Readings are
+capped at 256 (`MAX_CONDITION_READINGS`) per group of conditions tied
+together by shared variables, and so are the offers one promise makes for a
+goal; gathered rows have no cap. Variables no condition ties together are
+read independently and do not multiply against the cap; offers combine each
+group's readings with those that hold first, so the cap never drops a kept
+combination while keeping one that is not. Which readings the cap keeps
+does not depend on condition order. When it drops any, the goal's
+resolution says so (`Resolution::is_cut_short`) and the unsatisfied report
+gives that first (`CauseKind::CutShort`).
 
 ### SuperAgent reduction
 
@@ -455,10 +462,18 @@ command.
 - `src/lib.rs`: `resolve_goal` and `walk_for_cycles` read a promise's
   conditions through `Tracker::readings(promise, conditions)`, which is
   `declared_readings`: the shared variables are
-  those two or more conditions use; `candidate_values` pools what every
-  condition mentioning a missing one proposes (`Tracker::search`), extends
-  partial readings until complete, drops the ones that cannot be, caps them
-  at `MAX_CONDITION_READINGS` and sorts them by value. Each reading's
+  those two or more conditions use, and they tie conditions into groups
+  (union-find), each with its own readings. `candidate_values` pools what
+  every condition mentioning a missing variable proposes
+  (`Tracker::search`), extends partial readings until complete and drops
+  the ones that cannot be. It explores nearest-to-complete first, then by
+  value, taking each reading's proposals sorted, so the outcome under the
+  cap is the same in any condition order; complete readings count towards
+  `MAX_CONDITION_READINGS`, partial ones towards a cap 16 times that.
+  `resolve_readings` resolves each group's readings, puts those that hold
+  first, and builds the offers as combinations, every combination of
+  holding readings before the rest, at most `MAX_CONDITION_READINGS`. Each
+  reading's
   conditions are `ConditionGoal::Goal` once concrete, `Gathered` while still
   holding unshared declared variables, `Unbound` otherwise (nothing found,
   or a variable nobody declared).
@@ -656,11 +671,13 @@ different variables.
     match `{{appname}} deploys to {{kc}}`; `{{kc}} deploys sampleapp gateway`
     still matches `C deploys {{appname}} gateway`; `{{who}}/prod reads R1`
     still matches `db/{{env}} reads R1` when `db` came from `{{!self}}`.
-  - Known limit: a hand-written value directly followed by a variable
-    (`us-east {{thing}} is healthy`) is wording, so a goal variable cannot
-    take `us-east` from it (`{{region}} replica is healthy` does not match).
+  - Known limit: a literal segment made only of a hand-written value and
+    separators is wording, so a variable on the other side cannot take that
+    value. `us-east {{thing}} is healthy` does not match `{{region}} replica
+    is healthy`; `{{app}}/east` does not match `orders/{{region}}`, because
+    `/east` is all of that segment's wording and `{{region}}` would take it.
     Writing the value through `{{!self}}` or an Instance binding makes it a
-    value.
+    value and avoids this.
 - Deferred: a variable taking the other side's variable plus text (`{{kc}}`
   against `C-{{zone}}`) simply does not match. A binding is held as a list of
   the other side's segments — today always one literal or one variable — so

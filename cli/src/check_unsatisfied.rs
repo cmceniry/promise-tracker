@@ -120,6 +120,10 @@ fn causes(causes: &[Cause]) -> String {
             let what = match kind {
                 CauseKind::Unprovided => String::from("is not provided"),
                 CauseKind::Cycle => String::from("is only provided through a dependency loop"),
+                CauseKind::CutShort => format!(
+                    "was cut short: a promise for it has more readings than the cap of {}, and not every one was tried",
+                    promise_tracker::MAX_CONDITION_READINGS
+                ),
                 CauseKind::Unfound {
                     variables,
                     holds_for_any,

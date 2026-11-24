@@ -1538,6 +1538,9 @@ mod tests {
             unify("{{region}} replica is healthy", "us-east {{thing}} is healthy"),
             None
         );
+        // And so is one that is all of a segment's wording: `{{region}}`
+        // would have to take `east`, all there is of `/east`.
+        assert_eq!(unify("orders/{{region}}", "{{app}}/east"), None);
         // With either side concrete, the rule does not apply.
         assert_eq!(
             Pattern::parse("{{replica}} is healthy")

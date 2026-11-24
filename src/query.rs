@@ -143,6 +143,10 @@ pub enum CauseKind {
     Cycle,
     /// A condition still holding a declared (`forSome`) variable that no
     /// promise names a value for.
+    /// A promise for the behavior had more readings than the cap
+    /// ([`crate::MAX_CONDITION_READINGS`]), so not every one was tried: the
+    /// behavior may be kept by one that was not.
+    CutShort,
     Unfound {
         /// The variables nothing names a value for, in name order.
         variables: Vec<String>,
@@ -178,7 +182,7 @@ pub struct UnsatisfiedRow {
     /// One agent, or several when bundled.
     pub agents: Vec<String>,
     pub behavior: String,
-    /// Sorted, without repeats.
+    /// Sorted, without repeats; a [`CauseKind::CutShort`] cause comes first.
     pub causes: Vec<Cause>,
 }
 
@@ -359,10 +363,16 @@ pub fn unsatisfied(tracker: &Tracker, options: QueryOptions) -> Vec<UnsatisfiedR
             }
             let mut causes: BTreeSet<Cause> = BTreeSet::new();
             leaf_causes(tracker, &resolution, None, &mut causes);
+            // Where the cap cut resolution short, that is said first: the
+            // rest are only as far as resolution went.
+            let (mut first, rest): (Vec<Cause>, Vec<Cause>) = causes
+                .into_iter()
+                .partition(|c| c.kind == CauseKind::CutShort);
+            first.extend(rest);
             rows.push(UnsatisfiedRow {
                 agents: vec![agent.clone()],
                 behavior: want.clone(),
-                causes: causes.into_iter().collect(),
+                causes: first,
             });
         }
     }
@@ -441,6 +451,14 @@ fn leaf_causes(
             needed_by,
         });
         return;
+    }
+    // Not kept as far as resolution went, which was not all the way.
+    if resolution.is_cut_short() {
+        out.insert(Cause {
+            behavior: behavior.to_string(),
+            kind: CauseKind::CutShort,
+            needed_by: needed_by.clone(),
+        });
     }
     for offer in offers {
         let site = CauseSite {

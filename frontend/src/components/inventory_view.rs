@@ -1055,6 +1055,10 @@ fn unsatisfied_list(panel: Panel, rows: Vec<UnsatisfiedRow>) -> AnyView {
                     let why = match &c.kind {
                         CauseKind::Unprovided => String::from("nobody provides it"),
                         CauseKind::Cycle => String::from("only promised through a loop"),
+                        CauseKind::CutShort => format!(
+                            "cut short: more readings than the cap of {}, not every one tried",
+                            promise_tracker::MAX_CONDITION_READINGS
+                        ),
                         CauseKind::Unfound {
                             variables,
                             holds_for_any,

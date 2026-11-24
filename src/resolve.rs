@@ -21,6 +21,12 @@ pub struct Resolution {
     /// form stays as it always was.
     #[serde(skip)]
     bound: Spans,
+    /// Some promise for this goal had more readings than the cap
+    /// (`MAX_CONDITION_READINGS`), so not every one was tried: an answer of
+    /// "not kept" may be the cap's, not the contract's. Left out of equality
+    /// and `Debug`, and serialized only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cut_short: bool,
 }
 
 impl Resolution {
@@ -30,7 +36,20 @@ impl Resolution {
             satisfying_offers: vec![],
             unsatisfying_offers: vec![],
             bound: vec![],
+            cut_short: false,
         }
+    }
+
+    /// This resolution, marked as one where the reading cap dropped some of
+    /// a promise's readings.
+    pub fn with_cut_short(mut self) -> Resolution {
+        self.cut_short = true;
+        self
+    }
+
+    /// Did the reading cap drop readings of some promise for this goal?
+    pub fn is_cut_short(&self) -> bool {
+        self.cut_short
     }
 
     /// This resolution, with the parts of its name a substitution filled in.
