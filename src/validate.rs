@@ -71,15 +71,20 @@ fn check_behaviors(
         match Pattern::parse(promise.get_name()) {
             // A promise name takes its values from whoever asks: there is
             // nothing to declare, only the `?` to drop.
-            Err(PatternError::OpenVariable(variable)) => errors.push(SemanticError {
-                item: item.to_string(),
-                location: at.clone(),
-                name: promise.get_name().clone(),
-                message: format!(
-                    "`{{{{?{v}}}}}` is no longer supported: in a promise name write `{{{{{v}}}}}`, which takes its value from whoever asks",
-                    v = variable
-                ),
-            }),
+            Err(PatternError::OpenVariable(_)) => {
+                let open = open_names(promise.get_name());
+                errors.push(SemanticError {
+                    item: item.to_string(),
+                    location: at.clone(),
+                    name: promise.get_name().clone(),
+                    message: format!(
+                        "{} no longer supported: in a promise name write {}, which {} from whoever asks",
+                        written(&open, "?"),
+                        written(&open, ""),
+                        if open.len() == 1 { "takes its value" } else { "take their values" }
+                    ),
+                })
+            }
             _ => check_pattern(item, &at, promise.get_name_pattern(), errors),
         }
 
@@ -97,8 +102,47 @@ fn check_behaviors(
                 message,
             });
         });
+        // The promise name's variables, `?` or not, for the advice below.
+        let name_vars: Vec<String> = Pattern::parse_lossy(&promise.get_name().replace("{{?", "{{"))
+            .vars()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         for (j, condition) in promise.get_condition_patterns().iter().enumerate() {
             let at = format!("{}.conditions[{}]", at, j);
+            if let Err(PatternError::OpenVariable(_)) = Pattern::parse(condition.source()) {
+                // A value the promise name already supplies is written
+                // plainly; any other is declared for the conditions to find.
+                let (from_name, found): (Vec<String>, Vec<String>) = open_names(condition.source())
+                    .into_iter()
+                    .partition(|v| name_vars.contains(v));
+                let mut advice = vec![];
+                if !found.is_empty() {
+                    advice.push(format!(
+                        "declare `forSome: [{}]` on the promise and write {}",
+                        found.join(", "),
+                        written(&found, "")
+                    ));
+                }
+                if !from_name.is_empty() {
+                    advice.push(format!(
+                        "write {}, which the promise name supplies",
+                        written(&from_name, "")
+                    ));
+                }
+                let open: Vec<String> = from_name.iter().chain(found.iter()).cloned().collect();
+                errors.push(SemanticError {
+                    item: item.to_string(),
+                    location: at.clone(),
+                    name: condition.source().clone(),
+                    message: format!(
+                        "{} no longer supported: {}",
+                        written(&open, "?"),
+                        advice.join("; ")
+                    ),
+                });
+                continue;
+            }
             check_pattern(item, &at, condition, errors);
             for variable in condition.vars() {
                 // A built-in is supplied when the tracker builds its agents.
@@ -130,15 +174,21 @@ fn check_behaviors(
         let at = format!("{}wants[{}]", prefix, i);
         match Pattern::parse(want.get_name()) {
             // There is no promise here to declare it on.
-            Err(PatternError::OpenVariable(variable)) => errors.push(SemanticError {
-                item: item.to_string(),
-                location: at.clone(),
-                name: want.get_name().clone(),
-                message: format!(
-                    "`{{{{?{v}}}}}` is no longer supported, and a want names one behavior: write the value out, or have a promise declare `forSome: [{v}]` and write `{{{{{v}}}}}` in its conditions",
-                    v = variable
-                ),
-            }),
+            Err(PatternError::OpenVariable(_)) => {
+                let open = open_names(want.get_name());
+                errors.push(SemanticError {
+                    item: item.to_string(),
+                    location: at.clone(),
+                    name: want.get_name().clone(),
+                    message: format!(
+                        "{} no longer supported, and a want names one behavior: write the value{} out, or have a promise declare `forSome: [{}]` and write {} in its conditions",
+                        written(&open, "?"),
+                        if open.len() == 1 { "" } else { "s" },
+                        open.join(", "),
+                        written(&open, "")
+                    ),
+                })
+            }
             _ => check_pattern(item, &at, want.get_name_pattern(), errors),
         }
         if !want.get_for_some().is_empty() {
@@ -235,6 +285,36 @@ fn check_bindings(item: &str, bindings: &Bindings, errors: &mut Vec<SemanticErro
                 message: String::from("a bound value is plain text and may not contain `{{`"),
             });
         }
+    }
+}
+
+/// The names written `{{?x}}` in `text`, in order, each once.
+fn open_names(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut rest = text;
+    while let Some(start) = rest.find("{{?") {
+        let after = &rest[start + 3..];
+        let Some(end) = after.find("}}") else { break };
+        let name = &after[..end];
+        if legal(name) && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+        rest = &after[end + 2..];
+    }
+    out
+}
+
+/// `{{?a}}`, `{{?b}}` (with `mark` "?") or `{{a}}`, `{{b}}`, followed by
+/// "is" or "are" when `mark` is "?" (the subject of the message).
+fn written(names: &[String], mark: &str) -> String {
+    let list: Vec<String> = names.iter().map(|n| format!("`{{{{{}{}}}}}`", mark, n)).collect();
+    let list = list.join(", ");
+    if mark.is_empty() {
+        list
+    } else if names.len() == 1 {
+        format!("{} is", list)
+    } else {
+        format!("{} are", list)
     }
 }
 
@@ -366,6 +446,34 @@ wants:
     }
 
     #[test]
+    fn the_rewrite_advice_fits_a_value_the_name_supplies_and_names_every_one() {
+        let found = check(
+            "kind: Agent
+name: s
+provides:
+  - name: \"{{svc}} is up\"
+    conditions: [\"{{?svc}} is ok\"]
+  - name: \"{{?svc}} is down\"
+    conditions: [\"{{?svc}} is off on {{?node}}\"]
+  - name: \"{{?a}} and {{?b}}\"
+wants:
+  - name: \"{{?a}} and {{?b}}\"
+",
+        );
+        let messages: Vec<&str> = found.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "`{{?svc}}` is no longer supported: write `{{svc}}`, which the promise name supplies",
+                "`{{?svc}}` is no longer supported: in a promise name write `{{svc}}`, which takes its value from whoever asks",
+                "`{{?svc}}`, `{{?node}}` are no longer supported: declare `forSome: [node]` on the promise and write `{{node}}`; write `{{svc}}`, which the promise name supplies",
+                "`{{?a}}`, `{{?b}}` are no longer supported: in a promise name write `{{a}}`, `{{b}}`, which take their values from whoever asks",
+                "`{{?a}}`, `{{?b}}` are no longer supported, and a want names one behavior: write the values out, or have a promise declare `forSome: [a, b]` and write `{{a}}`, `{{b}}` in its conditions",
+            ]
+        );
+    }
+
+    #[test]
     fn following_the_rewrite_advice_gives_a_valid_contract() {
         // In a condition: declare it and drop the `?`; in a name: just drop
         // the `?`.
@@ -378,6 +486,8 @@ provides:
     conditions:
       - \"{{doc}} shows usage by {{agent}}\"
   - name: \"{{svc}} is up\"
+  - name: \"{{node}} is ok\"
+    conditions: [\"{{node}} is fine\"]
 "
         )
         .is_empty());
