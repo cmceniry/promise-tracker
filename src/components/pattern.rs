@@ -277,25 +277,33 @@ impl Pattern {
     /// their variables are called come out the same.
     pub fn canonical(&self) -> (Pattern, BTreeMap<String, String>) {
         let mut renaming: BTreeMap<String, String> = BTreeMap::new();
-        let segments: Vec<Segment> = self
-            .segments
-            .iter()
-            .map(|s| match s {
-                Segment::Var(v) => {
-                    let next = format!("_{}", renaming.len());
-                    Segment::Var(renaming.entry(v.clone()).or_insert(next).clone())
-                }
-                literal => literal.clone(),
-            })
-            .collect();
-        (
-            Pattern {
-                source: render(&segments),
-                segments,
-                bound: vec![],
-            },
-            renaming,
-        )
+        for segment in &self.segments {
+            if let Segment::Var(v) = segment {
+                let next = format!("_{}", renaming.len());
+                renaming.entry(v.clone()).or_insert(next);
+            }
+        }
+        // What was filled in stays filled in: the wording rule reads it.
+        (self.rename_vars(&renaming), renaming)
+    }
+
+    /// A key for this name that tells apart the same text with different
+    /// parts filled in: the source, and the substituted spans. For caches of
+    /// answers that depend on the spans (the wording rule reads them).
+    pub fn key(&self) -> String {
+        if self.bound.is_empty() {
+            return self.source.clone();
+        }
+        let spans: Vec<String> = self.bound.iter().map(|(s, e)| format!("{}-{}", s, e)).collect();
+        format!("{}\u{0}{}", self.source, spans.join(","))
+    }
+
+    /// The same name, with `spans` as the parts a substitution filled in
+    /// (as [`Pattern::bound`] gives them). For a name read back from text
+    /// whose spans were kept apart, such as a [`crate::resolve::Resolution`]'s.
+    pub fn with_bound(mut self, spans: &[(usize, usize)]) -> Pattern {
+        self.bound = spans.to_vec();
+        self
     }
 
     /// Replace bound variables with their values.
@@ -1558,6 +1566,12 @@ mod tests {
             .canonical();
         assert_eq!(a, b);
         assert_eq!(Pattern::parse("plain").unwrap().canonical().0.source(), "plain");
+        // What was filled in is kept, moved with the renamed text.
+        let filled = Pattern::parse("{{!self}}/{{environment}} reads R1").unwrap().bind_self("web");
+        let (c, _) = filled.canonical();
+        assert_eq!(c.source(), "web/{{_0}} reads R1");
+        assert_eq!(c.marked(), "<web>/{{_0}} reads R1");
+        assert_ne!(c.key(), Pattern::parse("web/{{_0}} reads R1").unwrap().key());
     }
 
     #[test]

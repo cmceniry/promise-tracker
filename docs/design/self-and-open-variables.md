@@ -705,5 +705,11 @@ completed is dropped.
   `Wording` type in `pattern.rs`, consulted at two points in the matcher (a
   literal character matched against a literal character, and the end of a
   match); removing it leaves the rest of the matcher and the search as they
-  are. `Pattern::canonical()` renames variables
+  are. What was filled in counts as a value on both sides: a goal keeps its
+  spans through the search (`Pattern::canonical` keeps them), the search's
+  stack and memo and the gathered-row cache key on text and spans together
+  (`Pattern::key`), and `src/query.rs` reads a row with the spans
+  resolution gave it (`Tracker::propose_pattern`,
+  `Tracker::resolve_conditions(promise)`), so the Inventory and CLI agree
+  with resolution. `Pattern::canonical()` renames variables
   by order of appearance, for the search's in-progress stack.

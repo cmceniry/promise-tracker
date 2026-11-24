@@ -1088,16 +1088,13 @@ impl Tracker {
     /// only where a condition finds a value its siblings share, and then one
     /// for each value found.
     ///
-    /// `declared` are the variables the promise declares with `forSome`.
-    pub fn resolve_conditions(
-        &self,
-        conditions: &[String],
-        declared: &[String],
-    ) -> Vec<Vec<Resolution>> {
-        let patterns: Vec<Pattern> = conditions.iter().map(|c| Pattern::parse_lossy(c)).collect();
+    /// `promise` is taken as it stands, conditions, declared variables and
+    /// what was filled in alike, so that its conditions are read exactly as
+    /// resolution reads them.
+    pub fn resolve_conditions(&self, promise: &Behavior) -> Vec<Vec<Resolution>> {
+        let patterns = promise.get_condition_patterns();
         let mut settled: HashMap<String, Resolution> = HashMap::new();
-        let promise = Behavior::build("").with_for_some(declared.to_vec());
-        self.readings(&promise, &patterns)
+        self.readings(promise, patterns)
             .into_iter()
             .map(|reading| self.resolve_reading(reading, &mut vec![], &mut settled).0)
             .collect()
@@ -1246,9 +1243,11 @@ impl Proposals {
 }
 
 /// The settled-cache key for a gathered row, kept apart from the concrete
-/// goals the cache otherwise holds.
-fn gathered_key(text: &str) -> String {
-    format!("\u{0}{}", text)
+/// goals the cache otherwise holds. What the row could be answered by
+/// depends on which of its parts were filled in (the wording rule reads
+/// them), so those are part of the key.
+fn gathered_key(pattern: &Pattern) -> String {
+    format!("\u{0}{}", pattern.key())
 }
 
 impl Tracker {
@@ -1388,7 +1387,7 @@ impl Tracker {
         if in_progress.iter().any(|g| g == text) || in_progress.len() >= MAX_RESOLVE_DEPTH {
             return (Resolution::new(text), false);
         }
-        if let Some(known) = settled.get(&gathered_key(text)) {
+        if let Some(known) = settled.get(&gathered_key(pattern)) {
             return (known.clone(), true);
         }
         in_progress.push(text.clone());
@@ -1412,7 +1411,7 @@ impl Tracker {
         }
         in_progress.pop();
         if self_contained {
-            settled.insert(gathered_key(text), r.clone());
+            settled.insert(gathered_key(pattern), r.clone());
         }
         (r, self_contained)
     }
@@ -1435,7 +1434,7 @@ impl Tracker {
         if in_progress.len() >= MAX_RESOLVE_DEPTH {
             return false;
         }
-        let key = gathered_key(text);
+        let key = gathered_key(pattern);
         if clean.contains(&key) {
             return true;
         }
@@ -1458,8 +1457,13 @@ impl Tracker {
     /// Display and checks use this; resolution uses it to choose candidates
     /// and leaves deciding what holds to the concrete resolver.
     pub fn propose(&self, goal: &str) -> Proposals {
-        self.search(&Pattern::parse_lossy(goal), &mut vec![], &mut HashMap::new())
-            .0
+        self.propose_pattern(&Pattern::parse_lossy(goal))
+    }
+
+    /// [`Tracker::propose`] for a name with the parts already filled in
+    /// marked ([`Pattern::bound`]), which the wording rule treats as values.
+    pub fn propose_pattern(&self, goal: &Pattern) -> Proposals {
+        self.search(goal, &mut vec![], &mut HashMap::new()).0
     }
 
     /// The candidate search. For each promise whose name matches `goal`
@@ -1484,7 +1488,9 @@ impl Tracker {
             .into_iter()
             .map(|(written, renamed)| (renamed, written))
             .collect();
-        let key = canonical.source().clone();
+        // Text and spans: the wording rule reads what was filled in, so the
+        // same text with other parts filled in is another question.
+        let key = canonical.key();
         if stack.contains(&key) || stack.len() >= MAX_RESOLVE_DEPTH {
             return (Proposals::default(), false);
         }
@@ -3628,6 +3634,149 @@ provides:
         t
     }
 
+    /// `{{who}}/prod reads R1`, which takes the part before the slash from
+    /// whoever asks.
+    const PROD_READS: &str = r#"
+kind: Agent
+name: R
+provides:
+  - name: "{{who}}/prod reads R1"
+"#;
+
+    fn reads_prod(t: &Tracker, goal: &str) -> Resolution {
+        let r = t.resolve(goal);
+        assert!(r.is_satisfied(), "{:?}", r);
+        r
+    }
+
+    #[test]
+    fn test_a_value_filled_in_on_the_asking_side_is_not_wording() {
+        // From `{{!self}}`.
+        let t = crate::marks::tracker(&format!(
+            r#"kind: Agent
+name: web
+provides:
+  - name: "{{{{!self}}}} is served"
+    forSome: [env]
+    conditions:
+      - "{{{{!self}}}}/{{{{env}}}} reads R1"
+---{PROD_READS}"#
+        ));
+        let r = reads_prod(&t, "web is served");
+        let row = &r.get_satisfying_offers()[0].get_resolved_conditions()[0];
+        assert_eq!(row.get_satisfying_offers()[0].get_behavior(), Some("web/prod reads R1"));
+
+        // From the promise name's binding.
+        let t = crate::marks::tracker(&format!(
+            r#"kind: Agent
+name: B
+provides:
+  - name: "{{{{app}}}} is served"
+    forSome: [env]
+    conditions:
+      - "{{{{app}}}}/{{{{env}}}} reads R1"
+---{PROD_READS}"#
+        ));
+        reads_prod(&t, "web is served");
+
+        // From an Instance binding.
+        let t = crate::marks::tracker(&format!(
+            r#"kind: Agent
+name: base
+provides:
+  - name: "{{{{app}}}} ready"
+    forSome: [env]
+    conditions:
+      - "{{{{app}}}}/{{{{env}}}} reads R1"
+---
+kind: Instance
+name: i1
+base: Agent/base
+bindings:
+  app: web
+---{PROD_READS}"#
+        ));
+        reads_prod(&t, "web ready");
+
+        // From a shared value: `region` is found first, and the row still
+        // holding `x` has it filled in.
+        let t = crate::marks::tracker(
+            r#"kind: Agent
+name: O
+provides:
+  - name: placed
+    forSome: [region, x]
+    conditions:
+      - "{{region}} hosts db"
+      - "{{region}} is open"
+      - "{{region}}/{{x}} reads R1"
+---
+kind: Agent
+name: I
+provides:
+  - name: east hosts db
+  - name: east is open
+  - name: "{{who}}/prod reads R1"
+"#,
+        );
+        let r = reads_prod(&t, "placed");
+        let row = &r.get_satisfying_offers()[0].get_resolved_conditions()[2];
+        assert_eq!(row.get_behavior_name(), "east/{{x}} reads R1");
+        assert_eq!(row.get_satisfying_offers()[0].get_behavior(), Some("east/prod reads R1"));
+
+        // Written out by hand, the same text is wording, and nothing
+        // matches it.
+        let t = crate::marks::tracker(&format!(
+            r#"kind: Agent
+name: B
+provides:
+  - name: served
+    forSome: [env]
+    conditions:
+      - "web/{{{{env}}}} reads R1"
+---{PROD_READS}"#
+        ));
+        assert!(!t.resolve("served").is_satisfied());
+    }
+
+    #[test]
+    fn test_answers_are_cached_by_what_was_filled_in_too() {
+        // `web/{{env}} reads R1` twice under one goal: written out by hand
+        // (wording, unmatched) and through `{{!self}}` (a value, matched).
+        // Each keeps its own answer whichever is resolved first.
+        for order in [["by-hand", "by-self"], ["by-self", "by-hand"]] {
+            let t = crate::marks::tracker(&format!(
+                r#"kind: Agent
+name: top
+provides:
+  - name: both
+    conditions: ["{}", "{}"]
+---
+kind: Agent
+name: web
+provides:
+  - name: by-hand
+    forSome: [env]
+    conditions: ["web/{{{{env}}}} reads R1"]
+  - name: by-self
+    forSome: [env]
+    conditions: ["{{{{!self}}}}/{{{{env}}}} reads R1"]
+---{PROD_READS}"#,
+                order[0], order[1]
+            ));
+            assert!(!t.resolve("by-hand").is_satisfied());
+            assert!(t.resolve("by-self").is_satisfied());
+            let both = t.resolve("both");
+            let held: Vec<bool> = both.get_unsatisfying_offers()[0]
+                .get_resolved_conditions()
+                .iter()
+                .map(|c| c.is_satisfied())
+                .collect();
+            let expected: Vec<bool> = order.iter().map(|o| *o == "by-self").collect();
+            assert_eq!(held, expected, "{:?}", order);
+        }
+    }
+
     #[test]
     fn test_gateway_without_c_is_invalid() {
         let mut t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
@@ -3762,11 +3911,12 @@ provides:
     fn test_declared_variables_judged_together_in_the_provides_listing() {
         let t = gateway(DEPLOYS_TO, DEPLOYS_GATEWAY, "{{appname}}");
         let readings = t.resolve_conditions(
-            &[
-                "sampleapp deploys to {{kc}}".to_string(),
-                "{{kc}} deploys sampleapp gateway".to_string(),
-            ],
-            &["kc".to_string()],
+            &Behavior::build("sampleapp gateway is configured")
+                .with_for_some(vec!["kc".to_string()])
+                .with_conditions(vec![
+                    "sampleapp deploys to {{kc}}".to_string(),
+                    "{{kc}} deploys sampleapp gateway".to_string(),
+                ]),
         );
         assert_eq!(readings.len(), 1);
         assert!(readings[0].iter().all(|c| c.is_satisfied()));

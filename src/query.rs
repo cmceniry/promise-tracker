@@ -502,7 +502,13 @@ fn variable_causes(
     let mut waiting: Vec<(&str, Vec<String>)> = vec![];
     for (i, (behavior, pattern)) in rows.iter().enumerate() {
         let vars: Vec<String> = pattern.vars().into_iter().map(str::to_string).collect();
-        let found = tracker.propose(behavior);
+        // With what was filled in on the way here, as resolution had it.
+        let filled = conditions
+            .iter()
+            .find(|c| c.get_behavior_name() == *behavior)
+            .map(|c| c.get_bound().to_vec())
+            .unwrap_or_default();
+        let found = tracker.propose_pattern(&pattern.clone().with_bound(&filled));
         let unnamed: Vec<String> = vars.iter().filter(|v| !found.names(v)).cloned().collect();
         if !unnamed.is_empty() {
             let holds_for_any = unnamed
@@ -607,7 +613,7 @@ impl<'a> Resolver<'a> {
         let conditions = promise.get_conditions();
         let declared = promise.get_for_some();
         let held: Vec<bool> = if !declared.is_empty() {
-            let readings = self.tracker.resolve_conditions(&conditions, declared);
+            let readings = self.tracker.resolve_conditions(promise);
             let count = |r: &Vec<Resolution>| r.iter().filter(|c| c.is_satisfied()).count();
             let mut best: Option<&Vec<Resolution>> = None;
             for reading in &readings {
@@ -950,6 +956,66 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_cause_reads_what_was_filled_in_as_resolution_did() {
+        // `web` comes from `{{!self}}`, so R's `{{who}}` may take it: the
+        // row names `web/prod reads R1`, the want itself, so it is cut short
+        // by the loop and keeps nothing. Read as resolution reads it, the
+        // cause is that loop, not a value nothing names.
+        let t = crate::marks::tracker(
+            r#"kind: Agent
+name: web
+wants:
+  - name: web/prod reads R1
+provides:
+  - name: "{{!self}} is served"
+    forSome: [env]
+    conditions:
+      - "{{!self}}/{{env}} reads R1"
+---
+kind: Agent
+name: R
+provides:
+  - name: "{{who}}/prod reads R1"
+    conditions: ["web is served"]
+"#,
+        );
+        assert!(!t.resolve("web/prod reads R1").is_satisfied());
+        assert_eq!(
+            unsatisfied(&t, PLAIN)[0].causes,
+            vec![Cause {
+                behavior: "web/{{env}} reads R1".into(),
+                kind: CauseKind::Cycle,
+                needed_by: Some(CauseSite {
+                    agent: "web".into(),
+                    provide: "web is served".into()
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_provides_listing_reads_what_was_filled_in_too() {
+        let t = crate::marks::tracker(
+            r#"kind: Agent
+name: web
+provides:
+  - name: "{{!self}} is served"
+    forSome: [env]
+    conditions:
+      - "{{!self}}/{{env}} reads R1"
+---
+kind: Agent
+name: R
+provides:
+  - name: "{{who}}/prod reads R1"
+"#,
+        );
+        let provides = agent_provides(&t, "web", PLAIN).unwrap().provides;
+        assert_eq!(provides[0].behavior, "web is served");
+        assert!(provides[0].held);
     }
 
     #[test]
